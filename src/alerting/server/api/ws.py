@@ -45,6 +45,9 @@ class WebSocketSink:
     async def send_json(self, data: dict[str, Any]) -> None:
         await self.websocket.send_json(data)
 
+    async def close(self, code: int) -> None:
+        await self.websocket.close(code=code)
+
 
 @router.websocket("/v1/stream")
 async def stream(websocket: WebSocket) -> None:

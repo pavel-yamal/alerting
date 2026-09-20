@@ -24,7 +24,7 @@ demo:
 	$(PY) scripts/demo_e2e.py
 
 serve:
-	.venv/bin/uvicorn alerting.server.app:create_app --factory --host 127.0.0.1 --port 8080
+	.venv/bin/alerting-server --host 127.0.0.1 --port 8080
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage var/*.db var/heads

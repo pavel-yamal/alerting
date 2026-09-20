@@ -6,7 +6,6 @@ import contextlib
 import logging
 import pathlib
 from collections.abc import AsyncIterator
-from typing import Any
 
 import yaml
 from fastapi import Depends, FastAPI
@@ -97,8 +96,52 @@ class AppServices:
         )
 
     def close(self) -> None:
+        """Synchronous teardown. Prefer :meth:`aclose`, which orders it correctly."""
         with contextlib.suppress(Exception):
             self.db.close()
+
+    async def aclose(self) -> None:
+        """Shut down in the order that does not lose anything.
+
+        The order is the point, and the old version had it wrong: it stopped
+        escalation and closed the database while socket handlers were still running,
+        so an ACK arriving during shutdown reached a closed sqlite connection.
+
+        1. Close the sockets, so no handler reaches for ``repo`` afterwards.
+        2. Stop escalation, letting the current tick finish rather than abandoning a
+           fan-out half-done with the rung already claimed.
+        3. Publish a final audit head, so the entries since the last one are covered
+           instead of waiting for the next start.
+        4. Only now close the database.
+        """
+        with contextlib.suppress(Exception):
+            closed = await self.connections.close_all()
+            if closed:
+                log.info("closed %d executor socket(s) for restart", closed)
+
+        with contextlib.suppress(Exception):
+            await self.escalation.stop()
+
+        with contextlib.suppress(Exception):
+            self._publish_final_head()
+
+        self.close()
+
+    def _publish_final_head(self) -> None:
+        """Sign the chain tip on the way out.
+
+        Without it, everything since the last hourly head stays unpublished until the
+        process runs again — and an unpublished head is exactly the window in which a
+        rewritten tail cannot be detected.
+        """
+        tip = self.repo.chain_tip()
+        if tip is None:
+            return
+        idx, head = tip
+        if (latest := self.repo.latest_head()) is not None and latest["idx"] >= idx:
+            return
+        self.audit.publish_head(idx, head, self.clock.now())
+        log.info("published final audit head idx=%d", idx)
 
 
 #: The one value an operator may pass to mean "yes, really use the hardcoded ladder".
@@ -175,8 +218,7 @@ def create_app(
         try:
             yield
         finally:
-            await services.escalation.stop()
-            services.close()
+            await services.aclose()
 
     app = FastAPI(
         title="alerting",
@@ -196,7 +238,3 @@ def create_app(
     app.include_router(meta.public_router)
     app.include_router(ws.router)
     return app
-
-
-def app_from_env() -> Any:  # pragma: no cover - uvicorn entry point
-    return create_app()

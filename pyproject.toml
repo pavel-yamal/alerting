@@ -21,6 +21,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "pytest-cov>=5", "ruff>=0.5", "mypy>=1.10"]
 
 [project.scripts]
+alerting-server = "alerting.server.cli:main"
 alerting-approver = "alerting.clients.approver_cli:main"
 alerting-executor = "alerting.clients.executor_cli:main"
 alerting-auditor = "alerting.clients.auditor_cli:main"

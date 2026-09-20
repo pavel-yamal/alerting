@@ -9,16 +9,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from typing import Any, Protocol
 
 from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+
+log = logging.getLogger("alerting.channel.ws")
+
+
+#: RFC 6455 "service restart": the client should reconnect immediately, not back off.
+WS_SERVICE_RESTART = 1012
 
 
 class Sink(Protocol):
     """Anything that can take a JSON frame to one connected device."""
 
     async def send_json(self, data: dict[str, Any]) -> None: ...
+
+    async def close(self, code: int) -> None: ...
 
 
 #: A person carries a phone and maybe a tablet. More than this is either a bug or
@@ -75,6 +84,33 @@ class ConnectionRegistry:
         for person_id in self.connected_people():
             total += await self.deliver(person_id, frame)
         return total
+
+    async def close_all(self, code: int = WS_SERVICE_RESTART) -> int:
+        """Close every open socket and empty the registry. Returns how many.
+
+        Called first during shutdown, before the database closes, because a socket
+        handler that is still running will reach for ``repo`` to record an incoming
+        ACK — and would find a closed connection.
+
+        Code 1012 ("service restart") is what tells a client to reconnect straight
+        away rather than backing off, which matters when the thing reconnecting is an
+        executor's alert stream.
+        """
+        async with self._lock:
+            sinks = [(person, sink) for person, group in self._sinks.items() for sink in group]
+            self._sinks.clear()
+
+        closed = 0
+        for person_id, sink in sinks:
+            closer = getattr(sink, "close", None)
+            if closer is None:
+                continue
+            try:
+                await closer(code)
+                closed += 1
+            except Exception:
+                log.debug("could not close socket for %s", person_id, exc_info=True)
+        return closed
 
 
 class WebSocketChannel:

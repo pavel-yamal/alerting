@@ -6,6 +6,9 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
+
+from alerting.wordlist import MIN_WORDLIST_SIZE
 
 log = logging.getLogger("alerting.api.meta")
 
@@ -104,6 +107,40 @@ async def statusz(request: Request) -> dict[str, Any]:
             for name in app.channels.names()
         },
     }
+
+
+@public_router.get("/readyz")
+async def readyz(request: Request) -> dict[str, Any]:
+    """Can this node actually dispatch an order? This is what a load balancer wants.
+
+    Liveness is not enough here. Started with the wrong configuration, a node creates
+    an empty database, answers ``healthz: ok`` — the old check only counted audit rows,
+    which succeeds on an empty table — and is incapable of sending anything. A
+    balancer would route alerts to it.
+    """
+    app = request.app.state.alerting
+    checks: dict[str, bool] = {}
+
+    for name, probe in (
+        ("database", lambda: app.repo.audit_count() >= 0),
+        ("directory", lambda: bool(app.state.directory().payload.keys)),
+        ("policy", lambda: bool(app.state.policy().payload.severities)),
+        ("wordlist", lambda: len(app.state.wordlist) >= MIN_WORDLIST_SIZE),
+        ("escalation", lambda: app.escalation.is_healthy()),
+    ):
+        try:
+            checks[name] = bool(probe())
+        except Exception:
+            log.warning("readiness check %s failed", name, exc_info=True)
+            checks[name] = False
+
+    ready = all(checks.values())
+    if not ready:
+        failed = sorted(name for name, ok in checks.items() if not ok)
+        log.warning("not ready: %s", ", ".join(failed))
+    return JSONResponse(  # type: ignore[return-value]
+        status_code=200 if ready else 503, content={"ready": ready, "checks": checks}
+    )
 
 
 @public_router.get("/healthz")

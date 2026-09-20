@@ -27,6 +27,9 @@ from alerting.server.services.dispatcher import Dispatcher
 
 log = logging.getLogger("alerting.escalation")
 
+#: How long shutdown waits for an in-flight tick before cancelling it.
+DRAIN_TIMEOUT_S = 10.0
+
 
 @dataclass(frozen=True)
 class Rung:
@@ -100,6 +103,8 @@ class EscalationWorker:
         self.clock = clock
         self.plan = plan
         self._task: asyncio.Task[None] | None = None
+        self._stopping = asyncio.Event()
+        self._started = False
 
     async def tick(self) -> int:
         """One pass. Returns how many rungs fired, which makes it easy to test."""
@@ -203,20 +208,59 @@ class EscalationWorker:
             wake_key=b64u_decode(row["wake_key"]) if row["wake_key"] else b"",
         )
 
+    def is_running(self) -> bool:
+        """True when the ladder is actually being climbed right now."""
+        return self._task is not None and not self._task.done()
+
+    def is_healthy(self) -> bool:
+        """False only when this worker was started and has since died.
+
+        A node whose worker died still serves HTTP and still records orders, but
+        nothing escalates — so nobody is notified when an order goes unacknowledged,
+        and readiness has to see that.
+
+        A worker that was never started is *not* unhealthy: a node can legitimately
+        not be the one climbing the ladder. That is the case for the test client, and
+        it is the case for every non-leader once escalation is leader-elected.
+        """
+        if not self._started:
+            return True
+        return self.is_running()
+
     async def run(self, interval: float = 1.0) -> None:
-        while True:
+        while not self._stopping.is_set():
             try:
                 await self.tick()
             except Exception:
                 log.exception("escalation tick failed")
-            await asyncio.sleep(interval)
+            # Sleep, but wake immediately on a stop request so shutdown does not wait
+            # out a full interval.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), interval)
 
     def start(self, interval: float = 1.0) -> None:
+        self._started = True
+        self._stopping.clear()
         self._task = asyncio.create_task(self.run(interval))
 
-    async def stop(self) -> None:
-        if self._task is not None:
+    async def stop(self, drain_timeout: float = DRAIN_TIMEOUT_S) -> None:
+        """Ask the worker to stop and give the current tick time to finish.
+
+        A hard cancel would abandon a tick mid-fan-out: some recipients of a rung
+        notified, the rest not, and the rung already claimed in ``escalation_state``
+        so no later tick retries it. So the loop is asked to exit and awaited; cancel
+        is the fallback for a tick that has genuinely wedged.
+        """
+        if self._task is None:
+            return
+        self._stopping.set()
+        try:
+            await asyncio.wait_for(self._task, drain_timeout)
+        except TimeoutError:
+            log.warning("escalation tick did not finish in %ss; cancelling", drain_timeout)
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+        finally:
             self._task = None
+            self._started = False
