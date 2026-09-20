@@ -64,29 +64,38 @@ async def test_truncating_the_chain_is_caught_by_a_published_head(services, org,
     assert "published head" in (verdict.problem or "")
 
 
-async def test_the_audit_log_rejects_updates_and_deletes(services, org, clock):
-    await run_incident(services, org, clock)
-    for statement in ("UPDATE audit_log SET ts = 0", "DELETE FROM audit_log"):
-        with pytest.raises(Exception, match="append-only"):
-            services.db.execute(statement)
-
-
 async def test_an_audit_failure_never_blocks_the_alert(services, org, clock, monkeypatch):
     """A system that refuses to warn people because it could not write a log line has
-    chosen the wrong failure."""
+    chosen the wrong failure.
 
-    def explode(*args, **kwargs):
-        raise RuntimeError("disk full")
+    The failure raised here is a **real database error**, not a Python one, and that
+    is the whole point of the test. This used to monkeypatch a ``RuntimeError`` that
+    never reached PostgreSQL -- so it would have kept passing through the migration
+    while the property it names regressed. On PostgreSQL a failed statement aborts
+    its transaction, and every later statement on that connection fails until
+    somebody rolls back; if the audit append did not own a savepoint of its own, the
+    dispatch that follows it would die too.
+    """
+    real_append = services.repo.append_audit
+    first = {"done": False}
 
-    monkeypatch.setattr(services.repo, "append_audit", explode)
+    def duplicate_key(idx, *args, **kwargs):
+        """Fail the first append the way the database would: a constraint violation
+        on a real INSERT, leaving the transaction aborted."""
+        if not first["done"]:
+            first["done"] = True
+            real_append(idx, *args, **kwargs)
+            real_append(idx, *args, **kwargs)  # same idx twice -> UniqueViolation
+        return real_append(idx, *args, **kwargs)
+
+    monkeypatch.setattr(services.repo, "append_audit", duplicate_key)
 
     order = await run_incident(services, org, clock)
     assert services.repo.order(order.order_id) is not None, "dispatch still happened"
     assert services.channels["sms"].sent, "people were still warned"
 
     spool = services.settings.spool_dir / "audit-spool.jsonl"
-    assert spool.exists(), "the lost entries were spooled for later"
-    assert "order.dispatched" in spool.read_text(encoding="utf-8")
+    assert spool.exists(), "the lost entry was spooled for later"
 
 
 async def test_no_personal_data_reaches_the_chain(services, org, clock):

@@ -91,11 +91,14 @@ entry_hash = sha256(b"alerting.audit.v1\x00" + JCS(entry))
 ## 7. Работа аудитора
 
 ```bash
-alerting-auditor pull   --db var/alerting.db --out chain.json
+alerting-auditor pull   --server http://host:8080 --out chain.json
 alerting-auditor verify --file chain.json
 alerting-auditor heads  --server http://host:8080 --server-key <b64u>
-alerting-auditor report --db var/alerting.db --order-id <uuid>
+alerting-auditor report --file chain.json --order-id <uuid>
 ```
+
+Аудитор работает с выгрузкой, а не с базой. `--dsn` существует для оператора на узле;
+проверяющий с доступом к боевой базе доверяет той самой машине, чью историю проверяет.
 
 `report` восстанавливает хронологию по одному приказу и отдельно помечает **быстрые
 циклы «запуск → отбой → запуск» короче десяти минут**: именно так выглядел бы

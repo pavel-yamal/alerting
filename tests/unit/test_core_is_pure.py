@@ -23,6 +23,11 @@ BANNED = {
     "httpx",
     "os",
     "pathlib",
+    # The database driver, both spellings. `sqlite3` was already banned; after the
+    # PostgreSQL port that entry no longer guards anything on its own, and a ban that
+    # has quietly stopped applying is worse than no ban.
+    "psycopg",
+    "psycopg_pool",
     "requests",
     "socket",
     "sqlite3",

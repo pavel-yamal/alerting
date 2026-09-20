@@ -17,7 +17,8 @@ from alerting.server.auth import require_api_key
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
-from alerting.server.db.connection import connect, migrate
+from alerting.server.db import migrate
+from alerting.server.db.pool import open_pool
 from alerting.server.db.repo import Repo
 from alerting.server.logging_config import configure as configure_logging
 from alerting.server.services.audit_service import AuditService
@@ -36,10 +37,27 @@ class AppServices:
         self.settings = settings
         self.clock = clock or SystemClock()
 
-        pathlib.Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
-        self.db = connect(settings.db_path)
-        migrate(self.db)
-        self.repo = Repo(self.db)
+        self.pool = open_pool(settings.load_dsn())
+        # Everything from here on can refuse to start, and a refusal that leaked the
+        # pool would leave server-side connections behind on every restart loop --
+        # and `Restart=always` with `StartLimitIntervalSec=0` means this node retries
+        # forever by design.
+        try:
+            self._build(settings)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                self.pool.close()
+            raise
+
+    def _build(self, settings: Settings) -> None:
+        # Migrations are NOT applied here. They are `alerting-server migrate`, run by
+        # the owner role from a oneshot unit. An application that migrates on boot
+        # runs two migrations at once the day two nodes restart together, and has to
+        # hold schema-changing privileges for its whole life to do it. What it does
+        # instead is refuse to run against a schema it was not built for.
+        with self.pool.connection() as connection:
+            migrate.verify(connection)
+        self.repo = Repo(self.pool)
 
         if not settings.root_public_key:
             raise RuntimeError(
@@ -98,21 +116,21 @@ class AppServices:
     def close(self) -> None:
         """Synchronous teardown. Prefer :meth:`aclose`, which orders it correctly."""
         with contextlib.suppress(Exception):
-            self.db.close()
+            self.pool.close()
 
     async def aclose(self) -> None:
         """Shut down in the order that does not lose anything.
 
         The order is the point, and the old version had it wrong: it stopped
         escalation and closed the database while socket handlers were still running,
-        so an ACK arriving during shutdown reached a closed sqlite connection.
+        so an ACK arriving during shutdown reached a closed connection.
 
         1. Close the sockets, so no handler reaches for ``repo`` afterwards.
         2. Stop escalation, letting the current tick finish rather than abandoning a
            fan-out half-done with the rung already claimed.
         3. Publish a final audit head, so the entries since the last one are covered
            instead of waiting for the next start.
-        4. Only now close the database.
+        4. Only now close the pool.
         """
         with contextlib.suppress(Exception):
             closed = await self.connections.close_all()

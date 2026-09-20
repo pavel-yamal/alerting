@@ -65,14 +65,21 @@ class AuditService:
         now = self.clock.now()
         data = _prune(data)
         try:
-            idx = self.repo.audit_count()
-            last = self.repo.last_audit_hash()
-            prev = b64u_decode(last) if last else GENESIS_PREV
-            entry, digest = chain_entry(idx, prev, str(event), now, data)
-            self.repo.append_audit(
-                idx, now, entry["prev"], entry["event"], entry["data"], b64u_encode(digest)
-            )
-            self._maybe_publish_head(idx, b64u_encode(digest), now)
+            # One transaction, and inside it an advisory lock every appender
+            # serializes on. Reading the index and the previous hash as separate
+            # autocommitted statements -- which is what this used to do -- lets two
+            # appenders compute the same link from the same tip, and a hash chain
+            # that forks is not evidence of anything.
+            with self.repo.tx():
+                idx, last = self.repo.audit_chain_head()
+                prev = b64u_decode(last) if last else GENESIS_PREV
+                entry, digest = chain_entry(idx, prev, str(event), now, data)
+                head = b64u_encode(digest)
+                self.repo.append_audit(idx, now, entry["prev"], entry["event"], entry["data"], head)
+            # Outside the transaction on purpose: a head must never be published for
+            # an entry that has not committed, and signing plus a file write has no
+            # business holding the chain lock.
+            self._maybe_publish_head(idx, head, now)
             return idx
         except Exception:
             log.exception("AUDIT WRITE FAILED — dispatch continues, entry spooled")

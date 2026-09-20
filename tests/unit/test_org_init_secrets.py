@@ -6,6 +6,7 @@ lives on two encrypted USB keys held by two custodians.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -13,10 +14,20 @@ import pytest
 
 SCRIPT = ["scripts/org_init.py"]
 
+#: org_init drops and recreates the schema -- that is what it is for -- so the two
+#: tests that let it run need the OWNER role, and they empty the development
+#: database. Same effect as running `make org-init` by hand.
+OWNER_DSN = os.environ.get(
+    "ALERTING_TEST_DSN",
+    os.environ.get("ALERTING_DSN", "postgres://alerting_owner:devpass@127.0.0.1:5432/alerting"),
+)
+
+#: The refusal tests must fail *before* any connection is attempted, so the DSN they
+#: pass is deliberately one that could never work.
+UNUSED_DSN = "postgres://never:used@127.0.0.1:1/nothing"
+
 
 def run(args: list[str], env_extra: dict[str, str] | None = None):
-    import os
-
     env = {**os.environ, **(env_extra or {})}
     return subprocess.run([sys.executable, *SCRIPT, *args], capture_output=True, text=True, env=env)
 
@@ -24,7 +35,7 @@ def run(args: list[str], env_extra: dict[str, str] | None = None):
 def test_it_refuses_without_the_confirmation(tmp_path):
     """The old guard only asked when ALERTING_ENV happened to be set, which is
     neither the default nor how CI runs it."""
-    result = run(["--db", str(tmp_path / "a.db"), "--home", str(tmp_path / "clients")])
+    result = run(["--dsn", UNUSED_DSN, "--home", str(tmp_path / "clients")])
     assert result.returncode != 0
     assert "--i-understand-this-is-a-demo" in result.stderr
 
@@ -33,8 +44,8 @@ def test_it_refuses_without_the_confirmation(tmp_path):
 def test_it_refuses_outright_in_a_real_environment(tmp_path, environment):
     result = run(
         [
-            "--db",
-            str(tmp_path / "a.db"),
+            "--dsn",
+            UNUSED_DSN,
             "--home",
             str(tmp_path / "clients"),
             "--i-understand-this-is-a-demo",
@@ -49,8 +60,8 @@ def test_every_generated_secret_is_owner_only(tmp_path):
     home = tmp_path / "clients"
     result = run(
         [
-            "--db",
-            str(tmp_path / "a.db"),
+            "--dsn",
+            OWNER_DSN,
             "--home",
             str(home),
             "--secrets-dir",
@@ -79,13 +90,13 @@ def test_every_generated_secret_is_owner_only(tmp_path):
 
 
 def test_secrets_land_beside_home_not_in_the_current_directory(tmp_path):
-    """They used to be hardcoded to ./var regardless of --db and --home, so pointing
+    """They used to be hardcoded to ./var regardless of --dsn and --home, so pointing
     the script elsewhere still dropped the root key into the working directory."""
     home = tmp_path / "somewhere" / "clients"
     result = run(
         [
-            "--db",
-            str(tmp_path / "a.db"),
+            "--dsn",
+            OWNER_DSN,
             "--home",
             str(home),
             "--i-understand-this-is-a-demo",

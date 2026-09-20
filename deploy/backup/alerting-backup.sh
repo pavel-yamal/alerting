@@ -6,25 +6,29 @@
 #   * the audit spool — the ONLY copy of entries that never reached the chain
 #   * published heads — the tamper-evidence the chain is checked against
 #
-# The copy is taken through SQLite's online-backup API, not `cp`: with WAL active a
-# file copy yields a torn database. It runs through the server's own interpreter
-# rather than the sqlite3 CLI, because the venv is on the box by definition and the
-# CLI is a separate package that may not be.
+# `pg_dump -Fc` takes a consistent snapshot of a running database without blocking
+# writers, which matters here: this runs nightly against a node that must stay able
+# to dispatch an order throughout. The custom format is what `pg_restore` needs for a
+# selective restore, and it compresses on the way out.
+#
+# It dumps as the OWNER role, because a dump has to include the append-only triggers
+# and the grants — the two things that make the restored copy as locked down as the
+# original. The application role could not read them.
 set -Eeuo pipefail
 
-: "${ALERTING_DB:?ALERTING_DB is not set}"
+: "${ALERTING_DSN_FILE:?ALERTING_DSN_FILE is not set (owner role)}"
 : "${ALERTING_BACKUP_DIR:=/var/backups/alerting}"
 : "${ALERTING_SPOOL_DIR:=/var/lib/alerting/spool}"
 : "${ALERTING_HEADS_DIR:=/var/lib/alerting/heads}"
 : "${ALERTING_BACKUP_KEEP_DAYS:=35}"
-: "${ALERTING_PYTHON:=/opt/alerting/current/venv/bin/python}"
+: "${ALERTING_PG_BIN:=/usr/lib/postgresql/16/bin}"
 
 log()  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 fail() { log "BACKUP FAILED: $*"; exit 1; }
 
-command -v "$ALERTING_PYTHON" >/dev/null 2>&1 \
-    || fail "interpreter not found: ${ALERTING_PYTHON} (set ALERTING_PYTHON)"
-[ -f "$ALERTING_DB" ] || fail "database not found: ${ALERTING_DB}"
+[ -r "$ALERTING_DSN_FILE" ] || fail "DSN file not readable: ${ALERTING_DSN_FILE}"
+dsn="$(cat "$ALERTING_DSN_FILE")"
+[ -x "${ALERTING_PG_BIN}/pg_dump" ] || fail "pg_dump not found in ${ALERTING_PG_BIN}"
 
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 target="${ALERTING_BACKUP_DIR}/${stamp}"
@@ -34,33 +38,21 @@ target="${ALERTING_BACKUP_DIR}/${stamp}"
 umask 077
 mkdir -p "$target"
 
-log "backing up ${ALERTING_DB} -> ${target}"
-"$ALERTING_PYTHON" - "$ALERTING_DB" "${target}/alerting.db" <<'PY' || fail "online backup"
-import sqlite3
-import sys
+log "dumping database -> ${target}/alerting.dump"
+"${ALERTING_PG_BIN}/pg_dump" --format=custom --compress=9 --no-password \
+    --file="${target}/alerting.dump" "$dsn" || fail "pg_dump"
 
-source, destination = sys.argv[1], sys.argv[2]
-with sqlite3.connect(f"file:{source}?mode=ro", uri=True) as src, \
-        sqlite3.connect(destination) as dst:
-    src.backup(dst)                                   # consistent snapshot of a live DB
+# Verify the dump before believing in it. A backup nobody has restored is a hope, and
+# reading the archive's own table of contents is the cheap half of proving otherwise.
+# The expensive half is the quarterly restore drill; see alerting-restore-drill.sh.
+toc="$("${ALERTING_PG_BIN}/pg_restore" --list "${target}/alerting.dump")" \
+    || fail "the dump is not readable by pg_restore"
 
-# Verify the copy before believing in it. A backup nobody has restored is a hope, and
-# this is the cheap half of proving otherwise.
-with sqlite3.connect(destination) as check:
-    verdict = check.execute("PRAGMA integrity_check").fetchone()[0]
-    if verdict != "ok":
-        raise SystemExit(f"integrity_check on the copy said: {verdict}")
-
-    entries = check.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
-    triggers = check.execute(
-        "SELECT COUNT(*) FROM sqlite_master "
-        "WHERE type='trigger' AND name LIKE 'audit_log_no_%'"
-    ).fetchone()[0]
-    # If these did not survive, the copy is writable in ways the original is not.
-    if triggers != 2:
-        raise SystemExit(f"append-only triggers missing from the copy: {triggers}/2")
-    print(f"audit entries: {entries}, append-only triggers: {triggers}")
-PY
+for object in audit_log_append_only audit_log_no_update audit_log_no_delete audit_log_no_truncate; do
+    grep -q -- "$object" <<<"$toc" \
+        || fail "the dump does not contain ${object}; a restore would not be append-only"
+done
+log "dump contains the audit table and all three append-only guards"
 
 if [ -d "$ALERTING_SPOOL_DIR" ]; then
     cp -a "$ALERTING_SPOOL_DIR" "${target}/spool"
@@ -72,7 +64,6 @@ fi
 
 [ -d "$ALERTING_HEADS_DIR" ] && cp -a "$ALERTING_HEADS_DIR" "${target}/heads"
 
-gzip -9 "${target}/alerting.db"
 log "wrote $(du -sh "$target" | cut -f1) to ${target}"
 
 # Retention. The heads are also supposed to leave this host entirely — the auditors

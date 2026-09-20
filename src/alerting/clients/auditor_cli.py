@@ -30,12 +30,21 @@ def _load(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[int, str
         blob = json.loads(pathlib.Path(args.file).read_text(encoding="utf-8"))
         return blob["entries"], {int(k): v for k, v in blob.get("heads", {}).items()}
 
-    if args.db:
-        from alerting.server.db.connection import connect
+    if args.dsn:
+        # Reading the live database is the operator's path, not the auditor's: an
+        # auditor with a connection to production is trusting the same machine whose
+        # history they are checking. `--file` and `--server` are the independent
+        # ones. The import is lazy so the auditor tool does not require a database
+        # driver unless this path is used.
+        from alerting.server.db.pool import open_pool
         from alerting.server.db.repo import Repo
 
-        repo = Repo(connect(args.db))
-        return list(repo.audit_entries(0, 1_000_000)), repo.heads()
+        pool = open_pool(args.dsn, min_size=1, max_size=2)
+        try:
+            repo = Repo(pool)
+            return list(repo.audit_entries(0, 1_000_000)), repo.heads()
+        finally:
+            pool.close()
 
     with Api(args.server, api_key=args.api_key) as api:
         entries: list[dict[str, Any]] = []
@@ -164,7 +173,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="alerting-auditor")
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--server", default="http://127.0.0.1:8080")
-    shared.add_argument("--db", help="read the sqlite database directly")
+    shared.add_argument(
+        "--dsn",
+        help="read a PostgreSQL database directly (operator path; prefer --file)",
+    )
     shared.add_argument("--file", help="read a previously pulled chain")
     shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
     sub = parser.add_subparsers(dest="command", required=True)

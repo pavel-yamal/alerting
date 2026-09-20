@@ -25,7 +25,8 @@
 Отчёт по каждому учению строится из цепочки аудита:
 
 ```bash
-alerting-auditor report --db var/alerting.db --order-id <uuid>
+alerting-auditor pull   --server http://host:8080 --out chain.json
+alerting-auditor report --file chain.json --order-id <uuid>
 ```
 
 ## 3. Карточка исполнителя

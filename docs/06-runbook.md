@@ -9,18 +9,24 @@
 
 ```bash
 make setup
+make db-up             # PostgreSQL: роли, база, миграции
 make org-init          # демо-организация; печатает корневой публичный ключ и пути к секретам
 
 ALERTING_ROOT_PUBKEY=<b64u> \
 ALERTING_SERVER_KEY_FILE=var/server-key.SECRET \
 ALERTING_API_KEY_FILE=var/api-key.SECRET \
 ALERTING_ALLOW_STUB_CHANNELS=1 \
-ALERTING_DB=var/alerting.db make serve
+ALERTING_DSN="$ALERTING_DSN" make serve
 
 export ALERTING_API_KEY=$(cat var/api-key.SECRET)   # нужен всем трём CLI
 ```
 
-**Секреты передаются путём к файлу, а не значением.** Ключ подписи голов аудита —
+В бою сервер подключается ролью `alerting_app`, у которой по журналу аудита есть
+только `SELECT` и `INSERT`, а DSN приходит файлом через `LoadCredential=`. `make
+db-up` для удобства даёт роль владельца — это разработка, не бой.
+
+**Секреты передаются путём к файлу, а не значением.** Это касается и строки
+подключения: в ней пароль базы. Ключ подписи голов аудита —
 закрытый ключ Ed25519; через переменную окружения он попадает в `/proc/PID/environ`,
 в вывод `systemctl show`, а через `$(cat …)` в командной строке — в `ps` для всех
 пользователей машины. Тот, кто его прочитает, подделает головы, и доказательная сила
@@ -31,6 +37,8 @@ export ALERTING_API_KEY=$(cat var/api-key.SECRET)   # нужен всем трё
 
 | Условие | Почему это отказ, а не предупреждение |
 |---|---|
+| нет `ALERTING_DSN_FILE` / `ALERTING_DSN` | подключаться некуда. Пустая база больше не создаётся молча |
+| версия схемы не та, под которую собран релиз | иначе узел упал бы на первом запросе, которому нужна отсутствующая колонка, — то есть посреди инцидента |
 | нет `ALERTING_ROOT_PUBKEY` | без него нельзя проверить собственные бандлы |
 | нет `ALERTING_API_KEY_FILE` | иначе любой, кто достучится до порта, пишет в неудаляемую цепочку аудита. Снимается только явным `ALERTING_ALLOW_UNAUTHENTICATED=1` |
 | файл секрета доступен группе или всем | секрет, который читают все локальные пользователи, — не секрет |
@@ -128,9 +136,14 @@ alerting-approver propose MUSTER --drill --severity warning --sites hq --person 
 ## 7. Проверка аудита
 
 ```bash
-alerting-auditor verify --db var/alerting.db
-alerting-auditor report --db var/alerting.db --order-id <uuid>
+alerting-auditor verify --server http://127.0.0.1:8080
+alerting-auditor pull   --server http://127.0.0.1:8080 --out chain.json
+alerting-auditor verify --file chain.json
 ```
+
+`--dsn` читает базу напрямую и существует для оператора на узле. **Аудитор им не
+пользуется:** проверяющий с доступом к боевой базе доверяет той самой машине, чью
+историю проверяет. Независимые пути — `--file` и `--server`.
 
 В конце каждого учения — принудительно опубликовать голову (`POST /v1/audit/head`) и
 разослать её аудиторам.

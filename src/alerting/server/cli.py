@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import sys
 
 from alerting.server.config import Settings
@@ -37,6 +38,15 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the alerting server. Configuration comes from the "
         "environment; see docs/09-deployment.md.",
     )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="serve",
+        choices=["serve", "migrate"],
+        help="serve (default), or apply pending database migrations and exit. "
+        "`migrate` connects as the owner role and is meant to run from a oneshot "
+        "unit before the service, not from the service itself.",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="bind address")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument(
@@ -54,6 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def redact_dsn(dsn: str) -> str:
+    """Strip the password before a connection string reaches the journal.
+
+    The startup banner is the first thing anyone reads during an incident, and it is
+    also the first thing that gets pasted into a ticket.
+    """
+    return re.sub(r"(?<=:)[^:@/]*(?=@)", "***", dsn)
+
+
 def _describe_settings(settings: Settings) -> str:
     """What this node will actually do, for the first line in the journal.
 
@@ -63,7 +82,7 @@ def _describe_settings(settings: Settings) -> str:
     return "\n".join(
         [
             f"  org            : {settings.org_id}",
-            f"  database       : {settings.db_path}",
+            f"  database       : {redact_dsn(settings.dsn_file or settings.dsn)}",
             f"  wordlist       : {settings.wordlist_path}",
             f"  escalation     : {settings.escalation_config}",
             f"  heads / spool  : {settings.heads_dir} / {settings.spool_dir}",
@@ -73,6 +92,38 @@ def _describe_settings(settings: Settings) -> str:
             f"  audit heads    : {'signed' if settings.server_key_file else 'UNSIGNED'}",
         ]
     )
+
+
+def _migrate(settings: Settings) -> int:
+    """Apply pending migrations and exit.
+
+    Deliberately not part of starting the server: see the note in
+    ``AppServices.__init__``. The DSN this reads must belong to the *owner* role,
+    which is the only one allowed to change the schema.
+    """
+    import psycopg
+    from psycopg.rows import dict_row
+
+    from alerting.server.db import migrate
+
+    try:
+        dsn = settings.load_dsn()
+    except (RuntimeError, FileNotFoundError, PermissionError) as exc:
+        log.error("%s", exc)
+        return 2
+    log.info("migrating %s", redact_dsn(dsn))
+    try:
+        with psycopg.connect(dsn, row_factory=dict_row, autocommit=True) as connection:
+            done = migrate.apply(connection)
+            version = migrate.schema_version(connection)
+    except Exception as exc:
+        log.error("migration failed: %s", exc)
+        return 1
+    if done:
+        log.info("applied %s; schema is now at version %d", done, version)
+    else:
+        log.info("nothing to apply; schema is at version %d", version)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,6 +136,10 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     configure_logging(settings.log_level, json_output=settings.log_json)
+
+    if args.command == "migrate":
+        return _migrate(settings)
+
     log.info("alerting server starting\n%s", _describe_settings(settings))
 
     # Build the app before handing control to uvicorn, so a configuration problem is

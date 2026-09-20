@@ -161,35 +161,47 @@ class Dispatcher:
         self.replay.commit(order.stream_id, order.seq)
         now = self.clock.now()
 
-        self.repo.create_order(
-            order.order_id,
-            envelope.model_dump(mode="json"),
-            now,
-            order.drill,
-            str(order.severity),
-            order.scenario,
-            order.cancels,
-            payload_digest(envelope.payload),
-        )
-        self.audit.append(
-            Event.QUORUM_MET,
-            {
-                "order_id": order.order_id,
-                "signers": list(decision.signer_persons),
-                "severity": str(order.severity),
-                "drill": order.drill,
-            },
-        )
-        self.audit.append(
-            Event.CANCEL_ISSUED if order.is_cancel else Event.ORDER_DISPATCHED,
-            {
-                "order_id": order.order_id,
-                "scenario": order.scenario,
-                "drill": order.drill,
-                "cancels": order.cancels,
-                "warnings": [str(w) for w in decision.warnings],
-            },
-        )
+        # The order row and the two entries that prove it was authorised go in as
+        # one unit, so a crash between them cannot leave a dispatched order with no
+        # record of the quorum that authorised it.
+        #
+        # This does not override the audit spool: `AuditService.append` still catches
+        # a failed write, rolls back to its own savepoint and lets the dispatch
+        # proceed. Alerting outranks the log, and the spooled entry is the record.
+        #
+        # The fan-out stays outside: it awaits SMS, voice and socket sends, and a
+        # transaction held across that would pin a pooled connection and the audit
+        # chain lock for the length of a phone call.
+        with self.repo.tx():
+            self.repo.create_order(
+                order.order_id,
+                envelope.model_dump(mode="json"),
+                now,
+                order.drill,
+                str(order.severity),
+                order.scenario,
+                order.cancels,
+                payload_digest(envelope.payload),
+            )
+            self.audit.append(
+                Event.QUORUM_MET,
+                {
+                    "order_id": order.order_id,
+                    "signers": list(decision.signer_persons),
+                    "severity": str(order.severity),
+                    "drill": order.drill,
+                },
+            )
+            self.audit.append(
+                Event.CANCEL_ISSUED if order.is_cancel else Event.ORDER_DISPATCHED,
+                {
+                    "order_id": order.order_id,
+                    "scenario": order.scenario,
+                    "drill": order.drill,
+                    "cancels": order.cancels,
+                    "warnings": [str(w) for w in decision.warnings],
+                },
+            )
 
         recipients = self.state.recipients_for(order)
         if not recipients:

@@ -1,30 +1,113 @@
-"""Explicit SQL. There is deliberately no update or delete path for ``audit_log``."""
+"""Explicit SQL. There is deliberately no update or delete path for ``audit_log``.
+
+Every method takes a connection from the pool for the length of one statement, unless
+it is running inside :meth:`Repo.tx` -- in which case it joins that transaction. The
+binding is a :class:`~contextvars.ContextVar` rather than an attribute because the
+escalation worker and the HTTP handlers run as separate tasks on one event loop: an
+attribute would leak one task's transaction into another's query at the first
+``await``.
+
+Two conventions worth knowing before reading the SQL below:
+
+* **Every ``ORDER BY`` ends in a unique column.** The timestamps here are Unix
+  seconds and ties are common -- routine in production, universal in tests, which run
+  on a fixed clock. SQLite broke ties by rowid, so insertion order came out by
+  accident; PostgreSQL makes no such promise, and two of these queries decide which
+  orders get escalated and which are checked for replay.
+* **Booleans are booleans.** They were integers compared against ``= 1``.
+"""
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
+
+from psycopg import Connection
+from psycopg_pool import ConnectionPool
+
+from alerting.server.db import locks
+
+Row = dict[str, Any]
+
+#: The connection bound to the current task by an open :meth:`Repo.tx` block.
+_bound: ContextVar[Connection[Any] | None] = ContextVar("alerting_db_conn", default=None)
 
 
 class Repo:
-    def __init__(self, connection: sqlite3.Connection) -> None:
-        self.db = connection
+    def __init__(self, pool: ConnectionPool[Any]) -> None:
+        self.pool = pool
+
+    # --- connection and transaction handling ---------------------------------
+    @contextmanager
+    def _conn(self) -> Iterator[Connection[Any]]:
+        bound = _bound.get()
+        if bound is not None:
+            yield bound
+            return
+        with self.pool.connection() as connection:
+            yield connection
+
+    @contextmanager
+    def tx(self) -> Iterator[Connection[Any]]:
+        """Run several statements as one unit.
+
+        Used in exactly three places -- appending an audit entry, allocating a
+        proposal's sequence number, and recording a dispatched order alongside its
+        audit entries. Everything else is a single statement and runs in autocommit,
+        which is what keeps a failed audit write from poisoning the dispatch that
+        follows it.
+
+        Nesting is allowed and becomes a savepoint.
+        """
+        bound = _bound.get()
+        if bound is not None:
+            with bound.transaction():
+                yield bound
+            return
+        with self.pool.connection() as connection:
+            token = _bound.set(connection)
+            try:
+                with connection.transaction():
+                    yield connection
+            finally:
+                _bound.reset(token)
+
+    def _execute(self, sql: str, params: Sequence[Any] = ()) -> int:
+        """Run a statement, return the number of rows it affected."""
+        with self._conn() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            return cursor.rowcount
+
+    def _one(self, sql: str, params: Sequence[Any] = ()) -> Row | None:
+        with self._conn() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            row: Row | None = cursor.fetchone()
+            return row
+
+    def _all(self, sql: str, params: Sequence[Any] = ()) -> list[Row]:
+        with self._conn() as connection, connection.cursor() as cursor:
+            cursor.execute(sql, params)
+            rows: list[Row] = cursor.fetchall()
+            return rows
 
     # --- bundles -------------------------------------------------------------
     def put_bundle(self, kind: str, version: int, bundle: Mapping[str, Any], at: int) -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO bundles (kind, version, bundle_json, published_at)"
-            " VALUES (?, ?, ?, ?)",
+        self._execute(
+            "INSERT INTO bundles (kind, version, bundle_json, published_at)"
+            " VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT (kind, version) DO UPDATE SET"
+            " bundle_json = EXCLUDED.bundle_json, published_at = EXCLUDED.published_at",
             (kind, version, json.dumps(bundle, ensure_ascii=False), at),
         )
 
     def latest_bundle(self, kind: str) -> dict[str, Any] | None:
-        row = self.db.execute(
-            "SELECT bundle_json FROM bundles WHERE kind = ? ORDER BY version DESC LIMIT 1",
+        row = self._one(
+            "SELECT bundle_json FROM bundles WHERE kind = %s ORDER BY version DESC LIMIT 1",
             (kind,),
-        ).fetchone()
+        )
         return json.loads(row["bundle_json"]) if row else None
 
     # --- contacts (personal data; never enters the audit chain) --------------
@@ -39,32 +122,40 @@ class Repo:
         wake_key: str = "",
         role: str = "executor",
     ) -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO contacts"
+        self._execute(
+            "INSERT INTO contacts"
             " (person_id, name, phone, site, groups_csv, wake_key, role, active)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, true)"
+            " ON CONFLICT (person_id) DO UPDATE SET"
+            " name = EXCLUDED.name, phone = EXCLUDED.phone, site = EXCLUDED.site,"
+            " groups_csv = EXCLUDED.groups_csv, wake_key = EXCLUDED.wake_key,"
+            " role = EXCLUDED.role, active = true",
             (person_id, name, phone, site, ",".join(groups), wake_key, role),
         )
 
-    def contact(self, person_id: str) -> sqlite3.Row | None:
-        return self.db.execute(
-            "SELECT * FROM contacts WHERE person_id = ?", (person_id,)
-        ).fetchone()
+    def contact(self, person_id: str) -> Row | None:
+        return self._one("SELECT * FROM contacts WHERE person_id = %s", (person_id,))
 
-    def contacts(self) -> list[sqlite3.Row]:
-        return list(self.db.execute("SELECT * FROM contacts WHERE active = 1"))
+    def contacts(self) -> list[Row]:
+        return self._all("SELECT * FROM contacts WHERE active ORDER BY person_id")
 
     def forget_contact(self, person_id: str) -> None:
         """Erasure of personal data. The audit chain, holding only the pseudonym,
         is untouched and stays verifiable."""
-        self.db.execute("DELETE FROM contacts WHERE person_id = ?", (person_id,))
+        self._execute("DELETE FROM contacts WHERE person_id = %s", (person_id,))
 
     # --- proposals and signatures -------------------------------------------
     def next_seq(self, stream_id: str) -> int:
-        row = self.db.execute(
-            "SELECT MAX(seq) AS s FROM proposals WHERE stream_id = ?", (stream_id,)
-        ).fetchone()
-        return int(row["s"] or 0) + 1
+        """The next sequence number for a stream.
+
+        Read-then-write: callers hold :meth:`tx` across this and
+        :meth:`create_proposal`, and ``UNIQUE (stream_id, seq)`` is the backstop.
+        """
+        row = self._one(
+            "SELECT MAX(seq) AS s FROM proposals WHERE stream_id = %s",
+            (stream_id,),
+        )
+        return int((row["s"] if row else None) or 0) + 1
 
     def create_proposal(
         self,
@@ -75,9 +166,9 @@ class Repo:
         created_at: int,
         created_by: str,
     ) -> None:
-        self.db.execute(
+        self._execute(
             "INSERT INTO proposals (order_id, stream_id, seq, payload_json, created_at,"
-            " created_by) VALUES (?, ?, ?, ?, ?, ?)",
+            " created_by) VALUES (%s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 stream_id,
@@ -88,28 +179,23 @@ class Repo:
             ),
         )
 
-    def proposal(self, order_id: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM proposals WHERE order_id = ?", (order_id,)).fetchone()
-
-    def open_proposals(self) -> list[sqlite3.Row]:
-        return list(self.db.execute("SELECT * FROM proposals WHERE status = 'open'"))
+    def proposal(self, order_id: str) -> Row | None:
+        return self._one("SELECT * FROM proposals WHERE order_id = %s", (order_id,))
 
     def set_proposal_status(self, order_id: str, status: str) -> None:
-        self.db.execute("UPDATE proposals SET status = ? WHERE order_id = ?", (status, order_id))
+        self._execute("UPDATE proposals SET status = %s WHERE order_id = %s", (status, order_id))
 
     def add_signature(self, order_id: str, key_id: str, sig: str, observed_at: int) -> None:
-        self.db.execute(
-            "INSERT OR IGNORE INTO signatures (order_id, key_id, sig, observed_at)"
-            " VALUES (?, ?, ?, ?)",
+        self._execute(
+            "INSERT INTO signatures (order_id, key_id, sig, observed_at)"
+            " VALUES (%s, %s, %s, %s) ON CONFLICT (order_id, key_id) DO NOTHING",
             (order_id, key_id, sig, observed_at),
         )
 
-    def signatures(self, order_id: str) -> list[sqlite3.Row]:
-        return list(
-            self.db.execute(
-                "SELECT * FROM signatures WHERE order_id = ? ORDER BY observed_at",
-                (order_id,),
-            )
+    def signatures(self, order_id: str) -> list[Row]:
+        return self._all(
+            "SELECT * FROM signatures WHERE order_id = %s ORDER BY observed_at, key_id",
+            (order_id,),
         )
 
     # --- orders --------------------------------------------------------------
@@ -124,14 +210,15 @@ class Repo:
         cancels: str | None,
         digest: str,
     ) -> None:
-        self.db.execute(
+        self._execute(
             "INSERT INTO orders (order_id, envelope_json, dispatched_at, drill,"
-            " severity, scenario, cancels, order_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " severity, scenario, cancels, order_digest)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 json.dumps(envelope, ensure_ascii=False),
                 dispatched_at,
-                int(drill),
+                bool(drill),
                 severity,
                 scenario,
                 cancels,
@@ -139,18 +226,26 @@ class Repo:
             ),
         )
 
-    def order(self, order_id: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,)).fetchone()
+    def order(self, order_id: str) -> Row | None:
+        return self._one("SELECT * FROM orders WHERE order_id = %s", (order_id,))
 
-    def orders(self, limit: int = 50) -> list[sqlite3.Row]:
-        return list(
-            self.db.execute("SELECT * FROM orders ORDER BY dispatched_at DESC LIMIT ?", (limit,))
+    def orders(self, limit: int = 50) -> list[Row]:
+        """Most recent orders first.
+
+        The ``order_id`` tie-break is not cosmetic. ``dispatched_at`` is in whole
+        seconds, so a burst of orders shares one value; this result feeds both the
+        escalation sweep and the replay-detection set, and a ``LIMIT`` over an
+        ambiguous sort would silently choose a different set of rows each time.
+        """
+        return self._all(
+            "SELECT * FROM orders ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
+            (limit,),
         )
 
     def cancelled_order_ids(self) -> set[str]:
         return {
             row["cancels"]
-            for row in self.db.execute("SELECT cancels FROM orders WHERE cancels IS NOT NULL")
+            for row in self._all("SELECT cancels FROM orders WHERE cancels IS NOT NULL")
         }
 
     # --- dispatch and acknowledgement ---------------------------------------
@@ -163,18 +258,16 @@ class Repo:
         status: str,
         detail: str = "",
     ) -> None:
-        self.db.execute(
+        self._execute(
             "INSERT INTO dispatches (order_id, person_id, channel, attempted_at,"
-            " status, detail) VALUES (?, ?, ?, ?, ?, ?)",
+            " status, detail) VALUES (%s, %s, %s, %s, %s, %s)",
             (order_id, person_id, channel, at, status, detail),
         )
 
-    def dispatches(self, order_id: str) -> list[sqlite3.Row]:
-        return list(
-            self.db.execute(
-                "SELECT * FROM dispatches WHERE order_id = ? ORDER BY attempted_at",
-                (order_id,),
-            )
+    def dispatches(self, order_id: str) -> list[Row]:
+        return self._all(
+            "SELECT * FROM dispatches WHERE order_id = %s ORDER BY attempted_at, id",
+            (order_id,),
         )
 
     def record_ack(
@@ -188,9 +281,9 @@ class Repo:
         valid: bool,
         reasons: Sequence[str] = (),
     ) -> None:
-        self.db.execute(
+        self._execute(
             "INSERT INTO acks (order_id, person_id, device_key_id, status, at,"
-            " ack_json, valid, reasons) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            " ack_json, valid, reasons) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 person_id,
@@ -198,15 +291,18 @@ class Repo:
                 status,
                 at,
                 json.dumps(ack, ensure_ascii=False),
-                int(valid),
+                bool(valid),
                 ",".join(reasons),
             ),
         )
 
-    def acks(self, order_id: str) -> list[sqlite3.Row]:
-        return list(
-            self.db.execute("SELECT * FROM acks WHERE order_id = ? ORDER BY at", (order_id,))
-        )
+    def acks(self, order_id: str) -> list[Row]:
+        """Every acknowledgement for an order, oldest first.
+
+        The ``id`` tie-break decides which of two acknowledgements sent in the same
+        second the dashboard shows, because the caller keeps the last one per person.
+        """
+        return self._all("SELECT * FROM acks WHERE order_id = %s ORDER BY at, id", (order_id,))
 
     #: Statuses that do NOT mean the order is being handled by that person.
     #:
@@ -223,47 +319,62 @@ class Repo:
         Only *valid* acks count: an invalid one means somebody is impersonating an
         executor, which is worse than silence and must not stop escalation.
         """
-        placeholders = ",".join("?" * len(self.UNHANDLED_ACK_STATUSES))
         return {
             row["person_id"]
-            for row in self.db.execute(
-                "SELECT person_id FROM acks WHERE order_id = ? AND valid = 1"
-                f" AND status NOT IN ({placeholders})",
-                (order_id, *self.UNHANDLED_ACK_STATUSES),
+            for row in self._all(
+                "SELECT person_id FROM acks WHERE order_id = %s AND valid AND status <> ALL(%s)",
+                (order_id, list(self.UNHANDLED_ACK_STATUSES)),
             )
         }
 
     def refused_person_ids(self, order_id: str) -> set[str]:
-        """People who reported they cannot comply — the reassignment list."""
+        """People who reported they cannot comply -- the reassignment list."""
         return {
             row["person_id"]
-            for row in self.db.execute(
-                "SELECT person_id FROM acks WHERE order_id = ? AND valid = 1"
+            for row in self._all(
+                "SELECT person_id FROM acks WHERE order_id = %s AND valid"
                 " AND status = 'cannot_comply'",
                 (order_id,),
             )
         }
 
     # --- escalation ----------------------------------------------------------
-    def rung_fired(self, order_id: str, person_id: str, rung: int) -> bool:
-        return (
-            self.db.execute(
-                "SELECT 1 FROM escalation_state WHERE order_id = ? AND person_id = ? AND rung = ?",
-                (order_id, person_id, rung),
-            ).fetchone()
-            is not None
-        )
-
     def mark_rung(self, order_id: str, person_id: str, rung: int, at: int) -> bool:
-        """Returns True if this call is the one that claimed the rung."""
-        cursor = self.db.execute(
-            "INSERT OR IGNORE INTO escalation_state (order_id, person_id, rung, fired_at)"
-            " VALUES (?, ?, ?, ?)",
-            (order_id, person_id, rung, at),
+        """Returns True if this call is the one that claimed the rung.
+
+        This is the latch that stops a restart mid-incident from re-sounding a siren
+        or re-calling somebody who was already called, so the row count has to mean
+        exactly "I inserted it" and not "a row with these values exists".
+        """
+        return (
+            self._execute(
+                "INSERT INTO escalation_state (order_id, person_id, rung, fired_at)"
+                " VALUES (%s, %s, %s, %s) ON CONFLICT (order_id, person_id, rung) DO NOTHING",
+                (order_id, person_id, rung, at),
+            )
+            > 0
         )
-        return cursor.rowcount > 0
 
     # --- audit ---------------------------------------------------------------
+    def audit_chain_head(self) -> tuple[int, str | None]:
+        """``(next index, previous entry hash)`` -- the whole link, in one step.
+
+        **Call this inside :meth:`tx`.** It takes a transaction-scoped advisory lock,
+        so every appender serializes here and the index and ``prev`` it returns are
+        still the tip when the caller inserts. Reading them as two separate
+        autocommitted statements is how a hash chain quietly forks.
+        """
+        with self._conn() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s)", (locks.AUDIT_CHAIN,))
+            cursor.execute(
+                "SELECT COALESCE(MAX(idx) + 1, 0) AS next_idx,"
+                " (SELECT entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1) AS prev"
+                " FROM audit_log"
+            )
+            row = cursor.fetchone()
+            assert row is not None  # an aggregate always returns one row
+            return int(row["next_idx"]), row["prev"]
+
     def append_audit(
         self,
         idx: int,
@@ -273,55 +384,56 @@ class Repo:
         data: Mapping[str, Any],
         entry_hash: str,
     ) -> None:
-        self.db.execute(
+        self._execute(
             "INSERT INTO audit_log (idx, ts, prev, event, data_json, entry_hash)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            " VALUES (%s, %s, %s, %s, %s, %s)",
             (idx, ts, prev, event, json.dumps(data, ensure_ascii=False), entry_hash),
         )
 
     def audit_count(self) -> int:
-        return int(self.db.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"])
+        row = self._one("SELECT COUNT(*) AS c FROM audit_log")
+        return int(row["c"]) if row else 0
 
     def chain_tip(self) -> tuple[int, str] | None:
         """``(idx, entry_hash)`` of the last entry, or None for an empty chain.
 
         Lets a head be published without loading the chain to recompute its hash.
         """
-        row = self.db.execute(
-            "SELECT idx, entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1"
-        ).fetchone()
-        return (row["idx"], row["entry_hash"]) if row else None
+        row = self._one("SELECT idx, entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1")
+        return (int(row["idx"]), row["entry_hash"]) if row else None
 
     def last_audit_hash(self) -> str | None:
-        row = self.db.execute(
-            "SELECT entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1"
-        ).fetchone()
+        row = self._one("SELECT entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1")
         return row["entry_hash"] if row else None
 
     def audit_entries(self, from_idx: int = 0, limit: int = 1000) -> Iterator[dict[str, Any]]:
-        for row in self.db.execute(
-            "SELECT * FROM audit_log WHERE idx >= ? ORDER BY idx LIMIT ?",
+        rows = self._all(
+            "SELECT idx, ts, prev, event, data_json FROM audit_log"
+            " WHERE idx >= %s ORDER BY idx LIMIT %s",
             (from_idx, limit),
-        ):
+        )
+        for row in rows:
             yield {
-                "idx": row["idx"],
-                "ts": row["ts"],
+                "idx": int(row["idx"]),
+                "ts": int(row["ts"]),
                 "prev": row["prev"],
                 "event": row["event"],
                 "data": json.loads(row["data_json"]),
             }
 
     def put_head(self, idx: int, head: str, ts: int, signature: str = "") -> None:
-        self.db.execute(
-            "INSERT OR REPLACE INTO audit_heads (idx, head, ts, signature) VALUES (?, ?, ?, ?)",
+        self._execute(
+            "INSERT INTO audit_heads (idx, head, ts, signature) VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT (idx) DO UPDATE SET"
+            " head = EXCLUDED.head, ts = EXCLUDED.ts, signature = EXCLUDED.signature",
             (idx, head, ts, signature),
         )
 
     def heads(self) -> dict[int, str]:
         return {
-            row["idx"]: row["head"]
-            for row in self.db.execute("SELECT idx, head FROM audit_heads ORDER BY idx")
+            int(row["idx"]): row["head"]
+            for row in self._all("SELECT idx, head FROM audit_heads ORDER BY idx")
         }
 
-    def latest_head(self) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM audit_heads ORDER BY idx DESC LIMIT 1").fetchone()
+    def latest_head(self) -> Row | None:
+        return self._one("SELECT * FROM audit_heads ORDER BY idx DESC LIMIT 1")

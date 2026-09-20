@@ -1,7 +1,7 @@
 """Shutdown order, and readiness as distinct from liveness.
 
 The old lifespan closed the database while socket handlers were still running, so an
-ACK arriving during shutdown reached a closed sqlite connection. And a node started
+ACK arriving during shutdown reached a closed connection. And a node started
 with the wrong configuration created an empty database, answered `healthz: ok` — the
 check only counted audit rows, which succeeds on an empty table — and could not
 dispatch anything, which a load balancer had no way to see.
@@ -76,7 +76,6 @@ async def test_the_device_cap_is_enforced():
 
 async def test_sockets_close_before_the_database(settings, clock, org, tmp_path):
     """The ordering bug: a handler still running would find a closed connection."""
-    settings.db_path = str(tmp_path / "order.db")
     services = AppServices(settings, clock)
     publish_org(services.repo, org, audit=services.audit)
 
@@ -91,7 +90,7 @@ async def test_sockets_close_before_the_database(settings, clock, org, tmp_path)
     sink.close = close  # type: ignore[method-assign]
     await services.connections.attach("x-101", sink)
 
-    # sqlite3.Connection.close is read-only, so the probe goes on the wrapper.
+    # The pool's close cannot be monkeypatched, so the probe goes on the wrapper.
     original_close = services.close
 
     def wrapper_close() -> None:
@@ -104,17 +103,16 @@ async def test_sockets_close_before_the_database(settings, clock, org, tmp_path)
     assert events == ["sockets", "database"]
 
 
-async def test_a_final_audit_head_is_published_on_the_way_out(settings, clock, org, tmp_path):
+async def test_a_final_audit_head_is_published_on_the_way_out(settings, clock, org, owner_conn):
     """Without it, everything since the last hourly head stays unpublished until the
     process runs again — and an unpublished head is the window in which a rewritten
     tail cannot be detected."""
-    settings.db_path = str(tmp_path / "head.db")
     services = AppServices(settings, clock)
     publish_org(services.repo, org, audit=services.audit)
 
     tip = services.repo.chain_tip()
     assert tip is not None
-    services.db.execute("DELETE FROM audit_heads")
+    owner_conn.execute("DELETE FROM audit_heads")
 
     await services.aclose()
 
@@ -131,7 +129,6 @@ async def test_a_final_audit_head_is_published_on_the_way_out(settings, clock, o
 async def test_escalation_is_asked_to_stop_rather_than_cancelled(settings, clock, org, tmp_path):
     """A hard cancel abandons a tick mid-fan-out with the rung already claimed, so no
     later tick retries it."""
-    settings.db_path = str(tmp_path / "drain.db")
     services = AppServices(settings, clock)
     publish_org(services.repo, org, audit=services.audit)
 
@@ -165,6 +162,7 @@ async def test_a_wired_node_reports_ready(client):
     assert body["ready"] is True
     assert body["checks"] == {
         "database": True,
+        "schema": True,
         "directory": True,
         "policy": True,
         "wordlist": True,
@@ -180,7 +178,6 @@ async def test_an_empty_database_is_live_but_not_ready(settings, clock, tmp_path
     from alerting.server.app import create_app
     from tests.integration.conftest import API_KEY
 
-    settings.db_path = str(tmp_path / "empty.db")
     app = create_app(settings, clock, start_escalation=False)
     with TestClient(app, headers={"Alerting-Api-Key": API_KEY}) as test_client:
         assert test_client.get("/v1/healthz").json() == {"ok": True}

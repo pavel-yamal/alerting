@@ -123,6 +123,7 @@ async def readyz(request: Request) -> dict[str, Any]:
 
     for name, probe in (
         ("database", lambda: app.repo.audit_count() >= 0),
+        ("schema", lambda: _schema_ok(app)),
         ("directory", lambda: bool(app.state.directory().payload.keys)),
         ("policy", lambda: bool(app.state.policy().payload.severities)),
         ("wordlist", lambda: len(app.state.wordlist) >= MIN_WORDLIST_SIZE),
@@ -141,6 +142,20 @@ async def readyz(request: Request) -> dict[str, Any]:
     return JSONResponse(  # type: ignore[return-value]
         status_code=200 if ready else 503, content={"ready": ready, "checks": checks}
     )
+
+
+def _schema_ok(app: Any) -> bool:
+    """The database is at the version this build was written against.
+
+    Checked at startup too, but a node can outlive a migration run on a shared
+    database: the answer here is what keeps a balancer from sending an alert to a
+    node that would fail on the first column it does not have.
+    """
+    from alerting.server.db import migrate
+
+    with app.pool.connection() as connection:
+        migrate.verify(connection)
+    return True
 
 
 @public_router.get("/healthz")

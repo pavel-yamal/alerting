@@ -61,7 +61,6 @@ async def test_a_real_channel_still_reports_sent(services, org, clock):
 
 async def test_a_node_refuses_to_start_with_stub_channels_in_its_ladder(settings, clock, tmp_path):
     """The guard that stops a production box booting with four fake channels."""
-    settings.db_path = str(tmp_path / "guard.db")
     settings.allow_stub_channels = False
 
     with pytest.raises(RuntimeError, match="no provider"):
@@ -71,7 +70,6 @@ async def test_a_node_refuses_to_start_with_stub_channels_in_its_ladder(settings
 async def test_the_guard_can_be_waived_explicitly(settings, clock, tmp_path, org, caplog):
     import logging
 
-    settings.db_path = str(tmp_path / "waived.db")
     settings.allow_stub_channels = True
     caplog.set_level(logging.WARNING, logger="alerting.server")
 
@@ -86,7 +84,6 @@ async def test_the_guard_can_be_waived_explicitly(settings, clock, tmp_path, org
 async def test_a_missing_escalation_ladder_is_a_startup_failure(settings, clock, tmp_path):
     """It used to fall back to the built-in ladder silently, so a node ran different
     channels and timings than the operator had configured."""
-    settings.db_path = str(tmp_path / "noladder.db")
     settings.escalation_config = str(tmp_path / "does-not-exist.yaml")
 
     with pytest.raises(RuntimeError, match="escalation ladder not found"):
@@ -94,7 +91,6 @@ async def test_a_missing_escalation_ladder_is_a_startup_failure(settings, clock,
 
 
 async def test_the_builtin_ladder_must_be_asked_for_by_name(settings, clock, tmp_path):
-    settings.db_path = str(tmp_path / "builtin.db")
     settings.escalation_config = "builtin"
     settings.allow_stub_channels = True
 

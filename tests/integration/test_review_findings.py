@@ -138,7 +138,6 @@ async def test_published_heads_are_signed_when_a_server_key_is_configured(
 
     private, public = generate_keypair()
     settings.server_private_key = private_key_to_b64u(private)
-    settings.db_path = str(tmp_path / "signed.db")
 
     services = AppServices(settings, clock)
     try:
@@ -158,7 +157,6 @@ async def test_an_unconfigured_server_key_is_warned_about(settings, clock, tmp_p
 
     from alerting.server.app import AppServices
 
-    settings.db_path = str(tmp_path / "unsigned.db")
     settings.server_private_key = ""
     caplog.set_level(logging.WARNING, logger="alerting.server")
 

@@ -70,8 +70,9 @@ make demo         # вся история от начала до конца, з�
 ### Живой сервер
 
 ```bash
+make db-up        # PostgreSQL: роли, база, миграции
 make org-init     # демо-организация; запомните корневой публичный ключ
-ALERTING_ROOT_PUBKEY=<b64u> ALERTING_DB=var/alerting.db make serve
+ALERTING_ROOT_PUBKEY=<b64u> make serve
 
 alerting-approver propose EVAC.BUILDING --real --severity critical \
     --groups fire-wardens --text "Задымление, 3 этаж" --person p-001
@@ -80,7 +81,7 @@ alerting-approver sign <order_id> --person p-002    # кворум → расс�
 alerting-approver status <order_id>
 
 alerting-executor listen --person x-101             # приём и проверка
-alerting-auditor  verify --db var/alerting.db       # независимая проверка журнала
+alerting-auditor  verify --server http://127.0.0.1:8080   # независимая проверка журнала
 ```
 
 ---
@@ -92,7 +93,7 @@ docs/                  проектная документация и ADR
 config/                политика кворума, кодовая книга, лестница эскалации, словарь
 src/alerting/
   core/                ЧИСТОЕ ядро: без I/O, без сети, без чтения часов
-  server/              FastAPI, SQLite, каналы, эскалация, аудит
+  server/              FastAPI, PostgreSQL, каналы, эскалация, аудит
   clients/             CLI ЛПР, исполнителя и аудитора
 tests/unit/            ядро в изоляции
 tests/integration/     сервер, клиенты, сквозные сценарии
@@ -129,7 +130,10 @@ scripts/               org_init.py, demo_e2e.py
   В системе уже есть персональные ключи Ed25519 — подпись запросов переиспользует их;
 - перенести ключи в защищённое хранилище устройств (`keystore.py` — это шов, а не
   решение);
-- перейти на PostgreSQL для нескольких узлов;
+- сделать корректной работу нескольких процессов: счётчик `seq` во внешнюю
+  последовательность, детектирование повтора ограничением БД, выбор лидера
+  эскалации. База уже внешняя (PostgreSQL), но узел по-прежнему **один процесс** —
+  `--workers > 1` сегодня сломает захват ступеней эскалации;
 - провести юридическую проверку раздела о персональных данных.
 
 Всё, что сознательно не сделано, перечислено в

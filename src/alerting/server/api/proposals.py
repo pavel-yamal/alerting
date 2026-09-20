@@ -59,32 +59,37 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
     if body.audience.is_empty():
         raise HTTPException(422, "audience is empty: this order would reach nobody")
     now = app.clock.now()
-    seq = app.repo.next_seq(body.stream_id)
-    policy = app.state.policy()
+    # `next_seq` reads MAX(seq) and `create_proposal` writes seq+1, so the two have
+    # to be one unit or two proposals racing on a stream both claim the same number.
+    # `UNIQUE (stream_id, seq)` is still the backstop; a real sequence per stream is
+    # phase 3. Nothing in here does I/O, so the transaction stays short.
+    with app.repo.tx():
+        seq = app.repo.next_seq(body.stream_id)
+        policy = app.state.policy()
 
-    payload = OrderPayload(
-        v=1,
-        type="cancel" if body.cancels else "order",
-        order_id=str(uuid.uuid4()),
-        org_id=app.state.org_id,
-        stream_id=body.stream_id,
-        seq=seq,
-        nonce=secrets.token_urlsafe(16),
-        issued_at=now,
-        not_valid_after=now + body.ttl_s,
-        severity=body.severity,
-        drill=body.drill,
-        scenario=body.scenario,
-        action=body.action,
-        audience=body.audience,
-        text=body.text,
-        requires_ack=body.requires_ack,
-        ack_deadline_s=body.ack_deadline_s,
-        policy_id=policy.policy_id,
-        cancels=body.cancels,
-    )
-    raw = payload.to_payload()
-    app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, body.created_by)
+        payload = OrderPayload(
+            v=1,
+            type="cancel" if body.cancels else "order",
+            order_id=str(uuid.uuid4()),
+            org_id=app.state.org_id,
+            stream_id=body.stream_id,
+            seq=seq,
+            nonce=secrets.token_urlsafe(16),
+            issued_at=now,
+            not_valid_after=now + body.ttl_s,
+            severity=body.severity,
+            drill=body.drill,
+            scenario=body.scenario,
+            action=body.action,
+            audience=body.audience,
+            text=body.text,
+            requires_ack=body.requires_ack,
+            ack_deadline_s=body.ack_deadline_s,
+            policy_id=policy.policy_id,
+            cancels=body.cancels,
+        )
+        raw = payload.to_payload()
+        app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, body.created_by)
     app.audit.append(
         Event.PROPOSAL_CREATED,
         {

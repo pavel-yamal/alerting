@@ -40,7 +40,12 @@ def _env_flag(name: str) -> bool:
 @dataclass
 class Settings:
     org_id: str = "acme"
-    db_path: str = "var/alerting.db"
+
+    #: PostgreSQL connection string. It carries a password, so the supported path is
+    #: ``dsn_file`` under systemd ``LoadCredential=``; ``dsn`` set directly is for the
+    #: demo and for tests, and the server says so at startup.
+    dsn: str = ""
+    dsn_file: str = ""
 
     #: The pinned org root public key, base64url. Without it the server cannot verify
     #: its own bundles and refuses to start.
@@ -85,7 +90,8 @@ class Settings:
         sites = os.environ.get("ALERTING_DRILL_SITES", "")
         return cls(
             org_id=os.environ.get("ALERTING_ORG", "acme"),
-            db_path=os.environ.get("ALERTING_DB", "var/alerting.db"),
+            dsn=os.environ.get("ALERTING_DSN", ""),
+            dsn_file=os.environ.get("ALERTING_DSN_FILE", ""),
             root_public_key=os.environ.get("ALERTING_ROOT_PUBKEY", ""),
             server_key_file=os.environ.get("ALERTING_SERVER_KEY_FILE", ""),
             org_label=os.environ.get("ALERTING_ORG_LABEL", "ACME"),
@@ -118,6 +124,23 @@ class Settings:
         if not self.api_key_file:
             return ""
         return read_secret_file(pathlib.Path(self.api_key_file), "API key")
+
+    def load_dsn(self) -> str:
+        """The connection string, from a file when one is configured.
+
+        ``ALERTING_DSN_FILE`` wins over ``ALERTING_DSN``: a DSN holds a password, and
+        a password in the environment is visible in ``/proc/PID/environ`` and
+        ``systemctl show`` to anyone who can read them.
+        """
+        if self.dsn_file:
+            return read_secret_file(pathlib.Path(self.dsn_file), "database DSN")
+        if not self.dsn:
+            raise RuntimeError(
+                "no database configured. Set ALERTING_DSN_FILE to a file holding the "
+                "PostgreSQL connection string (0600, via systemd LoadCredential), or "
+                "ALERTING_DSN directly for a demo."
+            )
+        return self.dsn
 
 
 def read_secret_file(path: pathlib.Path, label: str) -> str:

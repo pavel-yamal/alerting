@@ -25,7 +25,9 @@ from alerting.core.signing import (
     public_key_to_b64u,
 )
 from alerting.orgkit import build_org
-from alerting.server.db.connection import connect, migrate
+from alerting.server.cli import redact_dsn
+from alerting.server.db import migrate
+from alerting.server.db.pool import open_pool
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.bootstrap import publish_org
@@ -48,7 +50,12 @@ def write_secret(path: pathlib.Path, content: str) -> pathlib.Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db", default="var/alerting.db")
+    parser.add_argument(
+        "--dsn",
+        default=os.environ.get("ALERTING_DSN", ""),
+        help="PostgreSQL connection string for the OWNER role (or ALERTING_DSN). "
+        "This script drops and recreates the schema, so it needs owner rights.",
+    )
     parser.add_argument("--home", type=pathlib.Path, default=pathlib.Path("var/clients"))
     parser.add_argument("--org", default="acme")
     parser.add_argument("--passphrase", default=DEMO_PASSPHRASE)
@@ -88,13 +95,17 @@ def main() -> int:
     clock = SystemClock()
     org = build_org(org_id=args.org, issued_at=clock.now())
 
-    db_path = pathlib.Path(args.db)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    if db_path.exists():
-        db_path.unlink()
-    connection = connect(str(db_path))
-    migrate(connection)
-    repo = Repo(connection)
+    if not args.dsn:
+        print(
+            "no database: pass --dsn or set ALERTING_DSN to the owner role's "
+            "connection string. `make db-up` starts a local one.",
+            file=sys.stderr,
+        )
+        return 2
+    pool = open_pool(args.dsn, min_size=1, max_size=2)
+    with pool.connection() as connection:
+        migrate.reset(connection)
+    repo = Repo(pool)
 
     # A separate server key signs published audit heads. Without it every head carries
     # an empty signature and gives no tamper-evidence against whoever can rewrite the
@@ -132,7 +143,7 @@ def main() -> int:
     )
 
     print(f"organisation '{args.org}' created")
-    print(f"  database    : {db_path}")
+    print(f"  database    : {redact_dsn(args.dsn)}")
     print(f"  client homes: {args.home}/<person_id>")
     print(f"  passphrase  : {args.passphrase}  (demo only)")
     print(f"\n  ORG ROOT PUBLIC KEY (pin this in every client):\n    {root_pub}")
@@ -162,10 +173,13 @@ def main() -> int:
     print(f"  ALERTING_SERVER_KEY_FILE={server_key_path} \\")
     print(f"  ALERTING_API_KEY_FILE={api_key_path} \\")
     print("  ALERTING_ALLOW_STUB_CHANNELS=1 \\")
-    print(f"  ALERTING_DB={db_path} ALERTING_ORG={args.org} make serve")
+    # The DSN carries a password, so it is referenced, not echoed -- even here,
+    # where it is a development one. A copy-pasteable line with a password in it is
+    # how passwords end up in shell history and tickets.
+    print(f'  ALERTING_DSN="$ALERTING_DSN" ALERTING_ORG={args.org} make serve')
     print("\n  (ALLOW_STUB_CHANNELS because this demo org has no real providers;")
     print("   a production node must never set it.)")
-    connection.close()
+    pool.close()
     return 0
 
 

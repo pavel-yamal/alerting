@@ -9,8 +9,12 @@ Documentation=file:///opt/alerting/current/docs/09-deployment.md
 # chronyd is a hard dependency, not a nicety: the device handshake window is 60s and
 # the order skew tolerance is ±120s, so a node with a wrong clock rejects valid
 # clients while looking perfectly healthy.
-After=network-online.target chronyd.service
+After=network-online.target chronyd.service alerting-migrate.service
 Wants=network-online.target chronyd.service
+# Hard requirement, not Wants: a node whose migrations failed must not serve. The
+# server verifies the schema version itself as well, so this is the first of two
+# gates rather than the only one.
+Requires=alerting-migrate.service
 
 # DELIBERATE deviation from the usual "stop flapping services" advice: an alerting
 # server that systemd has given up on is precisely the failure this whole system
@@ -34,6 +38,11 @@ EnvironmentFile=/etc/alerting/alerting.env
 # key in the environment is readable via /proc/PID/environ and `systemctl show`; the
 # process sees these as files under $CREDENTIALS_DIRECTORY, mode 0400, and no other
 # user on the box can read them.
+# The DSN is a secret for the same reason: it carries the database password, and an
+# environment variable holding it is visible in /proc/PID/environ. This is the
+# APPLICATION role's DSN — alerting_app, which has SELECT and INSERT on audit_log and
+# nothing else. The owner's DSN lives only in alerting-migrate.service.
+LoadCredential=dsn:/etc/alerting/credentials/dsn-app
 LoadCredential=server-key:/etc/alerting/credentials/server-key
 LoadCredential=api-key:/etc/alerting/credentials/api-key
 

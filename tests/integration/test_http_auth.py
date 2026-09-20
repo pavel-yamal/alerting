@@ -87,7 +87,6 @@ async def test_statusz_carries_the_detail_and_needs_the_key(client):
 
 
 async def test_a_node_refuses_to_start_without_a_key(settings, clock, tmp_path):
-    settings.db_path = str(tmp_path / "nokey.db")
     settings.api_key_file = ""
     settings.allow_unauthenticated = False
 
@@ -98,7 +97,6 @@ async def test_a_node_refuses_to_start_without_a_key(settings, clock, tmp_path):
 async def test_an_open_surface_must_be_asked_for_explicitly(settings, clock, tmp_path, caplog):
     import logging
 
-    settings.db_path = str(tmp_path / "open.db")
     settings.api_key_file = ""
     settings.allow_unauthenticated = True
     caplog.set_level(logging.WARNING, logger="alerting.server")
@@ -114,7 +112,6 @@ async def test_a_world_readable_key_file_is_refused(settings, clock, tmp_path, a
     """A secret every local user can read is not a secret, and using it anyway is how
     a deployment believes in protection it does not have."""
     api_key_file.chmod(0o644)
-    settings.db_path = str(tmp_path / "loose.db")
 
     with pytest.raises(PermissionError, match="readable by group or others"):
         AppServices(settings, clock)
