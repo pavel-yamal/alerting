@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import getpass
 import json
+import os
 import pathlib
 import secrets
 import sys
@@ -35,6 +36,7 @@ from alerting.core.signing import (
 )
 from alerting.core.verify import Decision, verify_envelope
 from alerting.core.wordcode import bucket_for, wake_code
+from alerting.wordlist import load_wordlist
 
 CLOCK = SystemClock()
 
@@ -184,11 +186,13 @@ def cmd_check_code(args: argparse.Namespace, api: Api) -> int:
         render(decision, envelope["payload"])
         return 1
 
-    wordlist = [
-        line.strip()
-        for line in pathlib.Path(args.wordlist).read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
+    if not args.wordlist:
+        print(
+            "error: no wordlist. Pass --wordlist or set ALERTING_WORDLIST.",
+            file=sys.stderr,
+        )
+        return 2
+    wordlist = load_wordlist(pathlib.Path(args.wordlist))
     wake_key = bytes.fromhex(args.wake_key) if args.wake_key else b""
     expected = wake_code(
         wake_key,
@@ -346,7 +350,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     code.add_argument("order_id")
     code.add_argument("--wake-key", default="", help="hex, provisioned at enrollment")
-    code.add_argument("--wordlist", default="config/wordlist.ru.txt")
+    code.add_argument(
+        "--wordlist",
+        default=os.environ.get("ALERTING_WORDLIST", ""),
+        help="path to the wake-code wordlist (or ALERTING_WORDLIST). Required: the "
+        "old relative default only worked inside a source checkout.",
+    )
     code.set_defaults(func=cmd_check_code)
 
     ack = sub.add_parser("ack", parents=[shared], help="acknowledge an order")

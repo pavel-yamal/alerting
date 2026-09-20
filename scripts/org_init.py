@@ -33,6 +33,19 @@ from alerting.server.services.bootstrap import publish_org
 DEMO_PASSPHRASE = "demo"
 
 
+def write_secret(path: pathlib.Path, content: str) -> pathlib.Path:
+    """Write a secret readable only by its owner.
+
+    Created with the restrictive mode from the start rather than chmod'd afterwards,
+    so there is no window in which the file exists at the umask default.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(content)
+    return path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default="var/alerting.db")
@@ -40,16 +53,24 @@ def main() -> int:
     parser.add_argument("--org", default="acme")
     parser.add_argument("--passphrase", default=DEMO_PASSPHRASE)
     parser.add_argument(
+        "--secrets-dir",
+        type=pathlib.Path,
+        default=None,
+        help="where the generated keys go (default: alongside --home)",
+    )
+    parser.add_argument(
         "--i-understand-this-is-a-demo",
         action="store_true",
-        help="required when ALERTING_ENV is set: this script writes the org ROOT "
-        "PRIVATE KEY to local disk, which must never happen on a real host",
+        help="required always: this script writes the org ROOT PRIVATE KEY to local "
+        "disk, which must never happen on a real host",
     )
     args = parser.parse_args()
 
     # The root key is the trust anchor for the whole system. docs/02 says it lives on
-    # two encrypted USB keys held by two custodians; this script writes it to the
-    # working directory. That is fine for a demo and a total compromise anywhere else.
+    # two encrypted USB keys held by two custodians; this script writes it to local
+    # disk. That is fine for a demo and a total compromise anywhere else, so the
+    # confirmation is required unconditionally — the old version only asked when
+    # ALERTING_ENV happened to be set, which is neither the default nor how CI runs.
     environment = os.environ.get("ALERTING_ENV", "")
     if environment.lower() in {"production", "prod", "staging"}:
         parser.error(
@@ -57,10 +78,11 @@ def main() -> int:
             "org root private key to disk. Generate org bundles on an offline machine "
             "and import them instead."
         )
-    if environment and not args.i_understand_this_is_a_demo:
+    if not args.i_understand_this_is_a_demo:
         parser.error(
-            "ALERTING_ENV is set; pass --i-understand-this-is-a-demo to confirm this "
-            "host may hold the org root private key"
+            "this script writes the org ROOT PRIVATE KEY to local disk. Pass "
+            "--i-understand-this-is-a-demo to confirm this host may hold it. On a real "
+            "host, generate the bundles offline and import them instead."
         )
 
     clock = SystemClock()
@@ -92,19 +114,24 @@ def main() -> int:
             directory=home,
         )
         PinnedOrg(args.org, root_pub, home).save()
-        (home / "wake_key.hex").write_text(person.wake_key.hex(), encoding="utf-8")
+        # 0600: this is the person's wake key. Anyone who reads it can compute their
+        # codes and send a phishing SMS that passes all three checks on the card.
+        write_secret(home / "wake_key.hex", person.wake_key.hex())
 
-    api_key_path = pathlib.Path("var/api-key.SECRET")
-    api_key_path.write_text(secrets.token_urlsafe(32), encoding="utf-8")
-    api_key_path.chmod(0o600)
+    # Derived from --home rather than hardcoded to ./var, so that pointing the script
+    # elsewhere does not drop the root private key into the current directory.
+    secrets_dir = args.secrets_dir or args.home.parent
+    secrets_dir.mkdir(parents=True, exist_ok=True)
 
-    server_key_path = pathlib.Path("var/server-key.SECRET")
-    server_key_path.write_text(private_key_to_b64u(server_private), encoding="utf-8")
-    server_key_path.chmod(0o600)
-
-    root_path = pathlib.Path("var/root-key.SECRET")
-    root_path.write_text(private_key_to_b64u(org.root_private_key), encoding="utf-8")
-    root_path.chmod(0o600)
+    api_key_path = write_secret(
+        secrets_dir / "api-key.SECRET", secrets.token_urlsafe(32)
+    )
+    server_key_path = write_secret(
+        secrets_dir / "server-key.SECRET", private_key_to_b64u(server_private)
+    )
+    root_path = write_secret(
+        secrets_dir / "root-key.SECRET", private_key_to_b64u(org.root_private_key)
+    )
 
     print(f"organisation '{args.org}' created")
     print(f"  database    : {db_path}")

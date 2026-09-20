@@ -24,7 +24,8 @@ from alerting.server.logging_config import configure as configure_logging
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
-from alerting.server.services.registry import OrgState, load_wordlist
+from alerting.server.services.registry import OrgState
+from alerting.wordlist import load_wordlist
 
 log = logging.getLogger("alerting.server")
 

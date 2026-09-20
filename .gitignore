@@ -15,3 +15,10 @@ var/
 *.db-wal
 *.db-shm
 .env
+
+# Secrets by name, not only by location. `var/` covers what org_init writes today,
+# but a key placed anywhere else would otherwise be committed.
+*.SECRET
+*.pem
+*.key
+wake_key.hex

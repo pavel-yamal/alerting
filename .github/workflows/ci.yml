@@ -39,7 +39,7 @@ jobs:
 
       - name: Demo runs from a clean checkout
         run: |
-          python scripts/org_init.py
+          python scripts/org_init.py --i-understand-this-is-a-demo
           python scripts/demo_e2e.py
 
       - name: Audit chain verifies independently

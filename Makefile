@@ -18,7 +18,7 @@ typecheck:
 	.venv/bin/mypy src/alerting/core
 
 org-init:
-	$(PY) scripts/org_init.py
+	$(PY) scripts/org_init.py --i-understand-this-is-a-demo
 
 demo:
 	$(PY) scripts/demo_e2e.py
