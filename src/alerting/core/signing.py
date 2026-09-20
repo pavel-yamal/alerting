@@ -126,3 +126,8 @@ def private_key_to_b64u(private_key: Ed25519PrivateKey) -> str:
     return b64u_encode(
         private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
     )
+
+
+#: Device authentication on the WebSocket handshake. Separate from every other domain
+#: so a transport-auth signature can never be replayed as an order or an ACK.
+DOMAIN_DEVICE_AUTH = b"alerting.device-auth.v1\x00"
