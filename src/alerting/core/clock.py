@@ -13,6 +13,16 @@ from typing import Protocol
 #: Two minutes covers ordinary NTP drift on a phone without opening a replay window.
 SKEW_TOLERANCE_S = 120
 
+#: How far a *transport authentication* signature may be from the server's clock.
+#: Tighter than the order tolerance above on purpose: an order carries its own
+#: validity window and degrades open on skew, while transport auth is a gate and
+#: degrades closed. Shared by the WebSocket handshake and by signed HTTP requests so
+#: an operator has one number to know, not two.
+#:
+#: Operationally this is the reason `chronyd` is a hard dependency of the unit: a node
+#: whose clock drifts starts refusing valid clients while looking perfectly healthy.
+TRANSPORT_AUTH_WINDOW_S = 60
+
 
 class Clock(Protocol):
     """Source of Unix seconds."""

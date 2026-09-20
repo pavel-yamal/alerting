@@ -83,9 +83,6 @@ async def main() -> int:
         # This is a demo: push, SMS, voice and the siren have no providers behind them.
         # Saying so out loud is what the startup guard is for.
         allow_stub_channels=True,
-        # The demo drives the services directly and never opens a socket, so there is
-        # no HTTP surface to protect here. A node that serves must configure a key.
-        allow_unauthenticated=True,
     )
     server_private, _ = generate_keypair()
     settings.server_private_key = private_key_to_b64u(server_private)

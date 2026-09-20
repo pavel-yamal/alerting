@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from alerting.core.canonical import canonicalize
+from alerting.core.errors import CanonicalizationError
 
 DOMAIN_ORDER = b"alerting.order.v1\x00"
 DOMAIN_ACK = b"alerting.ack.v1\x00"
@@ -80,7 +81,16 @@ def verify_signature(
     signature: str,
     public_key: Ed25519PublicKey,
 ) -> bool:
-    """Constant-time-ish verification that never raises on attacker-controlled input."""
+    """Constant-time-ish verification that never raises on attacker-controlled input.
+
+    The docstring used to say that and the code did not keep the promise: the payload
+    goes through ``canonicalize`` inside ``signing_input``, which refuses floats,
+    nulls, non-string keys and oversized integers by **raising**
+    ``CanonicalizationError``. Any caller handing this an attacker-supplied payload --
+    the WebSocket handshake frame, an HTTP signature header -- would get an exception
+    where it expected ``False``, which in a request handler means a 500 instead of a
+    refusal. A crafted payload must be a failed verification, not a crash.
+    """
     try:
         raw = b64u_decode(signature)
     except (ValueError, TypeError):
@@ -88,7 +98,11 @@ def verify_signature(
     if len(raw) != 64:
         return False
     try:
-        public_key.verify(raw, signing_input(domain, payload))
+        message = signing_input(domain, payload)
+    except CanonicalizationError:
+        return False
+    try:
+        public_key.verify(raw, message)
     except InvalidSignature:
         return False
     return True
@@ -127,3 +141,8 @@ def private_key_to_b64u(private_key: Ed25519PrivateKey) -> str:
 #: Device authentication on the WebSocket handshake. Separate from every other domain
 #: so a transport-auth signature can never be replayed as an order or an ACK.
 DOMAIN_DEVICE_AUTH = b"alerting.device-auth.v1\x00"
+
+#: Transport authentication for one HTTP request. Separate from device-auth so a
+#: WebSocket handshake signature can never be replayed as an HTTP call, and separate
+#: from the order and ACK domains so neither can ever be replayed as transport auth.
+DOMAIN_HTTP_REQUEST = b"alerting.http-request.v1\x00"

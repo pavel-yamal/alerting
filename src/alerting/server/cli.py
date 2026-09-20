@@ -103,7 +103,7 @@ def _describe_settings(settings: Settings) -> str:
             f"  heads / spool  : {settings.heads_dir} / {settings.spool_dir}",
             f"  drill sites    : {sorted(settings.drill_enabled_sites) or 'none'}",
             f"  stub channels  : {'ALLOWED' if settings.allow_stub_channels else 'refused'}",
-            f"  http auth      : {'OPEN' if settings.allow_unauthenticated else 'shared key'}",
+            "  http auth      : signed requests, verified against the directory",
             f"  audit heads    : {'signed' if settings.server_key_file else 'UNSIGNED'}",
         ]
     )

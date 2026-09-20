@@ -21,7 +21,8 @@ from typing import Any
 import websockets
 
 from alerting.clients.bundles import BundleCache, PinnedOrg
-from alerting.clients.keystore import DEFAULT_DIR, load_key, save_key
+from alerting.clients.keystore import DEFAULT_DIR, StoredKey, save_key
+from alerting.clients.session import open_api, unlock
 from alerting.clients.transport import Api
 from alerting.core.clock import SystemClock
 from alerting.core.envelope import AckStatus, OrderPayload, SignedEnvelope
@@ -61,7 +62,7 @@ def describe(reason: Reason) -> str:
     return REASON_TEXT.get(reason, str(reason))
 
 
-def cmd_enroll(args: argparse.Namespace, api: Api) -> int:
+def cmd_enroll(args: argparse.Namespace) -> int:
     """Generate a device key and pin the org root key.
 
     In a real enrollment the root key is read off a printed card or a QR code in
@@ -83,7 +84,7 @@ def cmd_enroll(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
-def cmd_sync(args: argparse.Namespace, api: Api) -> int:
+def cmd_sync(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     """Fetch the directory and policy and verify them against the pinned root key."""
     cache = BundleCache(PinnedOrg.load(args.home))
     directory = cache.accept("directory", api.get("/v1/directory"))
@@ -152,7 +153,7 @@ def verify_one(
     return decision
 
 
-def cmd_verify(args: argparse.Namespace, api: Api) -> int:
+def cmd_verify(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     cache = BundleCache(PinnedOrg.load(args.home))
     envelope = (
         json.loads(pathlib.Path(args.file).read_text(encoding="utf-8"))
@@ -164,7 +165,7 @@ def cmd_verify(args: argparse.Namespace, api: Api) -> int:
     return 0 if decision.accepted else 1
 
 
-def cmd_check_code(args: argparse.Namespace, api: Api) -> int:
+def cmd_check_code(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     """Check the words from an SMS against the order in the app.
 
     This is the anti-phishing step, and it is the only thing an SMS is for.
@@ -173,13 +174,9 @@ def cmd_check_code(args: argparse.Namespace, api: Api) -> int:
     envelope = api.get(f"/v1/orders/{args.order_id}")
     order = OrderPayload.model_validate(envelope["payload"])
 
-    # Unlocking the key proves it is this device's holder asking, and verifying the
-    # order first means the words are only ever shown for a genuine order.
-    load_key(
-        args.person,
-        args.passphrase or getpass.getpass("Passphrase: "),
-        directory=args.home,
-    )
+    # The key was unlocked to sign the request that fetched this order, and that is
+    # the same proof of presence this step used to take for itself -- the words are
+    # still only ever shown to whoever holds the device and its passphrase.
     # Re-inspection: this order may already have arrived over the listener.
     decision = verify_one(cache, envelope, reinspect=True)
     if decision.rejected:
@@ -207,15 +204,9 @@ def cmd_check_code(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
-async def _listen(args: argparse.Namespace, api: Api) -> int:
+async def _listen(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     pin = PinnedOrg.load(args.home)
     cache = BundleCache(pin)
-    stored = load_key(
-        args.person,
-        args.passphrase or getpass.getpass("Passphrase: "),
-        directory=args.home,
-    )
-
     async with websockets.connect(f"{api.ws_url}/v1/stream") as socket:
         challenge = json.loads(await socket.recv())
         payload = {
@@ -274,21 +265,16 @@ async def _listen(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
-def cmd_listen(args: argparse.Namespace, api: Api) -> int:
+def cmd_listen(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     try:
-        return asyncio.run(_listen(args, api))
+        return asyncio.run(_listen(args, api, stored))
     except KeyboardInterrupt:
         return 0
 
 
-def cmd_ack(args: argparse.Namespace, api: Api) -> int:
+def cmd_ack(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     envelope = api.get(f"/v1/orders/{args.order_id}")
     order = OrderPayload.model_validate(envelope["payload"])
-    stored = load_key(
-        args.person,
-        args.passphrase or getpass.getpass("Passphrase: "),
-        directory=args.home,
-    )
     ack = build_ack(
         order=order,
         order_payload_raw=envelope["payload"],
@@ -314,9 +300,10 @@ def common_parser() -> argparse.ArgumentParser:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--server", default="http://127.0.0.1:8080")
     shared.add_argument("--home", type=pathlib.Path, default=DEFAULT_DIR)
-    shared.add_argument("--person", default="", help="your person id")
+    shared.add_argument(
+        "--person", default="", help="your person id; required — every request is signed"
+    )
     shared.add_argument("--passphrase", help="key passphrase (prompted if omitted)")
-    shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
     return shared
 
 
@@ -330,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enroll.add_argument("--org", default="acme")
     enroll.add_argument("--root-key", default="")
-    enroll.set_defaults(func=cmd_enroll)
+    enroll.set_defaults(func=cmd_enroll, needs_key=False)
 
     sync = sub.add_parser(
         "sync", parents=[shared], help="fetch and verify the directory and policy"
@@ -372,9 +359,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    with Api(args.server, api_key=args.api_key) as api:
+    # `enroll` is the one command that runs before a key exists -- it is the command
+    # that creates one -- so it neither unlocks a key nor opens a signed session.
+    if not getattr(args, "needs_key", True):
         try:
-            result: int = args.func(args, api)
+            return int(args.func(args))
+        except Exception as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+    try:
+        stored = unlock(args)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    with open_api(args, stored) as api:
+        try:
+            result: int = args.func(args, api, stored)
             return result
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

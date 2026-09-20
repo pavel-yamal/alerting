@@ -23,6 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
 
+from alerting.clients.transport import SignedRequests
 from alerting.core.clock import FixedClock
 from alerting.core.signing import public_key_to_b64u
 from alerting.orgkit import Org, build_org
@@ -48,6 +49,7 @@ APP_DSN = os.environ.get(
 _TABLES = (
     "channel_heartbeats",
     "escalation_state",
+    "http_nonces",
     "escalation_extra",
     "siren_activations",
     "stream_seq",
@@ -143,24 +145,36 @@ def clock() -> FixedClock:
     return FixedClock(ISSUED_AT + 5)
 
 
-#: The shared key the test server runs with. Tests go through the same gate a
-#: deployed node does, rather than round the side of it.
-API_KEY = "test-api-key-not-a-secret"
+def signer_for(org: Org, person_id: str, clock: FixedClock | None = None) -> SignedRequests:
+    """Sign requests as one real person from the directory.
+
+    Tests go through the same gate a deployed client does rather than round the side
+    of it, which also means every test now exercises the role table: a fixture that
+    signed as nobody in particular would prove nothing about authorization.
+    """
+    person = org.person(person_id)
+    return SignedRequests(
+        org_id=org.org_id,
+        key_id=person.key_id,
+        person_id=person.person_id,
+        private_key=person.private_key,
+        clock=clock,
+    )
 
 
-@pytest.fixture
-def api_key_file(tmp_path: pathlib.Path) -> pathlib.Path:
-    path = tmp_path / "api-key"
-    path.write_text(API_KEY, encoding="utf-8")
-    path.chmod(0o600)  # read_secret_file refuses anything looser
-    return path
+def signing_client(settings: Settings, clock: FixedClock, org: Org, person_id: str) -> TestClient:
+    app = create_app(settings, clock, start_escalation=False)
+    publish_org(app.state.alerting.repo, org, audit=app.state.alerting.audit)
+    test_client = TestClient(app)
+    # TestClient has no `auth` parameter, but it is an httpx.Client underneath.
+    test_client.auth = signer_for(org, person_id, clock)
+    return test_client
 
 
 @pytest.fixture
 def settings(
     tmp_path: pathlib.Path,
     org: Org,
-    api_key_file: pathlib.Path,
     app_dsn: str,
     owner_dsn: str,
 ) -> Settings:
@@ -172,7 +186,6 @@ def settings(
         spool_dir=tmp_path / "spool",
         wordlist_path="config/wordlist.ru.txt",
         drill_enabled_sites=frozenset(),
-        api_key_file=str(api_key_file),
         # The tests exercise the stub adapters on purpose, so they opt in explicitly --
         # the same way a demo node has to. A production node must not set this.
         allow_stub_channels=True,
@@ -198,16 +211,28 @@ def owner_conn(owner_dsn: str) -> Iterator[psycopg.Connection]:
 
 @pytest.fixture
 def client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
-    """HTTP client. Escalation is off so tests drive ``tick()`` deterministically."""
-    app = create_app(settings, clock, start_escalation=False)
-    publish_org(app.state.alerting.repo, org, audit=app.state.alerting.audit)
-    with TestClient(app, headers={"Alerting-Api-Key": API_KEY}) as test_client:
+    """HTTP client signing as a director. Escalation is off so tests drive ``tick()``."""
+    with signing_client(settings, clock, org, "p-001") as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def executor_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
+    """A signed client with an executor's device key -- the least privileged caller."""
+    with signing_client(settings, clock, org, "x-101") as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def auditor_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
+    """Reads the chain, writes nothing. docs/02-trust-and-approval.md §1."""
+    with signing_client(settings, clock, org, "a-001") as test_client:
         yield test_client
 
 
 @pytest.fixture
 def anon_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
-    """The same server, without the key -- for asserting that the gate holds."""
+    """The same server, unsigned -- for asserting that the gate holds."""
     app = create_app(settings, clock, start_escalation=False)
     publish_org(app.state.alerting.repo, org, audit=app.state.alerting.audit)
     with TestClient(app) as test_client:

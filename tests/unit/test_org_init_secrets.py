@@ -74,7 +74,6 @@ def test_every_generated_secret_is_owner_only(tmp_path):
     secrets_dir = tmp_path / "secrets"
     written = sorted(secrets_dir.glob("*.SECRET"))
     assert {p.name for p in written} == {
-        "api-key.SECRET",
         "server-key.SECRET",
         "root-key.SECRET",
     }

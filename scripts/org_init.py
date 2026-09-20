@@ -11,7 +11,6 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
-import secrets
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -134,7 +133,6 @@ def main() -> int:
     secrets_dir = args.secrets_dir or args.home.parent
     secrets_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key_path = write_secret(secrets_dir / "api-key.SECRET", secrets.token_urlsafe(32))
     server_key_path = write_secret(
         secrets_dir / "server-key.SECRET", private_key_to_b64u(server_private)
     )
@@ -164,14 +162,13 @@ def main() -> int:
     )
     print(f"  private half in {server_key_path}")
 
-    print(f"\n  SHARED API KEY written to {api_key_path} (mode 0600).")
-    print("  Every CLI needs it: export ALERTING_API_KEY=$(cat var/api-key.SECRET)")
-    print("  This is the interim gate; signed per-person requests replace it.")
+    print("\n  There is no shared HTTP key any more. Every CLI signs its own requests")
+    print("  with the personal key written above, and the server checks each one")
+    print("  against the root-signed directory.")
 
     print("\nstart the server with:")
     print(f"  ALERTING_ROOT_PUBKEY={root_pub} \\")
     print(f"  ALERTING_SERVER_KEY_FILE={server_key_path} \\")
-    print(f"  ALERTING_API_KEY_FILE={api_key_path} \\")
     print("  ALERTING_ALLOW_STUB_CHANNELS=1 \\")
     # The DSN carries a password, so it is referenced, not echoed -- even here,
     # where it is a development one. A copy-pasteable line with a password in it is

@@ -125,6 +125,10 @@ DEFAULT_ROSTER: list[tuple[str, str, str]] = [
     ("x-101", "Иванов И. И.", "executor"),
     ("x-102", "Петрова О. Н.", "executor"),
     ("x-103", "Сидоров П. А.", "executor"),
+    # docs/02-trust-and-approval.md §1 has listed the auditor as a directory role
+    # since the beginning; it simply had no entry. Reading the chain over HTTP is a
+    # signed request like any other, so the role had to become real.
+    ("a-001", "Ковалёва Н. Т.", "auditor"),
 ]
 
 

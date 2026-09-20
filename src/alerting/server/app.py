@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.signing import private_key_from_b64u, public_key_from_b64u
 from alerting.server.api import meta, orders, proposals, ws
-from alerting.server.auth import require_api_key
+from alerting.server.auth import require_signed_request
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
@@ -81,19 +81,11 @@ class AppServices:
             self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
         )
 
-        self.api_key = settings.load_api_key()
-        if not self.api_key and not settings.allow_unauthenticated:
-            raise RuntimeError(
-                "no ALERTING_API_KEY_FILE configured. Without it every route is open: "
-                "anyone who reaches the port can write permanently undeletable audit "
-                "entries, burn seq numbers and dump the roster. Set the key file, or "
-                "ALERTING_ALLOW_UNAUTHENTICATED=1 if this is a closed-network demo."
-            )
-        if not self.api_key:
-            log.warning(
-                "HTTP surface is UNAUTHENTICATED because ALERTING_ALLOW_UNAUTHENTICATED "
-                "is set; anything that can reach the port can write to the audit chain"
-            )
+        # There is no HTTP secret to configure, and so no way to start this node with
+        # an open surface: every request is verified against the root-signed directory
+        # it already has to hold. The guard that used to live here -- refuse to start
+        # without a shared key, waivable by a flag -- went away with the shared key,
+        # and so did the misconfiguration it existed to catch.
 
         raw_server_key = settings.load_server_key()
         server_key = private_key_from_b64u(raw_server_key) if raw_server_key else None
@@ -288,11 +280,11 @@ def create_app(
     )
     app.state.alerting = services
 
-    # Every route behind the shared key, except liveness, which nginx restricts to
-    # the load balancer. The WebSocket carries its own Ed25519 challenge-response and
-    # is authenticated more strongly than this gate, so it is not double-gated —
-    # executors have a device key, not the shared secret.
-    guarded = [Depends(require_api_key)]
+    # Every route behind a per-person signature, except liveness and readiness, which
+    # nginx restricts to the load balancer by IP. The WebSocket carries its own
+    # Ed25519 challenge-response with a server-chosen nonce and is authenticated more
+    # strongly than this gate, so it is deliberately not double-gated.
+    guarded = [Depends(require_signed_request)]
     for module in (proposals, orders, meta):
         app.include_router(module.router, dependencies=guarded)
     app.include_router(meta.public_router)

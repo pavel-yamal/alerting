@@ -585,3 +585,24 @@ class Repo:
 
     def heartbeats(self) -> list[Row]:
         return self._all("SELECT * FROM channel_heartbeats ORDER BY channel, node_id")
+
+    # --- request nonces -------------------------------------------------------
+    def claim_request_nonce(self, key_id: str, nonce: str, expires_at: int) -> bool:
+        """True when this nonce is fresh for this key. False means a replay.
+
+        Same shape as every other claim in this file: the primary key does the work
+        and the loser of a race learns it lost, which is what makes it correct with
+        more than one worker.
+        """
+        return (
+            self._execute(
+                "INSERT INTO http_nonces (key_id, nonce, expires_at) VALUES (%s, %s, %s)"
+                " ON CONFLICT (key_id, nonce) DO NOTHING",
+                (key_id, nonce, expires_at),
+            )
+            > 0
+        )
+
+    def prune_request_nonces(self, now: int) -> int:
+        """Drop nonces whose signatures could no longer be fresh anyway."""
+        return self._execute("DELETE FROM http_nonces WHERE expires_at <= %s", (now,))

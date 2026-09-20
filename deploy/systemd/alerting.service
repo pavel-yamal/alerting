@@ -44,7 +44,10 @@ EnvironmentFile=/etc/alerting/alerting.env
 # nothing else. The owner's DSN lives only in alerting-migrate.service.
 LoadCredential=dsn:/etc/alerting/credentials/dsn-app
 LoadCredential=server-key:/etc/alerting/credentials/server-key
-LoadCredential=api-key:/etc/alerting/credentials/api-key
+# There is no HTTP secret here any more. Callers sign each request with their own
+# key and the server checks it against the root-signed directory it already holds,
+# so there is nothing to deploy, nothing to rotate for everyone at once, and no way
+# to start this node with an open surface.
 
 # Refuse to start with a bad clock rather than rejecting clients later.
 ExecStartPre=/usr/bin/chronyc waitsync 30 0.1

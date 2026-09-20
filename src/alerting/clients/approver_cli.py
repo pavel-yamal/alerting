@@ -9,13 +9,13 @@ exact thing this design refuses to do.
 from __future__ import annotations
 
 import argparse
-import getpass
 import json
 import pathlib
 import sys
 from typing import Any
 
-from alerting.clients.keystore import DEFAULT_DIR, load_key
+from alerting.clients.keystore import DEFAULT_DIR, StoredKey
+from alerting.clients.session import open_api, unlock
 from alerting.clients.transport import Api
 from alerting.core.canonical import canonicalize
 from alerting.core.signing import DOMAIN_ORDER, b64u_encode, sign_payload
@@ -44,11 +44,7 @@ KNOWN_PAYLOAD_FIELDS = {
 }
 
 
-def _passphrase(args: argparse.Namespace) -> str:
-    return args.passphrase or getpass.getpass(f"Passphrase for {args.person}: ")
-
-
-def cmd_propose(args: argparse.Namespace, api: Api) -> int:
+def cmd_propose(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     audience: dict[str, list[str]] = {}
     if args.sites:
         audience["sites"] = args.sites
@@ -67,7 +63,6 @@ def cmd_propose(args: argparse.Namespace, api: Api) -> int:
             "audience": audience,
             "text": args.text,
             "ttl_s": args.ttl,
-            "created_by": args.person or "dispatcher",
         },
     )
     kind = "УЧЕНИЕ" if args.drill else "БОЕВОЕ"
@@ -78,7 +73,7 @@ def cmd_propose(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
-def cmd_show(args: argparse.Namespace, api: Api) -> int:
+def cmd_show(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     proposal = api.get(f"/v1/proposals/{args.order_id}")
     payload = proposal["payload"]
     print(f"proposal {args.order_id}  [{proposal['status']}]")
@@ -144,7 +139,7 @@ def show_payload(payload: dict[str, Any], derived: str) -> None:
         print(f"  !! НЕПОКАЗАННЫЕ ПОЛЯ: {sorted(unexpected)} — не подписывайте")
 
 
-def cmd_sign(args: argparse.Namespace, api: Api) -> int:
+def cmd_sign(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     proposal = api.get(f"/v1/proposals/{args.order_id}")
     payload = proposal["payload"]
 
@@ -158,7 +153,6 @@ def cmd_sign(args: argparse.Namespace, api: Api) -> int:
             print("not signed")
             return 1
 
-    stored = load_key(args.person, _passphrase(args), directory=args.home)
     result = api.post(
         f"/v1/proposals/{args.order_id}/signatures",
         {
@@ -177,7 +171,7 @@ def cmd_sign(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
-def cmd_cancel(args: argparse.Namespace, api: Api) -> int:
+def cmd_cancel(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     """Build a stand-down for an existing order and sign it in one step."""
     order = api.get(f"/v1/orders/{args.order_id}")
     payload = order["payload"]
@@ -193,15 +187,14 @@ def cmd_cancel(args: argparse.Namespace, api: Api) -> int:
             "audience": payload["audience"],
             "text": args.text or "Отбой",
             "cancels": args.order_id,
-            "created_by": args.person or "dispatcher",
         },
     )
     print(f"cancel proposal {proposal['order_id']} for {args.order_id}")
     args.order_id = proposal["order_id"]
-    return cmd_sign(args, api)
+    return cmd_sign(args, api, stored)
 
 
-def cmd_status(args: argparse.Namespace, api: Api) -> int:
+def cmd_status(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     status = api.get(f"/v1/orders/{args.order_id}/status")
     print(
         f"order {status['order_id']}  "
@@ -219,15 +212,31 @@ def cmd_status(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
+def cmd_publish_head(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
+    """Force an audit head now — the last step of a drill, per docs/06-runbook.md §7.
+
+    The route existed and had no caller at all: publishing a head needed a signed
+    request and there was no tool that could make one.
+    """
+    head = api.post("/v1/audit/head")
+    payload = head["payload"]
+    print(f"published head idx={payload['idx']}  ts={payload['ts']}")
+    print(f"  head : {payload['head']}")
+    print(f"  sig  : {head['signature'] or 'UNSIGNED — no server key configured'}")
+    print("\nSend this to the auditors. A head nobody outside holds proves nothing.")
+    return 0
+
+
 def common_parser() -> argparse.ArgumentParser:
     """Shared options, attached to each subcommand so they can follow it on the
     command line — which is how people actually type them."""
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--server", default="http://127.0.0.1:8080")
     shared.add_argument("--home", type=pathlib.Path, default=DEFAULT_DIR)
-    shared.add_argument("--person", default="", help="your person id")
+    shared.add_argument(
+        "--person", default="", help="your person id; required — every request is signed"
+    )
     shared.add_argument("--passphrase", help="key passphrase (prompted if omitted)")
-    shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
     return shared
 
 
@@ -270,14 +279,27 @@ def build_parser() -> argparse.ArgumentParser:
     status = sub.add_parser("status", parents=[shared], help="who has acknowledged")
     status.add_argument("order_id")
     status.set_defaults(func=cmd_status)
+
+    head = sub.add_parser(
+        "publish-head", parents=[shared], help="publish an audit head (end of a drill)"
+    )
+    head.set_defaults(func=cmd_publish_head)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    with Api(args.server, api_key=args.api_key) as api:
+    # The key is unlocked before the first request, not in the middle of a command.
+    # `cancel` makes four calls and used to ask for the passphrase after two of them
+    # had already gone out -- which, once every request is signed, is not an option.
+    try:
+        stored = unlock(args)
+    except FileNotFoundError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    with open_api(args, stored) as api:
         try:
-            result: int = args.func(args, api)
+            result: int = args.func(args, api, stored)
             return result
         except Exception as exc:
             print(f"error: {exc}", file=sys.stderr)

@@ -19,13 +19,13 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alerting.core.audit_chain import Event
+from alerting.core.clock import TRANSPORT_AUTH_WINDOW_S
 from alerting.core.envelope import Signature, SignedAck
 from alerting.core.receipts import verify_ack
 from alerting.core.signing import DOMAIN_DEVICE_AUTH, verify_signature
 
 router = APIRouter(tags=["stream"])
 
-AUTH_WINDOW_S = 60
 
 #: How long an unauthenticated socket may stay open. Without it, anyone could accept
 #: a socket and hold it indefinitely without ever proving who they are.
@@ -102,7 +102,11 @@ async def _authenticate(
     if payload.get("nonce") != nonce or payload.get("org_id") != app.state.org_id:
         await websocket.close(code=4401, reason="bad auth payload")
         return None
-    if abs(int(payload.get("at", 0)) - now) > AUTH_WINDOW_S:
+    # `int()` on an attacker-supplied value: a string or a list here used to raise out
+    # of the handler rather than close the socket. Everything in this frame is
+    # attacker-controlled, so every step of it has to answer "refused", not "crash".
+    at = payload.get("at")
+    if not isinstance(at, int) or isinstance(at, bool) or abs(at - now) > TRANSPORT_AUTH_WINDOW_S:
         await websocket.close(code=4401, reason="stale auth")
         return None
 

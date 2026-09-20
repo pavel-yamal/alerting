@@ -15,7 +15,7 @@ import sys
 from collections import Counter
 from typing import Any
 
-from alerting.clients.transport import Api
+from alerting.clients.keystore import DEFAULT_DIR
 from alerting.core.audit_chain import verify_chain
 from alerting.core.signing import (
     DOMAIN_AUDIT_HEAD,
@@ -46,7 +46,13 @@ def _load(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[int, str
         finally:
             pool.close()
 
-    with Api(args.server, api_key=args.api_key) as api:
+    # The only path that needs a key, and the only one that is not independent.
+    # `--file` and `--server` differ in exactly that: a pulled export can be checked
+    # on a machine the organisation does not run, which is the point of an auditor.
+    from alerting.clients.session import open_api, unlock
+
+    stored = unlock(args)
+    with open_api(args, stored) as api:
         entries: list[dict[str, Any]] = []
         while True:
             page = api.get("/v1/audit", from_idx=len(entries), limit=500)
@@ -101,8 +107,11 @@ def cmd_heads(args: argparse.Namespace) -> int:
         print(f"  idx {idx:>6}  {heads[idx]}")
 
     if args.server_key:
+        from alerting.clients.session import open_api, unlock
+
         public = public_key_from_b64u(args.server_key)
-        with Api(args.server, api_key=args.api_key) as api:
+        stored = unlock(args)
+        with open_api(args, stored) as api:
             head = api.get("/v1/audit/head")
         payload = {"idx": head["idx"], "head": head["head"], "ts": head["ts"]}
         ok = verify_signature(DOMAIN_AUDIT_HEAD, payload, head["signature"], public)
@@ -178,7 +187,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="read a PostgreSQL database directly (operator path; prefer --file)",
     )
     shared.add_argument("--file", help="read a previously pulled chain")
-    shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
+    # Needed only for `--server`: reading the chain over HTTP is a signed request like
+    # any other, made with the auditor's own key. `--file` and `--dsn` need neither.
+    shared.add_argument("--home", type=pathlib.Path, default=DEFAULT_DIR)
+    shared.add_argument("--person", default="", help="your person id, for --server")
+    shared.add_argument("--passphrase", help="key passphrase (prompted if omitted)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     pull = sub.add_parser("pull", parents=[shared], help="download the chain")

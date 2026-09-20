@@ -210,10 +210,11 @@ async def test_an_empty_database_is_live_but_not_ready(settings, clock, tmp_path
     from fastapi.testclient import TestClient
 
     from alerting.server.app import create_app
-    from tests.integration.conftest import API_KEY
 
+    # Signed or unsigned makes no difference here: liveness and readiness are the two
+    # routes the load balancer reaches without a key, and that is the point.
     app = create_app(settings, clock, start_escalation=False)
-    with TestClient(app, headers={"Alerting-Api-Key": API_KEY}) as test_client:
+    with TestClient(app) as test_client:
         assert test_client.get("/v1/healthz").json() == {"ok": True}
 
         response = test_client.get("/v1/readyz")

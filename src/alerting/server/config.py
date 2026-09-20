@@ -85,12 +85,6 @@ class Settings:
     #: it. Required for the demo and for tests; a production node must not set it.
     allow_stub_channels: bool = False
 
-    #: Shared secret for the interim ``Alerting-Api-Key`` gate, read from a file with
-    #: checked permissions. Empty means the HTTP surface is unauthenticated, which the
-    #: server refuses unless ``allow_unauthenticated`` is set.
-    api_key_file: str = ""
-    allow_unauthenticated: bool = False
-
     log_level: str = "INFO"
     log_json: bool = False
 
@@ -115,8 +109,6 @@ class Settings:
             node_id=os.environ.get("ALERTING_NODE_ID", "") or socket.gethostname(),
             heartbeat_interval_s=_env_float("ALERTING_HEARTBEAT_INTERVAL_S", 60.0),
             allow_stub_channels=_env_flag("ALERTING_ALLOW_STUB_CHANNELS"),
-            api_key_file=os.environ.get("ALERTING_API_KEY_FILE", ""),
-            allow_unauthenticated=_env_flag("ALERTING_ALLOW_UNAUTHENTICATED"),
             log_level=os.environ.get("ALERTING_LOG_LEVEL", "INFO"),
             log_json=_env_flag("ALERTING_LOG_JSON"),
         )
@@ -130,11 +122,6 @@ class Settings:
         if not self.server_key_file:
             return ""
         return read_secret_file(pathlib.Path(self.server_key_file), "server key")
-
-    def load_api_key(self) -> str:
-        if not self.api_key_file:
-            return ""
-        return read_secret_file(pathlib.Path(self.api_key_file), "API key")
 
     def load_dsn(self) -> str:
         """The connection string, from a file when one is configured.
