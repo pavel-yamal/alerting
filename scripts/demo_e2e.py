@@ -28,6 +28,7 @@ from alerting.core.signing import (
     DOMAIN_DIRECTORY,
     generate_keypair,
     key_id,
+    private_key_to_b64u,
     public_key_to_b64u,
 )
 from alerting.core.signing import (
@@ -64,6 +65,8 @@ async def main() -> int:
         heads_dir=tmp / "heads",
         spool_dir=tmp / "spool",
     )
+    server_private, _ = generate_keypair()
+    settings.server_private_key = private_key_to_b64u(server_private)
     services = AppServices(settings, clock)
     publish_org(services.repo, org, audit=services.audit)
 

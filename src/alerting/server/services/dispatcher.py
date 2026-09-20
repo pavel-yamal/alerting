@@ -40,6 +40,13 @@ class DispatchResult:
     receipts: list[DeliveryReceipt]
     recipients: list[str]
 
+    #: True when a correctly signed order resolved to nobody. The order is still
+    #: recorded — it was validly approved — but this is never reported as an ordinary
+    #: success: a valid emergency order that reaches zero people is the exact failure
+    #: this system exists to prevent, and silence is indistinguishable from no
+    #: emergency. The operator has to see it immediately.
+    reached_nobody: bool = False
+
     @property
     def accepted(self) -> bool:
         return self.decision.accepted
@@ -90,7 +97,11 @@ class Dispatcher:
             if entry is not None
         ]
         spread = evaluate_quorum(
-            entries, rule, issued_at=decision.payload.issued_at, observed_at=observed_at
+            entries,
+            rule,
+            issued_at=decision.payload.issued_at,
+            approver_roles=self.state.policy().approver_roles,
+            observed_at=observed_at,
         )
         if spread.met:
             return decision
@@ -175,6 +186,25 @@ class Dispatcher:
         )
 
         recipients = self.state.recipients_for(order)
+        if not recipients:
+            # Degrading closed here would lose nothing (there is nobody to warn), but
+            # returning a bare success would hide it. Record it loudly instead.
+            log.error(
+                "ORDER %s RESOLVED TO NOBODY — audience %s matches no active contact",
+                order.order_id,
+                order.audience.model_dump(mode="json"),
+            )
+            self.audit.append(
+                Event.DISPATCH_NO_RECIPIENTS,
+                {
+                    "order_id": order.order_id,
+                    "scenario": order.scenario,
+                    "drill": order.drill,
+                    "audience": order.audience.model_dump(mode="json"),
+                },
+            )
+            return DispatchResult(decision, [], [], reached_nobody=True)
+
         receipts = await self.fan_out(order, envelope, recipients, channels)
         return DispatchResult(decision, receipts, [r.person_id for r in recipients])
 

@@ -77,7 +77,12 @@ class Org:
         return [p for p in self.people.values() if p.role == "executor"]
 
 
-_APPROVER_ROLES = {"director", "deputy", "duty_officer"}
+#: Roles that may approve orders. Executors are deliberately absent: their device
+#: keys exist to sign ACKs, and counting them toward a quorum would let two executors
+#: launch a critical evacuation.
+APPROVER_ROLES: tuple[str, ...] = ("director", "deputy", "duty_officer")
+
+_APPROVER_ROLES = frozenset(APPROVER_ROLES)
 
 #: The codebook. The scenario code is the actionable unit; free text is advisory.
 DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
@@ -176,6 +181,7 @@ def build_org(
         version=policy_version,
         issued_at=issued_at,
         not_valid_after=issued_at + policy_ttl_s,
+        approver_roles=APPROVER_ROLES,
         severities=dict(DEFAULT_SEVERITIES),
         scenarios=dict(DEFAULT_SCENARIOS),
     )

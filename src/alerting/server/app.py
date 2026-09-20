@@ -12,7 +12,7 @@ import yaml
 from fastapi import FastAPI
 
 from alerting.core.clock import Clock, SystemClock
-from alerting.core.signing import public_key_from_b64u
+from alerting.core.signing import private_key_from_b64u, public_key_from_b64u
 from alerting.server.api import meta, orders, proposals, ws
 from alerting.server.channels.registry import default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
@@ -54,9 +54,21 @@ class AppServices:
         )
         self.connections = ConnectionRegistry()
         self.channels = default_registry(self.connections, settings.org_label)
+        server_key = (
+            private_key_from_b64u(settings.server_private_key)
+            if settings.server_private_key
+            else None
+        )
+        if server_key is None:
+            log.warning(
+                "no ALERTING_SERVER_KEY configured: audit heads will be published "
+                "UNSIGNED, so they cannot be verified and give no tamper-evidence "
+                "against anyone who can rewrite the database"
+            )
         self.audit = AuditService(
             self.repo,
             self.clock,
+            server_key=server_key,
             spool_dir=settings.spool_dir,
             heads_dir=settings.heads_dir,
         )

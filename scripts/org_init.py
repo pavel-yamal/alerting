@@ -18,6 +18,7 @@ from alerting.clients.bundles import PinnedOrg
 from alerting.clients.keystore import save_key
 from alerting.core.clock import SystemClock
 from alerting.core.signing import (
+    generate_keypair,
     private_key_to_b64u,
     public_key_to_b64u,
 )
@@ -48,7 +49,12 @@ def main() -> int:
     connection = connect(str(db_path))
     migrate(connection)
     repo = Repo(connection)
-    audit = AuditService(repo, clock)
+
+    # A separate server key signs published audit heads. Without it every head carries
+    # an empty signature and gives no tamper-evidence against whoever can rewrite the
+    # database — which is the whole point of publishing heads.
+    server_private, server_public = generate_keypair()
+    audit = AuditService(repo, clock, server_key=server_private)
     publish_org(repo, org, audit=audit)
 
     root_pub = public_key_to_b64u(org.root_public_key)
@@ -63,6 +69,10 @@ def main() -> int:
         )
         PinnedOrg(args.org, root_pub, home).save()
         (home / "wake_key.hex").write_text(person.wake_key.hex(), encoding="utf-8")
+
+    server_key_path = pathlib.Path("var/server-key.SECRET")
+    server_key_path.write_text(private_key_to_b64u(server_private), encoding="utf-8")
+    server_key_path.chmod(0o600)
 
     root_path = pathlib.Path("var/root-key.SECRET")
     root_path.write_text(private_key_to_b64u(org.root_private_key), encoding="utf-8")
@@ -83,8 +93,15 @@ def main() -> int:
     print("\n  wake keys: one per person, written to <home>/wake_key.hex.")
     print("  Each executor's SMS code is derived from their own key, so intercepting")
     print("  one person's message says nothing about anyone else's code.")
+    print(
+        f"\n  AUDIT HEAD SIGNING KEY (public, for the auditor):"
+        f"\n    {public_key_to_b64u(server_public)}"
+    )
+    print(f"  private half in {server_key_path}")
+
     print("\nstart the server with:")
     print(f"  ALERTING_ROOT_PUBKEY={root_pub} \\")
+    print(f"  ALERTING_SERVER_KEY=$(cat {server_key_path}) \\")
     print(f"  ALERTING_DB={db_path} ALERTING_ORG={args.org} make serve")
     connection.close()
     return 0

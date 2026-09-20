@@ -128,3 +128,60 @@ def test_key_file_never_contains_the_private_key_in_the_clear(tmp_path):
 def test_missing_key_file_is_a_clear_error(tmp_path):
     with pytest.raises(FileNotFoundError, match="no key for"):
         load_key("nobody", "pass", directory=tmp_path)
+
+
+def test_reinspecting_an_order_the_device_already_holds_is_not_a_replay(cache, org):
+    """The SMS wake-code check runs *after* the listener received the order.
+
+    Judging that local re-inspection as a duplicate made the anti-phishing comparison
+    unavailable in exactly the flow it exists for. Reported by an automated review on
+    PR #1.
+    """
+    from alerting.clients.executor_cli import verify_one
+    from alerting.core.errors import Reason
+    from alerting.orgkit import make_order, sign_order
+
+    cache.accept("directory", org.directory_bundle)
+    cache.accept("policy", org.policy_bundle)
+
+    order = make_order(org, issued_at=ISSUED_AT)
+    envelope = sign_order(order, [org.person("p-001"), org.person("p-002")]).model_dump(mode="json")
+
+    class _Clock:
+        def now(self) -> int:
+            return ISSUED_AT + 10
+
+    import alerting.clients.executor_cli as cli
+
+    original, cli.CLOCK = cli.CLOCK, _Clock()
+    try:
+        first = verify_one(cache, envelope)
+        assert first.accepted, first.reasons
+
+        # As delivery, the same envelope is now correctly a replay...
+        again = verify_one(cache, envelope)
+        assert again.rejected
+        assert Reason.DUPLICATE_ORDER_ID in again.reasons
+
+        # ...but re-inspecting what we already hold must still verify.
+        reinspected = verify_one(cache, envelope, reinspect=True)
+        assert reinspected.accepted, reinspected.reasons
+        assert reinspected.payload is not None
+        assert reinspected.payload.order_id == order.order_id
+    finally:
+        cli.CLOCK = original
+
+
+def test_reinspection_leaves_replay_state_untouched(cache, org):
+    from alerting.clients.executor_cli import verify_one
+    from alerting.orgkit import make_order, sign_order
+
+    cache.accept("directory", org.directory_bundle)
+    cache.accept("policy", org.policy_bundle)
+    order = make_order(org, issued_at=ISSUED_AT)
+    envelope = sign_order(order, [org.person("p-001"), org.person("p-002")]).model_dump(mode="json")
+
+    before = cache.replay_window().state()
+    verify_one(cache, envelope, reinspect=True)
+    assert cache.replay_window().state() == before
+    assert order.order_id not in cache.seen_order_ids()

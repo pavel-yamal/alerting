@@ -208,14 +208,38 @@ class Repo:
             self.db.execute("SELECT * FROM acks WHERE order_id = ? ORDER BY at", (order_id,))
         )
 
+    #: Statuses that do NOT mean the order is being handled by that person.
+    #:
+    #: ``received`` is emitted by the device, not a human. ``cannot_comply`` is the
+    #: one that is easy to get wrong: it is a *refusal*, and treating it as handled
+    #: would retire that person from the outstanding set and stop the ladder exactly
+    #: at the duty-officer, alternate-group and siren rungs that exist to reassign
+    #: their task. A refusal has to keep escalation alive, not end it.
+    UNHANDLED_ACK_STATUSES = ("received", "cannot_comply")
+
     def acknowledged_person_ids(self, order_id: str) -> set[str]:
-        """Only *valid* acks count. An invalid one means somebody is impersonating an
-        executor, which is worse than silence and must not stop escalation."""
+        """People whose order is genuinely being dealt with.
+
+        Only *valid* acks count: an invalid one means somebody is impersonating an
+        executor, which is worse than silence and must not stop escalation.
+        """
+        placeholders = ",".join("?" * len(self.UNHANDLED_ACK_STATUSES))
         return {
             row["person_id"]
             for row in self.db.execute(
                 "SELECT person_id FROM acks WHERE order_id = ? AND valid = 1"
-                " AND status <> 'received'",
+                f" AND status NOT IN ({placeholders})",
+                (order_id, *self.UNHANDLED_ACK_STATUSES),
+            )
+        }
+
+    def refused_person_ids(self, order_id: str) -> set[str]:
+        """People who reported they cannot comply — the reassignment list."""
+        return {
+            row["person_id"]
+            for row in self.db.execute(
+                "SELECT person_id FROM acks WHERE order_id = ? AND valid = 1"
+                " AND status = 'cannot_comply'",
                 (order_id,),
             )
         }

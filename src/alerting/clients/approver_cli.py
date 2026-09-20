@@ -13,11 +13,35 @@ import getpass
 import json
 import pathlib
 import sys
+from typing import Any
 
 from alerting.clients.keystore import DEFAULT_DIR, load_key
 from alerting.clients.transport import Api
 from alerting.core.canonical import canonicalize
 from alerting.core.signing import DOMAIN_ORDER, b64u_encode, sign_payload
+
+#: Every field cmd_sign renders. Anything outside this set is surfaced as unshown.
+KNOWN_PAYLOAD_FIELDS = {
+    "v",
+    "type",
+    "order_id",
+    "org_id",
+    "stream_id",
+    "seq",
+    "nonce",
+    "issued_at",
+    "not_valid_after",
+    "severity",
+    "drill",
+    "scenario",
+    "action",
+    "audience",
+    "text",
+    "requires_ack",
+    "ack_deadline_s",
+    "policy_id",
+    "cancels",
+}
 
 
 def _passphrase(args: argparse.Namespace) -> str:
@@ -72,6 +96,54 @@ def cmd_show(args: argparse.Namespace, api: Api) -> int:
     return 0
 
 
+def show_payload(payload: dict[str, Any], derived: str) -> None:
+    """Print every field the signature will cover.
+
+    Recomputing the canonical bytes proves we signed *these* bytes; it says nothing
+    about whether the approver saw what is in them. A compromised server that widened
+    the audience or flipped START to STOP would still get a correct signature over its
+    own content unless the human is shown all of it. So everything actionable is
+    printed here, not just the headline.
+    """
+    kind = "УЧЕНИЕ" if payload["drill"] else "БОЕВОЕ"
+    audience = payload.get("audience", {})
+    targets = ", ".join(
+        f"{label}: {', '.join(values)}"
+        for label, values in (
+            ("площадки", audience.get("sites") or []),
+            ("группы", audience.get("groups") or []),
+            ("лично", audience.get("persons") or []),
+        )
+        if values
+    )
+    window = payload["not_valid_after"] - payload["issued_at"]
+
+    print("\nВЫ ПОДПИСЫВАЕТЕ:")
+    print(f"  режим      : {kind}")
+    print(f"  сценарий   : {payload['scenario']}")
+    print(f"  важность   : {payload['severity']}")
+    print(f"  действие   : {payload['action']}")
+    print(f"  аудитория  : {targets or '(ПУСТО — приказ не дойдёт ни до кого)'}")
+    print(f"  действует  : {window} с (до {payload['not_valid_after']})")
+    print(f"  поток/номер: {payload['stream_id']}#{payload['seq']}")
+    print(
+        f"  подтвержд. : {'требуется' if payload.get('requires_ack') else 'не требуется'}"
+        f", срок {payload.get('ack_deadline_s')} с"
+    )
+    if payload.get("cancels"):
+        print(f"  ОТМЕНЯЕТ   : {payload['cancels']}")
+    if payload.get("text"):
+        print(f"  текст      : {payload['text']}")
+    print(f"  организация: {payload['org_id']}   политика: {payload['policy_id']}")
+    print(f"  подписываемые байты: {derived[:32]}…")
+
+    unexpected = set(payload) - KNOWN_PAYLOAD_FIELDS
+    if unexpected:
+        # Belt and braces: if the protocol ever grows a field, the approver is told
+        # rather than silently signing something this prompt does not render.
+        print(f"  !! НЕПОКАЗАННЫЕ ПОЛЯ: {sorted(unexpected)} — не подписывайте")
+
+
 def cmd_sign(args: argparse.Namespace, api: Api) -> int:
     proposal = api.get(f"/v1/proposals/{args.order_id}")
     payload = proposal["payload"]
@@ -79,14 +151,7 @@ def cmd_sign(args: argparse.Namespace, api: Api) -> int:
     # Re-derive the bytes ourselves. Never sign what the server tells us to sign.
     derived = b64u_encode(DOMAIN_ORDER + canonicalize(payload))
 
-    print(
-        f"You are about to sign:\n"
-        f"  {'УЧЕНИЕ' if payload['drill'] else 'БОЕВОЕ'}  {payload['scenario']}"
-        f"  severity={payload['severity']}"
-    )
-    if payload.get("text"):
-        print(f"  {payload['text']}")
-    print(f"  signing input: {derived[:32]}…")
+    show_payload(payload, derived)
     if not args.yes:
         confirm = input("Sign? [y/N] ").strip().lower()
         if confirm != "y":

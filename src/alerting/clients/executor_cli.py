@@ -26,6 +26,7 @@ from alerting.core.clock import SystemClock
 from alerting.core.envelope import AckStatus, OrderPayload, SignedEnvelope
 from alerting.core.errors import Reason
 from alerting.core.receipts import build_ack
+from alerting.core.replay import ReplayWindow
 from alerting.core.signing import (
     DOMAIN_DEVICE_AUTH,
     generate_keypair,
@@ -113,18 +114,35 @@ def render(decision: Decision, payload: dict[str, Any]) -> None:
     print()
 
 
-def verify_one(cache: BundleCache, envelope: dict[str, Any], cancel_target=None) -> Decision:
+def verify_one(
+    cache: BundleCache,
+    envelope: dict[str, Any],
+    cancel_target=None,
+    *,
+    reinspect: bool = False,
+) -> Decision:
+    """Verify an envelope; record it as seen unless this is a re-inspection.
+
+    ``reinspect`` exists for looking at an order the device already holds — checking
+    the SMS wake words against it, or re-reading it. That is a local action, not a new
+    delivery, so it must not be judged as a replay: the anti-phishing comparison is
+    needed most in the ordinary flow where the listener already received the order,
+    and treating it as a duplicate would make the check unavailable exactly then.
+    Replay state is left untouched in that mode.
+    """
     window = cache.replay_window()
     decision = verify_envelope(
         SignedEnvelope.model_validate(envelope),
         directory=cache.directory(),
         policy=cache.policy(),
         clock=CLOCK,
-        replay=window,
+        replay=ReplayWindow() if reinspect else window,
         org_id=cache.pin.org_id,
-        seen_order_ids=cache.seen_order_ids(),
+        seen_order_ids=() if reinspect else cache.seen_order_ids(),
         cancel_target=cancel_target,
     )
+    if reinspect:
+        return decision
     if decision.accepted and decision.payload is not None:
         window.commit(decision.payload.stream_id, decision.payload.seq)
         cache.save_replay(window)
@@ -160,7 +178,8 @@ def cmd_check_code(args: argparse.Namespace, api: Api) -> int:
         args.passphrase or getpass.getpass("Passphrase: "),
         directory=args.home,
     )
-    decision = verify_one(cache, envelope)
+    # Re-inspection: this order may already have arrived over the listener.
+    decision = verify_one(cache, envelope, reinspect=True)
     if decision.rejected:
         render(decision, envelope["payload"])
         return 1

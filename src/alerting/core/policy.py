@@ -11,7 +11,7 @@ from typing import Any, Literal
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import Field, StrictBool, StrictInt, StrictStr
 
-from alerting.core.envelope import CanonicalModel, Identifier, Severity
+from alerting.core.envelope import CanonicalModel, Identifier, Seq, Severity
 from alerting.core.errors import Reason
 from alerting.core.signing import DOMAIN_POLICY, verify_signature
 
@@ -51,6 +51,17 @@ class PolicyPayload(CanonicalModel):
     version: StrictInt = Field(ge=1)
     issued_at: StrictInt = Field(ge=0)
     not_valid_after: StrictInt = Field(ge=0)
+
+    #: Roles whose signatures may count toward a quorum. REQUIRED and with no default,
+    #: for the same reason ``drill`` has none: a policy that does not say who may
+    #: approve must be unusable, not permissive.
+    #:
+    #: Without this, every key in the directory counted — and the directory also holds
+    #: executors' device keys, which exist only to sign ACKs. Two executors could
+    #: launch a critical evacuation and one could stand it down, silently contradicting
+    #: the separation documented in docs/02-trust-and-approval.md.
+    approver_roles: Seq[Identifier] = Field(min_length=1)
+
     severities: dict[Severity, SeverityRules]
     scenarios: dict[str, ScenarioRule]
 
@@ -64,6 +75,12 @@ class Policy:
     @property
     def policy_id(self) -> str:
         return self.payload.policy_id
+
+    @property
+    def approver_roles(self) -> frozenset[str]:
+        """Roles allowed to satisfy a quorum. Root-signed, so a compromised server
+        cannot widen it."""
+        return frozenset(self.payload.approver_roles)
 
     @property
     def version(self) -> int:

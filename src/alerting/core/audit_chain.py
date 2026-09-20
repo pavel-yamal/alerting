@@ -34,6 +34,7 @@ class Event(StrEnum):
     PROPOSAL_SIGNED = "proposal.signed"
     QUORUM_MET = "quorum.met"
     ORDER_DISPATCHED = "order.dispatched"
+    DISPATCH_NO_RECIPIENTS = "dispatch.no_recipients"
     CHANNEL_ATTEMPTED = "channel.attempted"
     CHANNEL_RECEIPT = "channel.receipt"
     ACK_RECEIVED = "ack.received"

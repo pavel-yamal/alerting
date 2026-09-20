@@ -34,7 +34,11 @@ class ProposalRequest(BaseModel):
     severity: Severity
     drill: bool  # required here too: no default anywhere in the stack
     action: Action = Action.START
-    audience: Audience = Audience()
+
+    #: Required, with no empty default. An order addressed to nobody is an operator
+    #: error, and it has to be caught here — before approvers spend signatures on it —
+    #: rather than surfacing as a successfully dispatched no-op.
+    audience: Audience
     text: str = ""
     ttl_s: int = Field(default=900, ge=60, le=86400)
     stream_id: str = "primary"
@@ -52,6 +56,8 @@ class SignatureRequest(BaseModel):
 @router.post("")
 async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, Any]:
     app = request.app.state.alerting
+    if body.audience.is_empty():
+        raise HTTPException(422, "audience is empty: this order would reach nobody")
     now = app.clock.now()
     seq = app.repo.next_seq(body.stream_id)
     policy = app.state.policy()
@@ -156,10 +162,16 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
 
     result = await app.dispatcher.dispatch(envelope, observed_at=observed)
     app.repo.set_proposal_status(order_id, "dispatched")
+    warnings = [str(w) for w in decision.warnings]
+    if result.reached_nobody:
+        warnings.append("reached_nobody")
     return {
         "order_id": order_id,
         "dispatched": result.accepted,
         "signatures": len(stored),
         "recipients": result.recipients,
-        "warnings": [str(w) for w in decision.warnings],
+        # Never let "quorum met" alone read as success: a validly approved order that
+        # matched no active contact is the failure this system exists to prevent.
+        "reached_nobody": result.reached_nobody,
+        "warnings": warnings,
     }

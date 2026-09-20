@@ -9,6 +9,18 @@ policy_id: "demo-policy-2026-01"
 org_id: "acme"
 version: 1
 
+# Roles whose signatures may count toward a quorum. REQUIRED, with no default, for the
+# same reason the drill flag has none: a policy that does not say who may approve must
+# be unusable, not permissive.
+#
+# Executors are deliberately absent. Their device keys are in the same directory, but
+# they exist only to sign acknowledgements — counting them would let two executors
+# launch a critical evacuation and one stand it down.
+approver_roles:
+  - director
+  - deputy
+  - duty_officer
+
 severities:
   info:
     launch: {m: 1}

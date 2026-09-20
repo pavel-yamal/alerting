@@ -150,7 +150,12 @@ def verify_envelope(
     if rule is None:
         reasons.append(Reason.QUORUM_NOT_MET)
     else:
-        quorum = evaluate_quorum(valid_entries, rule, issued_at=payload.issued_at)
+        quorum = evaluate_quorum(
+            valid_entries,
+            rule,
+            issued_at=payload.issued_at,
+            approver_roles=policy.approver_roles,
+        )
         if not quorum.met:
             reasons.extend(quorum.reasons)
 
@@ -192,13 +197,30 @@ def verify_envelope(
             reasons.append(Reason.SEVERITY_ABOVE_SCENARIO_MAXIMUM)
 
     deduped = tuple(dict.fromkeys(reasons))
+
+    # Report who actually *counted*, not merely who produced a verifiable signature.
+    # The executor client prints this as "подписали:", and listing someone whose role
+    # may not approve would tell the reader an executor authorised the order.
+    if quorum is not None:
+        counted_keys = quorum.signer_key_ids
+        counted_persons = quorum.signer_person_ids
+    else:
+        counted_keys = tuple(entry.key_id for entry in valid_entries)
+        counted_persons = tuple(dict.fromkeys(e.person_id for e in valid_entries))
+
     return Decision(
         accepted=not deduped,
         reasons=deduped,
         warnings=tuple(dict.fromkeys(warnings)),
-        valid_signers=tuple(entry.key_id for entry in valid_entries),
-        signer_persons=tuple(dict.fromkeys(e.person_id for e in valid_entries)),
+        valid_signers=counted_keys,
+        signer_persons=counted_persons,
         is_drill=payload.drill,
         payload=payload,
         quorum=quorum,
+        detail={
+            # Signatures that verified but whose role may not approve.
+            "verified_but_not_counted": tuple(
+                entry.key_id for entry in valid_entries if entry.key_id not in counted_keys
+            )
+        },
     )
