@@ -64,6 +64,9 @@ async def main() -> int:
         root_public_key=public_key_to_b64u(org.root_public_key),
         heads_dir=tmp / "heads",
         spool_dir=tmp / "spool",
+        # This is a demo: push, SMS, voice and the siren have no providers behind them.
+        # Saying so out loud is what the startup guard is for.
+        allow_stub_channels=True,
     )
     server_private, _ = generate_keypair()
     settings.server_private_key = private_key_to_b64u(server_private)

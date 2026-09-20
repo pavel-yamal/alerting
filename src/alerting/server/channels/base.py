@@ -23,7 +23,23 @@ from typing import Any, Literal, Protocol
 
 from alerting.core.envelope import OrderPayload
 
-DeliveryStatus = Literal["sent", "failed", "queued", "refused"]
+#: ``stub`` is the load-bearing addition. An adapter with no provider behind it used
+#: to return ``sent``, so the ACK dashboard and the escalation ladder both believed
+#: delivery had succeeded — a lie at the exact moment the truth matters most. A stub
+#: now says so, and it never counts as delivered anywhere.
+DeliveryStatus = Literal["sent", "failed", "queued", "refused", "stub"]
+
+#: Statuses that mean something actually left the machine.
+DELIVERED_STATUSES: frozenset[str] = frozenset({"sent", "queued"})
+
+
+class NoWakeCode(RuntimeError):
+    """This recipient's wake code cannot be derived, so nothing may be sent.
+
+    Lives here rather than in one adapter because SMS and voice both depend on it and
+    both must refuse for the same reason: the training line is "a genuine message
+    always carries your code", and a codeless message makes that line false.
+    """
 
 
 @dataclass(frozen=True)

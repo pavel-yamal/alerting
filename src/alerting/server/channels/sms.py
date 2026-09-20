@@ -25,6 +25,7 @@ from alerting.core.wordcode import bucket_for, wake_code
 from alerting.server.channels.base import (
     DeliveryReceipt,
     DispatchContext,
+    NoWakeCode,
     Recipient,
     mask_phone,
 )
@@ -46,24 +47,35 @@ DRILL_TEMPLATE = (
 class SmsChannel:
     name = "sms"
 
+    #: No gateway behind ``_transmit`` yet. Flip to True in the subclass or wiring
+    #: that implements a real provider.
+    delivers = False
+
     def __init__(self, org_label: str = "ACME") -> None:
         self.org_label = org_label
         self.sent: list[tuple[str, str]] = []  # (phone, text) — inspected by tests
 
     def render(self, recipient: Recipient, context: DispatchContext) -> str:
-        """Build the message. Deliberately contains no scenario, no severity, no text."""
+        """Build the message. Deliberately contains no scenario, no severity, no text.
+
+        Raises:
+            NoWakeCode: when this recipient's code cannot be derived. Callers must let
+                this propagate into a failed receipt rather than sending anything.
+        """
         order = context.order
-        code = "—"
-        if recipient.wake_key and context.wordlist:
-            code = "-".join(
-                wake_code(
-                    recipient.wake_key,
-                    org_id=order.org_id,
-                    order_id=order.order_id,
-                    bucket=bucket_for(order.issued_at),
-                    wordlist=context.wordlist,
-                )
+        if not recipient.wake_key or not context.wordlist:
+            raise NoWakeCode(
+                "no wake key for this person" if not recipient.wake_key else "wordlist not loaded"
             )
+        code = "-".join(
+            wake_code(
+                recipient.wake_key,
+                org_id=order.org_id,
+                order_id=order.order_id,
+                bucket=bucket_for(order.issued_at),
+                wordlist=context.wordlist,
+            )
+        )
         template = DRILL_TEMPLATE if order.drill else TEMPLATE
         minute = order.issued_at % 86400 // 60
         return template.format(
@@ -73,14 +85,33 @@ class SmsChannel:
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         if not recipient.phone:
             return DeliveryReceipt(self.name, recipient.person_id, "failed", "no phone")
-        text = self.render(recipient, context)
+        try:
+            text = self.render(recipient, context)
+        except NoWakeCode as exc:
+            # Never send a codeless message. The training line is "a genuine message
+            # always carries your code"; sending one without teaches people to accept
+            # codeless SMS, which is exactly the phishing hole the code exists to close.
+            log.error(
+                "SMS NOT SENT to %s: %s — a codeless message would falsify the training",
+                mask_phone(recipient.phone),
+                exc,
+            )
+            return DeliveryReceipt(self.name, recipient.person_id, "failed", f"no wake code: {exc}")
         await self._transmit(recipient.phone, text)
         return DeliveryReceipt(
-            self.name, recipient.person_id, "sent", "stub provider", rendered=text
+            self.name,
+            recipient.person_id,
+            "sent" if self.delivers else "stub",
+            "delivered" if self.delivers else "no provider configured",
+            rendered=text,
         )
 
     async def _transmit(self, phone: str, text: str) -> None:
         """Replace with a real gateway. Kept separate so tests can assert on content."""
         self.sent.append((phone, text))
-        # The number is masked: these logs are less protected than the database.
-        log.info("SMS -> %s: %s", mask_phone(phone), text.replace("\n", " | "))
+        # Neither the number nor the body goes to the log. The number is personal data
+        # and the wake code IS the secret that authenticates the message — and these
+        # logs are, as this module's own comment says, less protected than the
+        # database. The body stays on the receipt, which is where tests and the audit
+        # trail read it from.
+        log.info("SMS -> %s (%d chars)", mask_phone(phone), len(text))

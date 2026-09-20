@@ -68,9 +68,10 @@ class ConnectionRegistry:
 
 
 class WebSocketChannel:
-    """Carries the complete signed envelope."""
+    """Carries the complete signed envelope. The only adapter that really delivers."""
 
     name = "ws"
+    delivers = True
 
     def __init__(self, registry: ConnectionRegistry) -> None:
         self.registry = registry

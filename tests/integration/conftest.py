@@ -37,6 +37,9 @@ def settings(tmp_path: pathlib.Path, org: Org) -> Settings:
         spool_dir=tmp_path / "spool",
         wordlist_path="config/wordlist.ru.txt",
         drill_enabled_sites=frozenset(),
+        # The tests exercise the stub adapters on purpose, so they opt in explicitly —
+        # the same way a demo node has to. A production node must not set this.
+        allow_stub_channels=True,
     )
 
 

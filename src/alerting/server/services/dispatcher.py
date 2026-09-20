@@ -12,6 +12,7 @@ timing evidence is when the server observed each signature arrive.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +24,12 @@ from alerting.core.quorum import evaluate_quorum
 from alerting.core.replay import ReplayWindow
 from alerting.core.signing import payload_digest
 from alerting.core.verify import Decision, verify_envelope
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import (
+    DELIVERED_STATUSES,
+    DeliveryReceipt,
+    DispatchContext,
+    Recipient,
+)
 from alerting.server.channels.registry import ChannelRegistry
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
@@ -273,6 +279,11 @@ class Dispatcher:
                 {
                     "person_id": person_id,
                     "channels_attempted": channels,
+                    # True only if something actually left the machine for this person.
+                    # A "stub" attempt is not delivery, and must not read like one.
+                    "delivered": any(
+                        entry.split(":", 1)[1] in DELIVERED_STATUSES for entry in channels
+                    ),
                     "ack_status": ack["status"] if ack else None,
                     "ack_at": ack["at"] if ack else None,
                     # Shown prominently: an invalid ACK means somebody is
@@ -281,6 +292,7 @@ class Dispatcher:
                 }
             )
         valid = self.repo.acknowledged_person_ids(order_id)
+        by_status = Counter(row["status"] for row in self.repo.dispatches(order_id))
         return {
             "order_id": order_id,
             "drill": bool(row["drill"]),
@@ -290,6 +302,11 @@ class Dispatcher:
             "people": people,
             "acknowledged": len(valid),
             "outstanding": [p["person_id"] for p in people if p["person_id"] not in valid],
+            "delivery": dict(by_status),
+            # Counted and surfaced separately: these attempts sent nothing at all, and
+            # an operator reading a green dashboard has to be able to see that.
+            "stub_attempts": by_status.get("stub", 0),
+            "reached_nobody": not people,
         }
 
 

@@ -32,9 +32,16 @@ MIN_INTERVAL_S = 30
 
 
 class SirenChannel:
-    """Site-scoped: one activation per site, not per person."""
+    """Site-scoped: one activation per site, not per person.
+
+    Only the actuation is stubbed. The drill guard, the per-order dedupe and the rate
+    limit below are real logic and run for every dispatch.
+    """
 
     name = "siren"
+
+    #: No relay or PA driver behind the activation yet.
+    delivers = False
 
     def __init__(self) -> None:
         self.activations: list[tuple[str, str, str]] = []  # (site, pattern, order_id)
@@ -46,7 +53,12 @@ class SirenChannel:
         site = recipient.site or "unknown"
 
         if (site, order.order_id) in self._fired_for_order:
-            return DeliveryReceipt(self.name, recipient.person_id, "sent", "already sounded")
+            return DeliveryReceipt(
+                self.name,
+                recipient.person_id,
+                "sent" if self.delivers else "stub",
+                "already sounded for this order",
+            )
 
         if order.drill:
             if site not in context.drill_enabled_sites:
@@ -71,5 +83,9 @@ class SirenChannel:
         self.activations.append((site, pattern, order.order_id))
         log.info("SIREN %s at %s for %s", pattern, site, order.order_id)
         return DeliveryReceipt(
-            self.name, recipient.person_id, "sent", f"site={site}", rendered=pattern
+            self.name,
+            recipient.person_id,
+            "sent" if self.delivers else "stub",
+            f"site={site}" if self.delivers else f"site={site}, no relay configured",
+            rendered=pattern,
         )
