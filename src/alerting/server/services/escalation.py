@@ -255,12 +255,32 @@ class EscalationWorker:
             return
         self._stopping.set()
         try:
+            if self._task.done():
+                # Already finished, or cancelled by something else. There is nothing
+                # to drain, and awaiting a cancelled task here would raise
+                # CancelledError out of the whole shutdown -- which is a BaseException
+                # and so passes straight through the caller's `suppress(Exception)`,
+                # skipping the final audit head and leaving the pool open. Collect the
+                # outcome instead, so it is not reported as never retrieved.
+                with contextlib.suppress(BaseException):
+                    self._task.result()
+                return
             await asyncio.wait_for(self._task, drain_timeout)
         except TimeoutError:
             log.warning("escalation tick did not finish in %ss; cancelling", drain_timeout)
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+        except asyncio.CancelledError:
+            # The worker was cancelled while we waited. Re-raise only if *we* are the
+            # ones being cancelled -- swallowing that would break the caller's own
+            # cancellation. `cancelling()` is the sanctioned way to tell the two
+            # apart; the task's own `cancelled()` flag cannot, because `wait_for`
+            # cancels it in both cases.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+            log.warning("escalation worker was cancelled during shutdown")
         finally:
             self._task = None
             self._started = False

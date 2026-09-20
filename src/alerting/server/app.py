@@ -131,19 +131,29 @@ class AppServices:
         3. Publish a final audit head, so the entries since the last one are covered
            instead of waiting for the next start.
         4. Only now close the pool.
+
+        Steps 3 and 4 are in a ``finally``: they are the two that must happen even
+        when the shutdown is itself cancelled.
         """
-        with contextlib.suppress(Exception):
-            closed = await self.connections.close_all()
-            if closed:
-                log.info("closed %d executor socket(s) for restart", closed)
+        try:
+            with contextlib.suppress(Exception):
+                closed = await self.connections.close_all()
+                if closed:
+                    log.info("closed %d executor socket(s) for restart", closed)
 
-        with contextlib.suppress(Exception):
-            await self.escalation.stop()
+            with contextlib.suppress(Exception):
+                await self.escalation.stop()
+        finally:
+            # Steps 3 and 4 run even if the shutdown itself is cancelled. Both of the
+            # awaits above can raise CancelledError, which is a BaseException and so
+            # passes through `suppress(Exception)` untouched -- and skipping these two
+            # is expensive in a specific way: an unpublished head is exactly the window
+            # in which a rewritten tail cannot be detected, and a leaked pool outlives
+            # a node whose unit restarts it forever by design.
+            with contextlib.suppress(Exception):
+                self._publish_final_head()
 
-        with contextlib.suppress(Exception):
-            self._publish_final_head()
-
-        self.close()
+            self.close()
 
     def _publish_final_head(self) -> None:
         """Sign the chain tip on the way out.

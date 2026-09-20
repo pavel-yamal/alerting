@@ -126,6 +126,40 @@ async def test_a_final_audit_head_is_published_on_the_way_out(settings, clock, o
         reopened.close()
 
 
+async def test_a_cancelled_worker_does_not_swallow_the_final_head(settings, clock, org, owner_conn):
+    """A dead escalation worker must not cost us the last audit head.
+
+    `CancelledError` is a BaseException, so it passed straight through the
+    `suppress(Exception)` around the shutdown steps: one cancelled worker and the
+    final head was never published, the pool never closed. CI caught it only as an
+    error during teardown, and only on Python 3.12 — this pins the property itself.
+    """
+    services = AppServices(settings, clock)
+    publish_org(services.repo, org, audit=services.audit)
+    services.escalation.start(interval=60)
+    await asyncio.sleep(0)
+
+    # Exactly what a supervisor, a crashed loop or the readiness test does.
+    assert services.escalation._task is not None
+    services.escalation._task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await services.escalation._task
+
+    tip = services.repo.chain_tip()
+    assert tip is not None
+    owner_conn.execute("DELETE FROM audit_heads")
+
+    await services.aclose()
+
+    reopened = AppServices(settings, clock)
+    try:
+        latest = reopened.repo.latest_head()
+        assert latest is not None, "the final head was lost to a cancelled worker"
+        assert latest["idx"] == tip[0]
+    finally:
+        reopened.close()
+
+
 async def test_escalation_is_asked_to_stop_rather_than_cancelled(settings, clock, org, tmp_path):
     """A hard cancel abandons a tick mid-fan-out with the rung already claimed, so no
     later tick retries it."""
