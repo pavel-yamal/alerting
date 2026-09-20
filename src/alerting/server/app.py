@@ -20,6 +20,7 @@ from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
 from alerting.server.db.connection import connect, migrate
 from alerting.server.db.repo import Repo
+from alerting.server.logging_config import configure as configure_logging
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
@@ -163,6 +164,7 @@ def create_app(
     start_escalation: bool = True,
 ) -> FastAPI:
     resolved = settings or Settings.from_env()
+    configure_logging(resolved.log_level, json_output=resolved.log_json)
     services = AppServices(resolved, clock)
 
     @contextlib.asynccontextmanager

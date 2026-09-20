@@ -9,6 +9,7 @@ one command.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import secrets
 import sys
@@ -38,7 +39,29 @@ def main() -> int:
     parser.add_argument("--home", type=pathlib.Path, default=pathlib.Path("var/clients"))
     parser.add_argument("--org", default="acme")
     parser.add_argument("--passphrase", default=DEMO_PASSPHRASE)
+    parser.add_argument(
+        "--i-understand-this-is-a-demo",
+        action="store_true",
+        help="required when ALERTING_ENV is set: this script writes the org ROOT "
+        "PRIVATE KEY to local disk, which must never happen on a real host",
+    )
     args = parser.parse_args()
+
+    # The root key is the trust anchor for the whole system. docs/02 says it lives on
+    # two encrypted USB keys held by two custodians; this script writes it to the
+    # working directory. That is fine for a demo and a total compromise anywhere else.
+    environment = os.environ.get("ALERTING_ENV", "")
+    if environment.lower() in {"production", "prod", "staging"}:
+        parser.error(
+            f"refusing to run with ALERTING_ENV={environment}: this script writes the "
+            "org root private key to disk. Generate org bundles on an offline machine "
+            "and import them instead."
+        )
+    if environment and not args.i_understand_this_is_a_demo:
+        parser.error(
+            "ALERTING_ENV is set; pass --i-understand-this-is-a-demo to confirm this "
+            "host may hold the org root private key"
+        )
 
     clock = SystemClock()
     org = build_org(org_id=args.org, issued_at=clock.now())
@@ -89,9 +112,10 @@ def main() -> int:
     print(f"  passphrase  : {args.passphrase}  (demo only)")
     print(f"\n  ORG ROOT PUBLIC KEY (pin this in every client):\n    {root_pub}")
     print(f"\n  root private key written to {root_path}")
-    print("  In production this lives on two encrypted USB keys held by two")
-    print("  custodians and is used a handful of times a year. It is the one place")
-    print("  a hardware token is justified today.\n")
+    print("  DEMO ONLY. In production this lives on two encrypted USB keys held by")
+    print("  two custodians, is used a handful of times a year, and MUST NEVER be")
+    print("  written to a server that serves traffic. It is the one place a hardware")
+    print("  token is justified today.\n")
     print("  people:")
     for person in org.people.values():
         print(f"    {person.person_id:<8} {person.role:<13} {person.name}")
