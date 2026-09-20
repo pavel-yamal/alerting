@@ -22,7 +22,12 @@ from __future__ import annotations
 import logging
 
 from alerting.core.wordcode import bucket_for, wake_code
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import (
+    DeliveryReceipt,
+    DispatchContext,
+    Recipient,
+    mask_phone,
+)
 
 log = logging.getLogger("alerting.channel.sms")
 
@@ -77,4 +82,5 @@ class SmsChannel:
     async def _transmit(self, phone: str, text: str) -> None:
         """Replace with a real gateway. Kept separate so tests can assert on content."""
         self.sent.append((phone, text))
-        log.info("SMS -> %s: %s", phone, text.replace("\n", " | "))
+        # The number is masked: these logs are less protected than the database.
+        log.info("SMS -> %s: %s", mask_phone(phone), text.replace("\n", " | "))

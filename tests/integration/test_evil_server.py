@@ -15,7 +15,6 @@ and it is why heartbeats, escalation and out-of-band fallback exist.
 from __future__ import annotations
 
 import pytest
-from tests.integration.conftest import ISSUED_AT
 
 from alerting.core.directory import Directory, DirectoryPayload, DirectoryRejected, KeyEntry
 from alerting.core.envelope import Severity, SignedEnvelope
@@ -31,6 +30,7 @@ from alerting.core.signing import (
 )
 from alerting.core.verify import verify_envelope
 from alerting.orgkit import Person, make_order, sign_bundle, sign_order
+from tests.integration.conftest import ISSUED_AT
 
 
 @pytest.fixture

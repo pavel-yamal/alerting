@@ -11,7 +11,12 @@ from __future__ import annotations
 import logging
 
 from alerting.core.wordcode import bucket_for, wake_code
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import (
+    DeliveryReceipt,
+    DispatchContext,
+    Recipient,
+    mask_phone,
+)
 
 log = logging.getLogger("alerting.channel.voice")
 
@@ -51,5 +56,5 @@ class VoiceChannel:
             return DeliveryReceipt(self.name, recipient.person_id, "failed", "no phone")
         script = self.render(recipient, context)
         self.calls.append((recipient.phone, script))
-        log.info("VOICE -> %s", recipient.phone)
+        log.info("VOICE -> %s", mask_phone(recipient.phone))
         return DeliveryReceipt(self.name, recipient.person_id, "sent", "stub TTS", rendered=script)

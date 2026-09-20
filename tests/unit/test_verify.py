@@ -8,7 +8,6 @@ never degrades open, delivery never degrades closed.
 from __future__ import annotations
 
 import pytest
-from tests.conftest import ISSUED_AT
 
 from alerting.core.directory import Directory, DirectoryPayload, Revocation
 from alerting.core.envelope import Action, Audience, Severity, Signature, SignedEnvelope
@@ -16,6 +15,7 @@ from alerting.core.errors import Reason
 from alerting.core.signing import ALG_ED25519, DOMAIN_DIRECTORY
 from alerting.core.verify import verify_envelope
 from alerting.orgkit import Org, make_order, sign_bundle, sign_order
+from tests.conftest import ISSUED_AT
 
 
 def two_approvers(org: Org):

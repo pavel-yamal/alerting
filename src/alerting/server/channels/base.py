@@ -61,3 +61,16 @@ class Channel(Protocol):
     name: str
 
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt: ...
+
+
+def mask_phone(phone: str) -> str:
+    """Log-safe rendering of a phone number.
+
+    Adapters log what they did, and those logs are usually less protected than the
+    database. A number is personal data (docs/08-personal-data.md), so only the last
+    two digits go to the log — enough to correlate with a delivery receipt, not enough
+    to be a roster.
+    """
+    if len(phone) <= 2:
+        return "***"
+    return "*" * (len(phone) - 2) + phone[-2:]

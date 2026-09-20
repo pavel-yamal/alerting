@@ -1,0 +1,34 @@
+# The codebook. THE SCENARIO CODE IS THE ACTIONABLE UNIT — the free text in an order
+# is advisory and is rendered as secondary.
+#
+# Executors are trained that instructions come from the code plus their own training
+# card, never from prose inside the order. That is what stops social engineering
+# carried inside an otherwise perfectly valid, correctly signed order.
+#
+# min_severity stops a building evacuation being slipped through as an "info" notice
+# with a 1-of-N quorum. max_severity stops a channel test being escalated.
+
+EVAC.BUILDING:
+  min_severity: critical
+  description: "Полная эвакуация здания"
+  card: "Выйти по ближайшему маршруту, пункт сбора по схеме на карточке."
+
+SHELTER.IN.PLACE:
+  min_severity: critical
+  description: "Укрытие на месте, не выходить"
+  card: "Закрыть окна, остаться внутри, ждать отбоя."
+
+MUSTER:
+  min_severity: warning
+  description: "Сбор на пункте сбора"
+  card: "Прибыть на пункт сбора, доложить старшему."
+
+STAND.BY:
+  max_severity: warning
+  description: "Повышенная готовность"
+  card: "Быть на связи, не покидать площадку."
+
+TEST.PING:
+  max_severity: info
+  description: "Технический тест канала"
+  card: "Действий не требуется. Подтвердить получение."

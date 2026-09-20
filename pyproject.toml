@@ -60,6 +60,10 @@ strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." so the tests package is importable: several tests share fixtures via
+# `from tests.conftest import ...`, which only resolves when the rootdir is on
+# the path. Without it `pytest` (the console script) fails where `python -m
+# pytest` succeeds, and CI uses the former.
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 filterwarnings = ["error::DeprecationWarning:alerting.*"]

@@ -8,7 +8,6 @@ and every "client-side signature check" below would pass.
 from __future__ import annotations
 
 import pytest
-from tests.conftest import ISSUED_AT
 
 from alerting.core.directory import (
     STALE_DIRECTORY_S,
@@ -21,6 +20,7 @@ from alerting.core.errors import Reason
 from alerting.core.policy import Policy, PolicyPayload, PolicyRejected, QuorumRule
 from alerting.core.signing import DOMAIN_DIRECTORY, DOMAIN_POLICY, generate_keypair
 from alerting.orgkit import sign_bundle
+from tests.conftest import ISSUED_AT
 
 
 def load_directory(org, bundle=None, **kwargs):

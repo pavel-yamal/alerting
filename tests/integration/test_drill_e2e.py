@@ -69,3 +69,18 @@ async def test_the_drill_flag_reaches_the_audit_chain(services, org, clock):
         if e["event"] == "order.dispatched" and e["data"].get("order_id") == order.order_id
     ]
     assert dispatched and dispatched[0]["data"]["drill"] is True
+
+
+async def test_phone_numbers_are_masked_in_channel_logs(services, org, clock, caplog):
+    """Channel logs are usually less protected than the database, and a number is
+    personal data. See docs/08-personal-data.md."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="alerting.channel.sms")
+    await dispatch(services, org, clock, drill=False, channels=("sms",))
+
+    logged = caplog.text
+    assert logged, "the adapter should log what it sent"
+    for person in org.executors():
+        assert person.phone not in logged
+    assert "****" in logged

@@ -6,7 +6,6 @@ import json
 
 import pytest
 from cryptography.exceptions import InvalidTag
-from tests.conftest import ISSUED_AT
 
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import load_key, save_key
@@ -19,6 +18,7 @@ from alerting.core.signing import (
     public_key_to_b64u,
 )
 from alerting.orgkit import sign_bundle
+from tests.conftest import ISSUED_AT
 
 
 @pytest.fixture
