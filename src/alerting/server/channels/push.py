@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import DeliveryReceipt, DispatchContext, ProbeResult, Recipient
 
 log = logging.getLogger("alerting.channel.push")
 
@@ -39,3 +39,13 @@ class PushChannel:
             "delivered" if self.delivers else "no provider configured",
             rendered=str(payload),
         )
+
+    async def probe(self) -> ProbeResult:
+        """Nothing to probe: there is no provider behind this adapter.
+
+        It reports ``stub`` rather than ``ok`` for the same reason ``send`` does.
+        A heartbeat that answered "fine" for a channel that cannot send anything
+        would be worse than no heartbeat at all -- it is the duty officer's evidence
+        that the channel is alive, and it would be false.
+        """
+        return ProbeResult("stub", "no provider configured")

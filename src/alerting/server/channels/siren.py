@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import DeliveryReceipt, DispatchContext, ProbeResult, Recipient
 from alerting.server.db.repo import Repo
 
 log = logging.getLogger("alerting.channel.siren")
@@ -104,3 +104,13 @@ class SirenChannel:
             f"site={site}" if self.delivers else f"site={site}, no relay configured",
             rendered=pattern,
         )
+
+    async def probe(self) -> ProbeResult:
+        """No relay driver, so nothing to ping.
+
+        Worth saying explicitly: even with a relay, a probe here can only confirm the
+        controller answers, never that a siren in a yard made a sound. That gap is
+        why the manual panel in the security room is deliberately not interlocked
+        with this software.
+        """
+        return ProbeResult("stub", "no relay controller configured")

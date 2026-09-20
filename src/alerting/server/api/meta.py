@@ -106,6 +106,35 @@ async def statusz(request: Request) -> dict[str, Any]:
             name: {"delivers": getattr(app.channels[name], "delivers", False)}
             for name in app.channels.names()
         },
+        "silent_channels": app.heartbeat.silent_channels(),
+    }
+
+
+@router.get("/channels/health")
+async def channels_health(request: Request) -> dict[str, Any]:
+    """What each channel last said when asked whether it is still there.
+
+    This is the duty officer's screen, and the whole point of it is that a channel
+    which has gone quiet shows up **before** an incident rather than during one --
+    the only thing this system has against deliberate suppression short of the
+    printed fallback (threat model, attacks 4 and 5).
+
+    Read it as three states, not two. ``healthy`` means some node reached it
+    recently. ``stale`` means nothing has been *recorded* recently, which is a
+    different and worse problem: the heartbeat itself has stopped. And a channel
+    reporting ``stub`` is answering honestly that it has no provider behind it,
+    which is not health.
+
+    It is authenticated, like ``statusz``: the list of channels that are not
+    watching right now is a gift to anybody planning to suppress one.
+    """
+    app = request.app.state.alerting
+    health = app.heartbeat.health()
+    return {
+        "node_id": app.settings.node_id,
+        "stale_after_s": app.heartbeat.stale_after_s,
+        "silent": sorted(name for name, entry in health.items() if not entry["healthy"]),
+        "channels": health,
     }
 
 

@@ -13,7 +13,7 @@ import logging
 from collections import defaultdict
 from typing import Any, Protocol
 
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import DeliveryReceipt, DispatchContext, ProbeResult, Recipient
 
 log = logging.getLogger("alerting.channel.ws")
 
@@ -134,3 +134,18 @@ class WebSocketChannel:
                 rendered=json.dumps(frame, ensure_ascii=False)[:200],
             )
         return DeliveryReceipt(self.name, recipient.person_id, "failed", "offline")
+
+    async def probe(self) -> ProbeResult:
+        """The one probe that measures something real.
+
+        This adapter has no provider to ping -- it *is* the provider -- so the
+        question worth asking is the one an operator actually cares about: would an
+        order reach anybody over this channel right now? Zero connected devices is
+        reported as a failure, because that is precisely the silent state the
+        heartbeat exists to surface. It is not the node being broken; it is the
+        channel being empty, and the duty officer needs to know which.
+        """
+        connected = self.registry.connected_people()
+        if not connected:
+            return ProbeResult("failed", "no executor devices connected")
+        return ProbeResult("ok", f"{len(connected)} device owner(s) connected")

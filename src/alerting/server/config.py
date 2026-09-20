@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import socket
 from dataclasses import dataclass, field
 
 
@@ -72,6 +73,14 @@ class Settings:
     #: cost a full scan of recent orders every second.
     escalation_interval_s: float = 5.0
 
+    #: Which node this is, in the heartbeat table. Defaults to the hostname, which is
+    #: right on a VM and wrong in a container -- set it explicitly there, or every
+    #: replica overwrites one row and a partial channel failure becomes invisible.
+    node_id: str = ""
+
+    #: How often each channel is asked whether it is still there.
+    heartbeat_interval_s: float = 60.0
+
     #: Permits a node whose escalation ladder names a channel with no provider behind
     #: it. Required for the demo and for tests; a production node must not set it.
     allow_stub_channels: bool = False
@@ -103,6 +112,8 @@ class Settings:
             heads_dir=_env_path("ALERTING_HEADS_DIR", "var/heads"),
             spool_dir=_env_path("ALERTING_SPOOL_DIR", "var/spool"),
             escalation_interval_s=_env_float("ALERTING_ESCALATION_INTERVAL_S", 5.0),
+            node_id=os.environ.get("ALERTING_NODE_ID", "") or socket.gethostname(),
+            heartbeat_interval_s=_env_float("ALERTING_HEARTBEAT_INTERVAL_S", 60.0),
             allow_stub_channels=_env_flag("ALERTING_ALLOW_STUB_CHANNELS"),
             api_key_file=os.environ.get("ALERTING_API_KEY_FILE", ""),
             allow_unauthenticated=_env_flag("ALERTING_ALLOW_UNAUTHENTICATED"),

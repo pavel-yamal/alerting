@@ -25,6 +25,7 @@ from alerting.server.logging_config import configure as configure_logging
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
+from alerting.server.services.heartbeat import HeartbeatService
 from alerting.server.services.registry import OrgState
 from alerting.wordlist import load_wordlist
 
@@ -121,6 +122,17 @@ class AppServices:
             self.escalation_plan,
             leader=LeaderLock(settings.load_dsn()),
         )
+        # Runs on every node, not just the leader: a probe is a statement about what
+        # THIS node can reach, and folding that into one cluster-wide answer would
+        # hide the partial failure most worth seeing.
+        self.heartbeat = HeartbeatService(
+            self.repo,
+            self.channels,
+            self.audit,
+            self.clock,
+            node_id=settings.node_id or "node",
+            interval=settings.heartbeat_interval_s,
+        )
 
     def close(self) -> None:
         """Synchronous teardown. Prefer :meth:`aclose`, which orders it correctly."""
@@ -156,6 +168,9 @@ class AppServices:
                 closed = await self.connections.close_all()
                 if closed:
                     log.info("closed %d executor socket(s) for restart", closed)
+
+            with contextlib.suppress(Exception):
+                await self.heartbeat.stop()
 
             with contextlib.suppress(Exception):
                 await self.escalation.stop()
@@ -259,6 +274,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if start_escalation:
             services.escalation.start(resolved.escalation_interval_s)
+            services.heartbeat.start()
         try:
             yield
         finally:

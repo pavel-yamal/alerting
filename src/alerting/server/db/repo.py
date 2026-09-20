@@ -540,3 +540,48 @@ class Repo:
 
     def latest_head(self) -> Row | None:
         return self._one("SELECT * FROM audit_heads ORDER BY idx DESC LIMIT 1")
+
+    # --- channel heartbeats ---------------------------------------------------
+    def heartbeat(self, channel: str, node_id: str) -> Row | None:
+        return self._one(
+            "SELECT * FROM channel_heartbeats WHERE channel = %s AND node_id = %s",
+            (channel, node_id),
+        )
+
+    def record_heartbeat(
+        self, channel: str, node_id: str, status: str, detail: str, at: int
+    ) -> None:
+        """Upsert one node's view of one channel.
+
+        Only this node ever writes its own row, so no lock is needed. The failure
+        counter is reset by a success and incremented by anything else -- a ``stub``
+        counts as a failure here, because a channel with no provider behind it is
+        exactly as silent as one whose provider is down.
+        """
+        self._execute(
+            "INSERT INTO channel_heartbeats"
+            " (channel, node_id, status, detail, last_at, last_ok_at,"
+            "  consecutive_failures)"
+            " VALUES (%s, %s, %s, %s, %s, CASE WHEN %s THEN %s END, CASE WHEN %s THEN 0 ELSE 1 END)"
+            " ON CONFLICT (channel, node_id) DO UPDATE SET"
+            " status = EXCLUDED.status, detail = EXCLUDED.detail, last_at = EXCLUDED.last_at,"
+            " last_ok_at = CASE WHEN %s THEN EXCLUDED.last_at"
+            "                   ELSE channel_heartbeats.last_ok_at END,"
+            " consecutive_failures = CASE WHEN %s THEN 0"
+            "                             ELSE channel_heartbeats.consecutive_failures + 1 END",
+            (
+                channel,
+                node_id,
+                status,
+                detail,
+                at,
+                status == "ok",
+                at,
+                status == "ok",
+                status == "ok",
+                status == "ok",
+            ),
+        )
+
+    def heartbeats(self) -> list[Row]:
+        return self._all("SELECT * FROM channel_heartbeats ORDER BY channel, node_id")
