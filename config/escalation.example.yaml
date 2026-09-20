@@ -1,0 +1,29 @@
+# Escalation ladders, per severity. Times are seconds after dispatch.
+#
+# The ladder is what makes a *missed* order visible, and day to day that matters more
+# than the signatures do: the common failure is a phone on silent, not a forgery.
+# Every rung degrades open — when in doubt, notify more people.
+#
+# Rungs are idempotent: a restart mid-incident does not re-sound a siren.
+
+default:
+  - {at_s: 0,   channels: [ws, push]}
+  - {at_s: 120, channels: [sms]}
+
+warning:
+  - {at_s: 0,   channels: [ws, push]}
+  - {at_s: 180, channels: [sms]}
+
+critical:
+  - {at_s: 0,   channels: [ws, push]}
+  - {at_s: 60,  channels: [sms]}
+  - {at_s: 180, channels: [voice]}
+  - {at_s: 300, notify_role: duty_officer}
+  - {at_s: 420, reassign_to_group: alternates}
+  - {at_s: 600, channels: [siren]}
+
+catastrophic:
+  - {at_s: 0,   channels: [ws, push, sms]}
+  - {at_s: 60,  channels: [voice]}
+  - {at_s: 120, channels: [siren]}
+  - {at_s: 240, notify_role: director}
