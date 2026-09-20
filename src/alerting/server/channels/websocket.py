@@ -21,6 +21,11 @@ class Sink(Protocol):
     async def send_json(self, data: dict[str, Any]) -> None: ...
 
 
+#: A person carries a phone and maybe a tablet. More than this is either a bug or
+#: somebody opening sockets in a loop.
+MAX_DEVICES_PER_PERSON = 5
+
+
 class ConnectionRegistry:
     """Which devices are currently connected, per person.
 
@@ -28,13 +33,18 @@ class ConnectionRegistry:
     registry is not an error, it is the normal case that escalation exists for.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_devices_per_person: int = MAX_DEVICES_PER_PERSON) -> None:
         self._sinks: dict[str, list[Sink]] = defaultdict(list)
         self._lock = asyncio.Lock()
+        self._max_devices = max_devices_per_person
 
-    async def attach(self, person_id: str, sink: Sink) -> None:
+    async def attach(self, person_id: str, sink: Sink) -> bool:
+        """Register a device. False when this person already has too many open."""
         async with self._lock:
+            if len(self._sinks[person_id]) >= self._max_devices:
+                return False
             self._sinks[person_id].append(sink)
+            return True
 
     async def detach(self, person_id: str, sink: Sink) -> None:
         async with self._lock:

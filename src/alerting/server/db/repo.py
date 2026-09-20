@@ -282,6 +282,16 @@ class Repo:
     def audit_count(self) -> int:
         return int(self.db.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"])
 
+    def chain_tip(self) -> tuple[int, str] | None:
+        """``(idx, entry_hash)`` of the last entry, or None for an empty chain.
+
+        Lets a head be published without loading the chain to recompute its hash.
+        """
+        row = self.db.execute(
+            "SELECT idx, entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1"
+        ).fetchone()
+        return (row["idx"], row["entry_hash"]) if row else None
+
     def last_audit_hash(self) -> str | None:
         row = self.db.execute(
             "SELECT entry_hash FROM audit_log ORDER BY idx DESC LIMIT 1"

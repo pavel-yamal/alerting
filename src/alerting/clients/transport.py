@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import httpx
@@ -12,9 +13,11 @@ class ServerError(RuntimeError):
 
 
 class Api:
-    def __init__(self, base_url: str, timeout: float = 10.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 10.0, api_key: str | None = None) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        key = api_key if api_key is not None else os.environ.get("ALERTING_API_KEY", "")
+        headers = {"Alerting-Api-Key": key} if key else {}
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, headers=headers)
 
     @property
     def ws_url(self) -> str:
@@ -30,6 +33,10 @@ class Api:
 
     @staticmethod
     def _unwrap(response: httpx.Response) -> Any:
+        if response.status_code == 401:
+            raise ServerError(
+                "401: the server requires Alerting-Api-Key. Set ALERTING_API_KEY or pass --api-key."
+            )
         if response.status_code >= 400:
             raise ServerError(f"{response.status_code}: {response.text}")
         return response.json()

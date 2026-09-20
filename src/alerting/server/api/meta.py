@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
-from alerting.core.audit_chain import head_of
+log = logging.getLogger("alerting.api.meta")
+
+#: Upper bound on any paged listing.
+MAX_PAGE = 1000
 
 router = APIRouter(prefix="/v1", tags=["meta"])
+
+#: Routes that are deliberately reachable without the shared key. Only liveness lives
+#: here, and nginx restricts it to the load balancer and localhost anyway.
+public_router = APIRouter(prefix="/v1", tags=["public"])
 
 
 @router.get("/directory")
@@ -44,7 +52,13 @@ async def roster(request: Request) -> dict[str, Any]:
 
 
 @router.get("/audit")
-async def audit(request: Request, from_idx: int = 0, limit: int = 200) -> dict[str, Any]:
+async def audit(
+    request: Request,
+    from_idx: int = Query(0, ge=0),
+    limit: int = Query(200, ge=1, le=MAX_PAGE),
+) -> dict[str, Any]:
+    """A page of the chain. ``limit`` is bounded: unvalidated, ``?limit=999999999``
+    was a one-request memory-exhaustion primitive available to anyone."""
     app = request.app.state.alerting
     entries = list(app.repo.audit_entries(from_idx, limit))
     return {"entries": entries, "count": app.repo.audit_count(), "heads": app.repo.heads()}
@@ -61,21 +75,49 @@ async def audit_head(request: Request) -> dict[str, Any]:
 
 @router.post("/audit/head")
 async def publish_head(request: Request) -> dict[str, Any]:
-    """Force a head now. Used by the drill runbook at the end of an exercise."""
+    """Force a head now. Used by the drill runbook at the end of an exercise.
+
+    Reads the chain tip rather than loading every entry to recompute it — the old
+    version did ``audit_entries(0, 1_000_000)`` on each call, which grew without
+    bound and was reachable by anyone.
+    """
     app = request.app.state.alerting
-    entries = list(app.repo.audit_entries(0, 1_000_000))
-    if not entries:
+    tip = app.repo.chain_tip()
+    if tip is None:
         raise HTTPException(409, "empty chain")
-    return app.audit.publish_head(len(entries) - 1, head_of(entries), app.clock.now())
+    idx, head = tip
+    return app.audit.publish_head(idx, head, app.clock.now())
 
 
-@router.get("/healthz")
-async def healthz(request: Request) -> dict[str, Any]:
+@router.get("/statusz")
+async def statusz(request: Request) -> dict[str, Any]:
+    """Operational detail. Authenticated, because the connected-person list is a
+    roster leak and the channel inventory tells an attacker what is not watching."""
     app = request.app.state.alerting
     return {
         "ok": True,
         "org": app.state.org_id,
         "audit_entries": app.repo.audit_count(),
         "connected": app.connections.connected_people(),
-        "channels": app.channels.names(),
+        "channels": {
+            name: {"delivers": getattr(app.channels[name], "delivers", False)}
+            for name in app.channels.names()
+        },
     }
+
+
+@public_router.get("/healthz")
+async def healthz(request: Request) -> dict[str, bool]:
+    """Liveness for the load balancer, and nothing else.
+
+    It used to return the list of currently connected people to anyone who asked.
+    It also used to answer ``ok: True`` unconditionally without testing a thing;
+    now it at least touches the database.
+    """
+    app = request.app.state.alerting
+    try:
+        app.repo.audit_count()
+    except Exception:
+        log.exception("healthz: database unreachable")
+        return {"ok": False}
+    return {"ok": True}

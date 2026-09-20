@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import pathlib
+import secrets
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -70,6 +71,10 @@ def main() -> int:
         PinnedOrg(args.org, root_pub, home).save()
         (home / "wake_key.hex").write_text(person.wake_key.hex(), encoding="utf-8")
 
+    api_key_path = pathlib.Path("var/api-key.SECRET")
+    api_key_path.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+    api_key_path.chmod(0o600)
+
     server_key_path = pathlib.Path("var/server-key.SECRET")
     server_key_path.write_text(private_key_to_b64u(server_private), encoding="utf-8")
     server_key_path.chmod(0o600)
@@ -99,10 +104,18 @@ def main() -> int:
     )
     print(f"  private half in {server_key_path}")
 
+    print(f"\n  SHARED API KEY written to {api_key_path} (mode 0600).")
+    print("  Every CLI needs it: export ALERTING_API_KEY=$(cat var/api-key.SECRET)")
+    print("  This is the interim gate; signed per-person requests replace it.")
+
     print("\nstart the server with:")
     print(f"  ALERTING_ROOT_PUBKEY={root_pub} \\")
-    print(f"  ALERTING_SERVER_KEY=$(cat {server_key_path}) \\")
+    print(f"  ALERTING_SERVER_KEY_FILE={server_key_path} \\")
+    print(f"  ALERTING_API_KEY_FILE={api_key_path} \\")
+    print("  ALERTING_ALLOW_STUB_CHANNELS=1 \\")
     print(f"  ALERTING_DB={db_path} ALERTING_ORG={args.org} make serve")
+    print("\n  (ALLOW_STUB_CHANNELS because this demo org has no real providers;")
+    print("   a production node must never set it.)")
     connection.close()
     return 0
 

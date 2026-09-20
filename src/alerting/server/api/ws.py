@@ -11,6 +11,8 @@ were the only check, a compromised server could fabricate orders freely.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import secrets
 from typing import Any
 
@@ -24,6 +26,14 @@ from alerting.core.signing import DOMAIN_DEVICE_AUTH, verify_signature
 router = APIRouter(tags=["stream"])
 
 AUTH_WINDOW_S = 60
+
+#: How long an unauthenticated socket may stay open. Without it, anyone could accept
+#: a socket and hold it indefinitely without ever proving who they are.
+AUTH_FRAME_TIMEOUT_S = 5
+
+#: A signed envelope is a couple of kilobytes; an ACK is smaller. Anything larger is
+#: not a client of this protocol.
+MAX_FRAME_BYTES = 64 * 1024
 
 
 class WebSocketSink:
@@ -46,7 +56,10 @@ async def stream(websocket: WebSocket) -> None:
     await websocket.send_json({"kind": "challenge", "nonce": nonce, "at": now})
 
     try:
-        message = await websocket.receive_json()
+        message = await asyncio.wait_for(_receive_bounded(websocket), AUTH_FRAME_TIMEOUT_S)
+    except TimeoutError:
+        await websocket.close(code=4408, reason="auth timeout")
+        return
     except (WebSocketDisconnect, ValueError):
         return
 
@@ -55,13 +68,17 @@ async def stream(websocket: WebSocket) -> None:
         return
 
     sink = WebSocketSink(websocket)
-    await app.connections.attach(person_id, sink)
+    if not await app.connections.attach(person_id, sink):
+        await websocket.close(code=4429, reason="too many devices")
+        return
     await websocket.send_json({"kind": "ready", "person_id": person_id, "org_id": app.state.org_id})
 
     try:
         while True:
-            frame = await websocket.receive_json()
+            frame = await _receive_bounded(websocket)
             await _handle_frame(app, websocket, frame, person_id)
+    except FrameTooLarge:
+        await websocket.close(code=1009, reason="frame too large")
     except (WebSocketDisconnect, ValueError):
         pass
     finally:
@@ -154,3 +171,18 @@ async def _handle_frame(
         },
     )
     await websocket.send_json({"kind": "ack-result", "accepted": ok})
+
+
+class FrameTooLarge(ValueError):
+    """The peer sent more than this protocol ever needs."""
+
+
+async def _receive_bounded(websocket: WebSocket) -> dict[str, Any]:
+    """Read one JSON frame, refusing anything oversized before parsing it.
+
+    ``receive_json`` would happily parse a megabyte first and complain afterwards.
+    """
+    raw = await websocket.receive_text()
+    if len(raw) > MAX_FRAME_BYTES:
+        raise FrameTooLarge(f"{len(raw)} bytes")
+    return json.loads(raw)  # type: ignore[no-any-return]

@@ -37,7 +37,7 @@ def _load(args: argparse.Namespace) -> tuple[list[dict[str, Any]], dict[int, str
         repo = Repo(connect(args.db))
         return list(repo.audit_entries(0, 1_000_000)), repo.heads()
 
-    with Api(args.server) as api:
+    with Api(args.server, api_key=args.api_key) as api:
         entries: list[dict[str, Any]] = []
         while True:
             page = api.get("/v1/audit", from_idx=len(entries), limit=500)
@@ -93,7 +93,7 @@ def cmd_heads(args: argparse.Namespace) -> int:
 
     if args.server_key:
         public = public_key_from_b64u(args.server_key)
-        with Api(args.server) as api:
+        with Api(args.server, api_key=args.api_key) as api:
             head = api.get("/v1/audit/head")
         payload = {"idx": head["idx"], "head": head["head"], "ts": head["ts"]}
         ok = verify_signature(DOMAIN_AUDIT_HEAD, payload, head["signature"], public)
@@ -166,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     shared.add_argument("--server", default="http://127.0.0.1:8080")
     shared.add_argument("--db", help="read the sqlite database directly")
     shared.add_argument("--file", help="read a previously pulled chain")
+    shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
     sub = parser.add_subparsers(dest="command", required=True)
 
     pull = sub.add_parser("pull", parents=[shared], help="download the chain")

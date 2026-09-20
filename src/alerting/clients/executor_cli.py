@@ -312,6 +312,7 @@ def common_parser() -> argparse.ArgumentParser:
     shared.add_argument("--home", type=pathlib.Path, default=DEFAULT_DIR)
     shared.add_argument("--person", default="", help="your person id")
     shared.add_argument("--passphrase", help="key passphrase (prompted if omitted)")
+    shared.add_argument("--api-key", default=None, help="shared server key (or ALERTING_API_KEY)")
     return shared
 
 
@@ -362,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    with Api(args.server) as api:
+    with Api(args.server, api_key=args.api_key) as api:
         try:
             result: int = args.func(args, api)
             return result

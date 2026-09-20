@@ -27,8 +27,21 @@ def clock() -> FixedClock:
     return FixedClock(ISSUED_AT + 5)
 
 
+#: The shared key the test server runs with. Tests go through the same gate a
+#: deployed node does, rather than round the side of it.
+API_KEY = "test-api-key-not-a-secret"
+
+
 @pytest.fixture
-def settings(tmp_path: pathlib.Path, org: Org) -> Settings:
+def api_key_file(tmp_path: pathlib.Path) -> pathlib.Path:
+    path = tmp_path / "api-key"
+    path.write_text(API_KEY, encoding="utf-8")
+    path.chmod(0o600)  # read_secret_file refuses anything looser
+    return path
+
+
+@pytest.fixture
+def settings(tmp_path: pathlib.Path, org: Org, api_key_file: pathlib.Path) -> Settings:
     return Settings(
         org_id=org.org_id,
         db_path=str(tmp_path / "alerting.db"),
@@ -37,6 +50,7 @@ def settings(tmp_path: pathlib.Path, org: Org) -> Settings:
         spool_dir=tmp_path / "spool",
         wordlist_path="config/wordlist.ru.txt",
         drill_enabled_sites=frozenset(),
+        api_key_file=str(api_key_file),
         # The tests exercise the stub adapters on purpose, so they opt in explicitly —
         # the same way a demo node has to. A production node must not set this.
         allow_stub_channels=True,
@@ -55,6 +69,15 @@ def services(settings: Settings, clock: FixedClock, org: Org) -> AppServices:
 @pytest.fixture
 def client(settings: Settings, clock: FixedClock, org: Org):
     """HTTP client. Escalation is off so tests drive ``tick()`` deterministically."""
+    app = create_app(settings, clock, start_escalation=False)
+    publish_org(app.state.alerting.repo, org, audit=app.state.alerting.audit)
+    with TestClient(app, headers={"Alerting-Api-Key": API_KEY}) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def anon_client(settings: Settings, clock: FixedClock, org: Org):
+    """The same server, without the key — for asserting that the gate holds."""
     app = create_app(settings, clock, start_escalation=False)
     publish_org(app.state.alerting.repo, org, audit=app.state.alerting.audit)
     with TestClient(app) as test_client:

@@ -9,11 +9,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import yaml
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.signing import private_key_from_b64u, public_key_from_b64u
 from alerting.server.api import meta, orders, proposals, ws
+from alerting.server.auth import require_api_key
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
@@ -58,6 +59,20 @@ class AppServices:
         _require_deliverable_channels(
             self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
         )
+
+        self.api_key = settings.load_api_key()
+        if not self.api_key and not settings.allow_unauthenticated:
+            raise RuntimeError(
+                "no ALERTING_API_KEY_FILE configured. Without it every route is open: "
+                "anyone who reaches the port can write permanently undeletable audit "
+                "entries, burn seq numbers and dump the roster. Set the key file, or "
+                "ALERTING_ALLOW_UNAUTHENTICATED=1 if this is a closed-network demo."
+            )
+        if not self.api_key:
+            log.warning(
+                "HTTP surface is UNAUTHENTICATED because ALERTING_ALLOW_UNAUTHENTICATED "
+                "is set; anything that can reach the port can write to the audit chain"
+            )
 
         raw_server_key = settings.load_server_key()
         server_key = private_key_from_b64u(raw_server_key) if raw_server_key else None
@@ -167,8 +182,16 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.alerting = services
-    for module in (proposals, orders, meta, ws):
-        app.include_router(module.router)
+
+    # Every route behind the shared key, except liveness, which nginx restricts to
+    # the load balancer. The WebSocket carries its own Ed25519 challenge-response and
+    # is authenticated more strongly than this gate, so it is not double-gated —
+    # executors have a device key, not the shared secret.
+    guarded = [Depends(require_api_key)]
+    for module in (proposals, orders, meta):
+        app.include_router(module.router, dependencies=guarded)
+    app.include_router(meta.public_router)
+    app.include_router(ws.router)
     return app
 
 
