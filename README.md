@@ -51,6 +51,8 @@
 
 ---
 
+Развёртывание на инфраструктуре — [docs/09-deployment.md](docs/09-deployment.md).
+
 ## Быстрый старт
 
 ```bash

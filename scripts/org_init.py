@@ -123,9 +123,7 @@ def main() -> int:
     secrets_dir = args.secrets_dir or args.home.parent
     secrets_dir.mkdir(parents=True, exist_ok=True)
 
-    api_key_path = write_secret(
-        secrets_dir / "api-key.SECRET", secrets.token_urlsafe(32)
-    )
+    api_key_path = write_secret(secrets_dir / "api-key.SECRET", secrets.token_urlsafe(32))
     server_key_path = write_secret(
         secrets_dir / "server-key.SECRET", private_key_to_b64u(server_private)
     )

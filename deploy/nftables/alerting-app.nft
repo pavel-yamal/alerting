@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+# Firewall for an alerting APP node. Default deny inbound.
+# Install to /etc/nftables.d/alerting-app.nft and adjust the addresses.
+#
+# The shape that matters: users never reach the app node. They reach nginx, which
+# reaches the app. Nothing inbound from the user VLAN belongs here.
+
+define PROXY_NET   = 10.0.10.0/24      # ADJUST: nginx / load balancer
+define ADMIN_NET   = 10.0.99.0/24      # ADJUST: bastion
+define SIREN_NET   = 10.0.30.0/24      # ADJUST: site OT VLAN, siren controllers
+define AUDITOR_HOST = 10.0.20.7        # ADJUST: where published heads are shipped
+
+table inet alerting {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        ip saddr $ADMIN_NET tcp dport 22 accept
+        ip saddr $PROXY_NET tcp dport 8080 accept
+
+        # Readiness probes come from the proxy subnet too; no separate rule needed.
+
+        icmp type echo-request limit rate 5/second accept
+        icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert } accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy drop;
+
+        ct state established,related accept
+        oif lo accept
+
+        # NTP is not optional: the handshake window is 60s and the skew tolerance is
+        # ±120s, so losing time sync is a silent total outage.
+        udp dport 123 accept
+
+        tcp dport 53 accept
+        udp dport 53 accept
+
+        # Providers for SMS, push and voice, once they exist. Until then nothing here
+        # delivers and this rule is aspirational — see docs/09-deployment.md §0.
+        tcp dport 443 accept
+
+        # Siren controllers live on the site VLAN. One way out, no return path: a
+        # siren cannot be authenticated at the receiver, so nothing it says is trusted.
+        ip daddr $SIREN_NET tcp dport 10001 accept   # ADJUST: controller port
+
+        # Published audit heads are the one artifact that is SUPPOSED to leave the box.
+        ip daddr $AUDITOR_HOST tcp dport 22 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}

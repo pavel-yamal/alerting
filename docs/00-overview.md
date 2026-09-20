@@ -63,6 +63,7 @@
 | [04-channels.md](04-channels.md) | Что каждому каналу разрешено нести |
 | [05-audit-spec.md](05-audit-spec.md) | Цепочка аудита и публикация голов |
 | [06-runbook.md](06-runbook.md) | Эксплуатация: регистрация, отзыв, отбой, отказ системы |
+| [09-deployment.md](09-deployment.md) | Развёртывание: systemd, nginx, бэкапы, готовность |
 | [07-drills-and-training.md](07-drills-and-training.md) | Режим учений и карточка исполнителя |
 | [08-personal-data.md](08-personal-data.md) | Реестр как персональные данные |
 | [adr/](adr/) | Обоснование ключевых развилок |

@@ -1,0 +1,86 @@
+# Alerting server unit.
+#
+# Install to /etc/systemd/system/alerting.service and adjust the paths marked ADJUST.
+# See docs/09-deployment.md for the full procedure.
+
+[Unit]
+Description=Alerting — verifiable emergency order dispatch
+Documentation=file:///opt/alerting/current/docs/09-deployment.md
+# chronyd is a hard dependency, not a nicety: the device handshake window is 60s and
+# the order skew tolerance is ±120s, so a node with a wrong clock rejects valid
+# clients while looking perfectly healthy.
+After=network-online.target chronyd.service
+Wants=network-online.target chronyd.service
+
+# DELIBERATE deviation from the usual "stop flapping services" advice: an alerting
+# server that systemd has given up on is precisely the failure this whole system
+# exists to prevent. It keeps retrying forever, and the monitoring tells a human.
+# (This belongs in [Unit]; in [Service] systemd ignores it silently.)
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=alerting
+Group=alerting
+
+# Every runtime path is absolute in the environment below. WorkingDirectory is set
+# anyway, but it is NOT the safeguard: a wrong working directory makes the database,
+# the wordlist, the audit spool and the published heads fail SILENTLY, each in its own
+# way. Absolute values are the safeguard; this is belt and braces.
+WorkingDirectory=/opt/alerting/current
+EnvironmentFile=/etc/alerting/alerting.env
+
+# Secrets arrive as credentials, never as environment variables. An Ed25519 private
+# key in the environment is readable via /proc/PID/environ and `systemctl show`; the
+# process sees these as files under $CREDENTIALS_DIRECTORY, mode 0400, and no other
+# user on the box can read them.
+LoadCredential=server-key:/etc/alerting/credentials/server-key
+LoadCredential=api-key:/etc/alerting/credentials/api-key
+
+# Refuse to start with a bad clock rather than rejecting clients later.
+ExecStartPre=/usr/bin/chronyc waitsync 30 0.1
+# Validate the configuration before serving: a missing wordlist or an escalation
+# ladder that is not where the operator thinks it is fails here, not mid-incident.
+ExecStartPre=/opt/alerting/current/venv/bin/alerting-server --check
+
+ExecStart=/opt/alerting/current/venv/bin/alerting-server \
+    --host 10.0.10.11 \
+    --port 8080 \
+    --forwarded-allow-ips 10.0.10.0/24
+
+Restart=always
+RestartSec=2
+
+KillSignal=SIGTERM
+# Must exceed the server's own graceful-shutdown budget (30s), which covers closing
+# executor sockets, draining the escalation tick and publishing a final audit head.
+TimeoutStopSec=45
+
+# --- sandbox -----------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ReadWritePaths=/var/lib/alerting
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
