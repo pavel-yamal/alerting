@@ -16,6 +16,7 @@ import argparse
 import logging
 import re
 import sys
+from typing import Any
 
 from alerting.server.config import Settings
 from alerting.server.logging_config import configure as configure_logging
@@ -57,11 +58,25 @@ def build_parser() -> argparse.ArgumentParser:
         "proxy's.",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="number of worker processes (default 1). Safe since the sequence "
+        "counter, the replay window, the siren's dedupe and the escalation ladder "
+        "moved into the database; before that, two workers meant two replay windows "
+        "and two climbers.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="validate configuration and exit without serving",
     )
     return parser
+
+
+def services_of(app: Any) -> Any:
+    """The ``AppServices`` hanging off a built app."""
+    return app.state.alerting
 
 
 def redact_dsn(dsn: str) -> str:
@@ -154,12 +169,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.check:
         log.info("configuration is valid; not serving (--check)")
+        services_of(app).close()
         return 0
 
     import uvicorn
 
+    target: Any = app
+    factory = False
+    if args.workers > 1:
+        # uvicorn forks workers from an import string, not from an object, so each
+        # one builds its own services. The instance built above was only ever a
+        # configuration check -- hand back its pool and its leader lock rather than
+        # leaving them held by a parent process that will not serve a request.
+        services_of(app).close()
+        target, factory = "alerting.server.app:create_app", True
+        log.info("serving with %d workers", args.workers)
+
     uvicorn.run(
-        app,
+        target,
+        factory=factory,
+        workers=args.workers,
         host=args.host,
         port=args.port,
         # Set here and not per host: behind a proxy these are not optional, and

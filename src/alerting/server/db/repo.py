@@ -146,16 +146,22 @@ class Repo:
 
     # --- proposals and signatures -------------------------------------------
     def next_seq(self, stream_id: str) -> int:
-        """The next sequence number for a stream.
+        """Allocate the next sequence number for a stream, atomically.
 
-        Read-then-write: callers hold :meth:`tx` across this and
-        :meth:`create_proposal`, and ``UNIQUE (stream_id, seq)`` is the backstop.
+        One statement. It used to be ``SELECT MAX(seq)`` followed, twenty-five lines
+        later, by an insert -- a read-modify-write that two concurrent proposals on
+        one stream both won, leaving the loser with an integrity error and a bare 500.
+        The upsert makes the allocation itself the atom, so no transaction has to be
+        held open across the payload building in between.
         """
         row = self._one(
-            "SELECT MAX(seq) AS s FROM proposals WHERE stream_id = %s",
+            "INSERT INTO streams (stream_id, next_seq) VALUES (%s, 1)"
+            " ON CONFLICT (stream_id) DO UPDATE SET next_seq = streams.next_seq + 1"
+            " RETURNING next_seq",
             (stream_id,),
         )
-        return int((row["s"] if row else None) or 0) + 1
+        assert row is not None  # RETURNING on an upsert always yields a row
+        return int(row["next_seq"])
 
     def create_proposal(
         self,
@@ -351,6 +357,103 @@ class Repo:
                 "INSERT INTO escalation_state (order_id, person_id, rung, fired_at)"
                 " VALUES (%s, %s, %s, %s) ON CONFLICT (order_id, person_id, rung) DO NOTHING",
                 (order_id, person_id, rung, at),
+            )
+            > 0
+        )
+
+    # --- anti-replay, by primary key -----------------------------------------
+    def stream_high(self, stream_id: str) -> int | None:
+        """Highest sequence number ever dispatched on a stream, or None."""
+        row = self._one("SELECT MAX(seq) AS s FROM stream_seq WHERE stream_id = %s", (stream_id,))
+        value = row["s"] if row else None
+        return int(value) if value is not None else None
+
+    def stream_seq_seen(self, stream_id: str, seq: int) -> bool:
+        return (
+            self._one(
+                "SELECT 1 FROM stream_seq WHERE stream_id = %s AND seq = %s", (stream_id, seq)
+            )
+            is not None
+        )
+
+    def claim_stream_seq(self, stream_id: str, seq: int, order_id: str, at: int) -> str | None:
+        """Claim ``(stream_id, seq)`` for ``order_id``.
+
+        Returns ``None`` when this call made the claim, or the ``order_id`` that
+        already holds it. That distinction is the point: the same order arriving
+        twice is a retry and may proceed, while a *different* order carrying a number
+        already used is a replay.
+
+        ``DO UPDATE`` with a self-assignment rather than ``DO NOTHING`` so that
+        RETURNING still fires on a conflict; ``xmax = 0`` is how PostgreSQL lets a
+        caller tell an insert from an update in the same statement.
+        """
+        row = self._one(
+            "INSERT INTO stream_seq (stream_id, seq, order_id, seen_at)"
+            " VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT (stream_id, seq) DO UPDATE SET order_id = stream_seq.order_id"
+            " RETURNING order_id, (xmax = 0) AS inserted",
+            (stream_id, seq, order_id, at),
+        )
+        assert row is not None
+        return None if row["inserted"] else str(row["order_id"])
+
+    def order_exists(self, order_id: str) -> bool:
+        """Indexed existence check, replacing a scan of the last thousand orders."""
+        return self._one("SELECT 1 FROM orders WHERE order_id = %s", (order_id,)) is not None
+
+    # --- siren claims ---------------------------------------------------------
+    def claim_siren(self, site: str, order_id: str, pattern: str, at: int) -> bool:
+        """True when this call is the one that sounded the siren at this site.
+
+        A siren that sounds twice for one order is not cosmetic: nobody standing
+        outside can tell a repeat from a second emergency.
+        """
+        return (
+            self._execute(
+                "INSERT INTO siren_activations (site, order_id, pattern, fired_at)"
+                " VALUES (%s, %s, %s, %s) ON CONFLICT (site, order_id) DO NOTHING",
+                (site, order_id, pattern, at),
+            )
+            > 0
+        )
+
+    def siren_last_fired(self, site: str, *, exclude_order_id: str = "") -> int | None:
+        """When this site last sounded, ignoring one order.
+
+        The exclusion is what lets the rate limit and the per-order dedupe be asked
+        independently. Without it the second recipient at a site would be told
+        "rate limited" -- because the order's own activation is the most recent one --
+        when the truthful answer is "already sounded for this order".
+        """
+        row = self._one(
+            "SELECT MAX(fired_at) AS t FROM siren_activations WHERE site = %s AND order_id <> %s",
+            (site, exclude_order_id),
+        )
+        value = row["t"] if row else None
+        return int(value) if value is not None else None
+
+    def siren_activations(self, order_id: str) -> list[Row]:
+        return self._all(
+            "SELECT * FROM siren_activations WHERE order_id = %s ORDER BY site", (order_id,)
+        )
+
+    def all_siren_activations(self) -> list[Row]:
+        return self._all("SELECT * FROM siren_activations ORDER BY fired_at, site, order_id")
+
+    # --- escalation claims for role and group rungs ---------------------------
+    def claim_escalation_extra(self, order_id: str, rung: int, target: str, at: int) -> bool:
+        """True when this call claimed the role/group notification for this rung.
+
+        ``escalation_state`` latches per person, which is not enough: two climbers
+        claim different subsets of the outstanding people and then both run the role
+        and group notifications hanging off the same rung.
+        """
+        return (
+            self._execute(
+                "INSERT INTO escalation_extra (order_id, rung, target, fired_at)"
+                " VALUES (%s, %s, %s, %s) ON CONFLICT (order_id, rung, target) DO NOTHING",
+                (order_id, rung, target, at),
             )
             > 0
         )

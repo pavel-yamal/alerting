@@ -47,6 +47,10 @@ APP_DSN = os.environ.get(
 #: Tables emptied between tests, children before parents so one statement suffices.
 _TABLES = (
     "escalation_state",
+    "escalation_extra",
+    "siren_activations",
+    "stream_seq",
+    "streams",
     "acks",
     "dispatches",
     "signatures",

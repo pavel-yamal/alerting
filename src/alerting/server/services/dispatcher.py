@@ -21,7 +21,6 @@ from alerting.core.clock import Clock
 from alerting.core.envelope import OrderPayload, SignedEnvelope
 from alerting.core.errors import Reason
 from alerting.core.quorum import evaluate_quorum
-from alerting.core.replay import ReplayWindow
 from alerting.core.signing import payload_digest
 from alerting.core.verify import Decision, verify_envelope
 from alerting.server.channels.base import (
@@ -34,6 +33,7 @@ from alerting.server.channels.registry import ChannelRegistry
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.registry import OrgState
+from alerting.server.services.replay_store import DatabaseReplayWindow, KnownOrders
 
 log = logging.getLogger("alerting.dispatcher")
 
@@ -72,7 +72,8 @@ class Dispatcher:
         self.channels = channels
         self.audit = audit
         self.clock = clock
-        self.replay = ReplayWindow()
+        self.replay = DatabaseReplayWindow(repo)
+        self.known_orders = KnownOrders(repo)
 
     def check(self, envelope: SignedEnvelope, observed_at: dict[str, int]) -> Decision:
         """Full verification plus the server-only signature-spread rule."""
@@ -84,7 +85,7 @@ class Dispatcher:
             clock=self.clock,
             replay=self.replay,
             org_id=self.state.org_id,
-            seen_order_ids={row["order_id"] for row in self.repo.orders(1000)},
+            seen_order_ids=self.known_orders,
             cancel_target=cancel_target,
         )
         if not decision.accepted or decision.payload is None:
@@ -158,8 +159,31 @@ class Dispatcher:
             return DispatchResult(decision, [], [])
 
         order = decision.payload
-        self.replay.commit(order.stream_id, order.seq)
         now = self.clock.now()
+
+        # THIS is the anti-replay decision; the check inside `verify_envelope` only
+        # reported what it saw. Between that check and this line another process can
+        # dispatch the same sequence number, and only an atomic claim can tell us we
+        # lost the race. A rejection here is rare and always worth a loud entry:
+        # it means two orders carried the same number on one stream.
+        if not self.replay.claim(order.stream_id, order.seq, order.order_id, now):
+            replayed = Decision(
+                accepted=False,
+                reasons=(*decision.reasons, Reason.REPLAYED),
+                warnings=decision.warnings,
+                valid_signers=decision.valid_signers,
+                signer_persons=decision.signer_persons,
+                is_drill=decision.is_drill,
+            )
+            self.audit.append(
+                Event.ORDER_DISPATCHED,
+                {
+                    "order_id": order.order_id,
+                    "accepted": False,
+                    "reasons": [str(r) for r in replayed.reasons],
+                },
+            )
+            return DispatchResult(replayed, [], [])
 
         # The order row and the two entries that prove it was authorised go in as
         # one unit, so a crash between them cannot leave a dispatched order with no

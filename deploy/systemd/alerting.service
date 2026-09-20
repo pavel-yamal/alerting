@@ -52,9 +52,15 @@ ExecStartPre=/usr/bin/chronyc waitsync 30 0.1
 # ladder that is not where the operator thinks it is fails here, not mid-incident.
 ExecStartPre=/opt/alerting/current/venv/bin/alerting-server --check
 
+# --workers 2 is safe as of phase 3: the sequence counter, the replay window, the
+# siren's dedupe and the escalation ladder all live in the database, and only the
+# holder of a session advisory lock climbs a ladder. Before that it would have been
+# a quiet catastrophe — two replay windows means a replayed order is accepted by
+# whichever worker has not seen it.
 ExecStart=/opt/alerting/current/venv/bin/alerting-server \
     --host 10.0.10.11 \
     --port 8080 \
+    --workers 2 \
     --forwarded-allow-ips 10.0.10.0/24
 
 Restart=always

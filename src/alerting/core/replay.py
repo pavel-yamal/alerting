@@ -14,12 +14,26 @@ the human decides — delivery never degrades closed.
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Protocol
 
 
 class ReplayVerdict(StrEnum):
     FRESH = "fresh"
     DUPLICATE = "duplicate"  # reject: we have provably seen this exact seq
     OUT_OF_WINDOW = "out_of_window"  # warn: too old to judge, show it anyway
+
+
+class ReplayChecker(Protocol):
+    """What verification needs from a replay window: one question, no mutation.
+
+    ``ReplayWindow`` below satisfies this and is what a client device uses. The
+    server implements it over a table instead, because a window held in one
+    process's memory is not a window at all once a second process exists: the same
+    replayed order is rejected by the worker that has seen it and accepted by the
+    one that has not, and whoever can pick the worker gets replay for free.
+    """
+
+    def check(self, stream_id: str, seq: int) -> ReplayVerdict: ...
 
 
 class ReplayWindow:

@@ -18,6 +18,7 @@ from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
 from alerting.server.db import migrate
+from alerting.server.db.leader import LeaderLock
 from alerting.server.db.pool import open_pool
 from alerting.server.db.repo import Repo
 from alerting.server.logging_config import configure as configure_logging
@@ -73,7 +74,7 @@ class AppServices:
             drill_enabled_sites=settings.drill_enabled_sites,
         )
         self.connections = ConnectionRegistry()
-        self.channels = default_registry(self.connections, settings.org_label)
+        self.channels = default_registry(self.connections, self.repo, settings.org_label)
         self.escalation_plan = _load_plan(settings)
         _require_deliverable_channels(
             self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
@@ -109,12 +110,27 @@ class AppServices:
             heads_dir=settings.heads_dir,
         )
         self.dispatcher = Dispatcher(self.repo, self.state, self.channels, self.audit, self.clock)
+        # The leader lock keeps one process climbing ladders. It takes a connection
+        # of its own because the lock is session scoped: one from the pool is handed
+        # back after each statement, which would release it immediately.
         self.escalation = EscalationWorker(
-            self.repo, self.dispatcher, self.audit, self.clock, self.escalation_plan
+            self.repo,
+            self.dispatcher,
+            self.audit,
+            self.clock,
+            self.escalation_plan,
+            leader=LeaderLock(settings.load_dsn()),
         )
 
     def close(self) -> None:
         """Synchronous teardown. Prefer :meth:`aclose`, which orders it correctly."""
+        # The leader lock holds a connection of its own, outside the pool, so closing
+        # the pool does not touch it. Left behind, it keeps the escalation lock until
+        # the server eventually reaps the connection -- and every other node sits
+        # idle, not climbing ladders, for as long as that takes.
+        if self.escalation.leader is not None:
+            with contextlib.suppress(Exception):
+                self.escalation.leader.release()
         with contextlib.suppress(Exception):
             self.pool.close()
 

@@ -21,6 +21,7 @@ from alerting.core.audit_chain import Event
 from alerting.core.clock import Clock
 from alerting.core.envelope import OrderPayload, SignedEnvelope
 from alerting.server.channels.base import Recipient
+from alerting.server.db.leader import LeaderLock
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.dispatcher import Dispatcher
@@ -96,12 +97,18 @@ class EscalationWorker:
         audit: AuditService,
         clock: Clock,
         plan: EscalationPlan = DEFAULT_PLAN,
+        leader: LeaderLock | None = None,
     ) -> None:
         self.repo = repo
         self.dispatcher = dispatcher
         self.audit = audit
         self.clock = clock
         self.plan = plan
+        #: When set, only the process holding this lock climbs ladders. Without it
+        #: every process climbs, which the claims below survive but which means every
+        #: rung is a race. None means "climb unconditionally" -- the single-process
+        #: case and what the tests drive.
+        self.leader = leader
         self._task: asyncio.Task[None] | None = None
         self._stopping = asyncio.Event()
         self._started = False
@@ -109,6 +116,12 @@ class EscalationWorker:
     async def tick(self) -> int:
         """One pass. Returns how many rungs fired, which makes it easy to test."""
         import json
+
+        # Asked every tick rather than once at startup: that is what makes failover
+        # automatic. When the holder dies its connection goes with it, PostgreSQL
+        # drops the session lock, and whichever process asks next takes over.
+        if self.leader is not None and not self.leader.acquire():
+            return 0
 
         now = self.clock.now()
         cancelled = self.repo.cancelled_order_ids()
@@ -163,10 +176,19 @@ class EscalationWorker:
         if rung.channels:
             await self.dispatcher.fan_out(order, envelope, targets, rung.channels)
 
+        # The role and group notifications hanging off a rung need a claim of their
+        # own. `mark_rung` latches per person, so two climbers claim different
+        # subsets of the outstanding people, both end up with a non-empty `targets`,
+        # and both then call the duty officer and page the alternates. Leader
+        # election makes that rare; this makes it impossible.
         extra: list[Recipient] = []
-        if rung.notify_role:
+        if rung.notify_role and self.repo.claim_escalation_extra(
+            order.order_id, index, f"role:{rung.notify_role}", now
+        ):
             extra += self._people_with_role(rung.notify_role)
-        if rung.reassign_to_group:
+        if rung.reassign_to_group and self.repo.claim_escalation_extra(
+            order.order_id, index, f"group:{rung.reassign_to_group}", now
+        ):
             extra += self._people_in_group(rung.reassign_to_group)
         if extra:
             await self.dispatcher.fan_out(order, envelope, extra, ("ws", "push", "sms"))
@@ -284,3 +306,8 @@ class EscalationWorker:
         finally:
             self._task = None
             self._started = False
+            # Give the lock up now rather than when the connection eventually times
+            # out: a restarting node that held it in the meantime leaves every other
+            # node idle, which is the whole ladder not being climbed.
+            if self.leader is not None:
+                self.leader.release()

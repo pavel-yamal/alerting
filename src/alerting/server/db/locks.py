@@ -18,3 +18,8 @@ MIGRATION: Final = 0x41_4C_52_01
 #: appender serializes on this: the entry's index and its ``prev`` hash are read and
 #: written as one step, which is what makes the chain a chain.
 AUDIT_CHAIN: Final = 0x41_4C_52_02
+
+#: Held for the lifetime of whichever process is climbing escalation ladders. Unlike
+#: the two above this one is *session* scoped, so it needs a connection of its own:
+#: a pooled connection is handed back after each statement, which would drop it.
+ESCALATION_LEADER: Final = 0x41_4C_52_03
