@@ -8,6 +8,7 @@ and every "client-side signature check" below would pass.
 from __future__ import annotations
 
 import pytest
+from tests.conftest import ISSUED_AT
 
 from alerting.core.directory import (
     STALE_DIRECTORY_S,
@@ -20,8 +21,6 @@ from alerting.core.errors import Reason
 from alerting.core.policy import Policy, PolicyPayload, PolicyRejected, QuorumRule
 from alerting.core.signing import DOMAIN_DIRECTORY, DOMAIN_POLICY, generate_keypair
 from alerting.orgkit import sign_bundle
-
-from tests.conftest import ISSUED_AT
 
 
 def load_directory(org, bundle=None, **kwargs):
@@ -81,9 +80,7 @@ def test_revoked_key_is_reported_as_revoked(org):
     updated = payload.model_copy(
         update={"version": 2, "revoked": (Revocation(key_id=key, revoked_at=ISSUED_AT),)}
     )
-    directory = load_directory(
-        org, sign_bundle(updated, DOMAIN_DIRECTORY, org.root_private_key)
-    )
+    directory = load_directory(org, sign_bundle(updated, DOMAIN_DIRECTORY, org.root_private_key))
     assert directory.is_revoked(key)
     assert directory.signer_status(key, ISSUED_AT) is Reason.REVOKED_SIGNER
 
@@ -107,7 +104,7 @@ def test_staleness_is_a_banner_not_a_refusal(org):
 
 def test_duplicate_key_ids_are_rejected_at_construction(org):
     payload = DirectoryPayload.model_validate(org.directory_bundle["payload"])
-    doubled = list(payload.keys) + [payload.keys[0]]
+    doubled = [*payload.keys, payload.keys[0]]
     with pytest.raises(ValueError, match="duplicate key_id"):
         payload.model_copy(update={"keys": tuple(doubled)}).model_validate(
             {**payload.to_payload(), "keys": [k.to_payload() for k in doubled]}

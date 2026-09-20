@@ -20,9 +20,7 @@ class PushChannel:
     def __init__(self) -> None:
         self.sent: list[tuple[str, dict[str, str]]] = []
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt:
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         order = context.order
         payload = {
             "title": "УЧЕНИЕ · Оповещение" if order.drill else "Оповещение",

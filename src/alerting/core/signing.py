@@ -11,7 +11,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Literal
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -28,7 +28,7 @@ DOMAIN_POLICY = b"alerting.policy.v1\x00"
 DOMAIN_AUDIT_HEAD = b"alerting.audit-head.v1\x00"
 DOMAIN_WAKE = b"alerting.wake.v1"  # HMAC label, not a signature domain
 
-ALG_ED25519 = "Ed25519"
+ALG_ED25519: Literal["Ed25519"] = "Ed25519"
 
 
 def b64u_encode(raw: bytes) -> str:
@@ -69,9 +69,7 @@ def payload_digest(payload: Mapping[str, Any]) -> str:
     return b64u_encode(hashlib.sha256(canonicalize(payload)).digest())
 
 
-def sign_payload(
-    domain: bytes, payload: Mapping[str, Any], private_key: Ed25519PrivateKey
-) -> str:
+def sign_payload(domain: bytes, payload: Mapping[str, Any], private_key: Ed25519PrivateKey) -> str:
     """Return a detached base64url signature over ``domain || JCS(payload)``."""
     return b64u_encode(private_key.sign(signing_input(domain, payload)))
 
@@ -123,9 +121,7 @@ def private_key_to_b64u(private_key: Ed25519PrivateKey) -> str:
         PrivateFormat,
     )
 
-    return b64u_encode(
-        private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
-    )
+    return b64u_encode(private_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()))
 
 
 #: Device authentication on the WebSocket handshake. Separate from every other domain

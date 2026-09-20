@@ -12,9 +12,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def run_incident(services, org, clock):
-    order = make_order(
-        org, issued_at=clock.now(), audience=Audience(groups=("fire-wardens",))
-    )
+    order = make_order(org, issued_at=clock.now(), audience=Audience(groups=("fire-wardens",)))
     await services.dispatcher.dispatch(
         sign_order(order, [org.person("p-001"), org.person("p-002")]),
         channels=("ws", "sms"),
@@ -41,8 +39,7 @@ async def test_every_stage_is_recorded(services, org, clock):
         "channel.attempted",
     } <= events
     assert any(
-        e["data"].get("order_id") == order.order_id
-        for e in services.repo.audit_entries(0, 1000)
+        e["data"].get("order_id") == order.order_id for e in services.repo.audit_entries(0, 1000)
     )
 
 

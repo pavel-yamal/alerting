@@ -18,13 +18,9 @@ from alerting.orgkit import make_order, sign_order
 
 def test_cancel_needs_only_one_signature_where_launch_needs_two(org, verify_kwargs):
     launch = make_order(org, seq=1)
-    assert verify_envelope(
-        sign_order(launch, [org.person("p-001")]), **verify_kwargs
-    ).rejected
+    assert verify_envelope(sign_order(launch, [org.person("p-001")]), **verify_kwargs).rejected
 
-    cancel = make_order(
-        org, seq=2, order_type="cancel", cancels=launch.order_id, action="STOP"
-    )
+    cancel = make_order(org, seq=2, order_type="cancel", cancels=launch.order_id, action="STOP")
     decision = verify_envelope(
         sign_order(cancel, [org.person("p-001")]),
         cancel_target=launch,
@@ -64,9 +60,7 @@ def test_cancel_for_an_unknown_order_warns_rather_than_failing(org, verify_kwarg
     """If we never saw the original there is nothing to stand down, but we also cannot
     cross-check the drill flag, so the operator is told."""
     cancel = make_order(org, order_type="cancel", cancels="never-seen", action="STOP")
-    decision = verify_envelope(
-        sign_order(cancel, [org.person("p-001")]), **verify_kwargs
-    )
+    decision = verify_envelope(sign_order(cancel, [org.person("p-001")]), **verify_kwargs)
     assert decision.accepted
     assert Reason.CANCEL_TARGET_MISSING in decision.warnings
 

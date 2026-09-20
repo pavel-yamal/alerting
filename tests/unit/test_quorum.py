@@ -82,12 +82,8 @@ def test_signature_spread_needs_an_independent_observation():
     rule = QuorumRule(m=2, max_signature_spread_s=300)
 
     assert evaluate_quorum(signers, rule, issued_at=1000).met  # client: skipped
-    assert evaluate_quorum(
-        signers, rule, issued_at=1000, observed_at={"k1": 1010, "k2": 1200}
-    ).met
-    late = evaluate_quorum(
-        signers, rule, issued_at=1000, observed_at={"k1": 1010, "k2": 1600}
-    )
+    assert evaluate_quorum(signers, rule, issued_at=1000, observed_at={"k1": 1010, "k2": 1200}).met
+    late = evaluate_quorum(signers, rule, issued_at=1000, observed_at={"k1": 1010, "k2": 1600})
     assert not late.met
     assert Reason.SIGNATURE_SPREAD_EXCEEDED in late.reasons
 

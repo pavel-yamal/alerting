@@ -67,8 +67,13 @@ async def test_acknowledging_stops_escalation_for_that_person(services, org, clo
         private_key=person.private_key,
     )
     services.repo.record_ack(
-        order.order_id, person.person_id, person.key_id, "acknowledged",
-        clock.now(), ack.model_dump(mode="json"), True,
+        order.order_id,
+        person.person_id,
+        person.key_id,
+        "acknowledged",
+        clock.now(),
+        ack.model_dump(mode="json"),
+        True,
     )
 
     clock.advance(70)
@@ -104,9 +109,7 @@ async def test_a_cancelled_order_stops_escalating(services, org, clock):
         action="STOP",
         audience=Audience(groups=("fire-wardens",)),
     )
-    result = await services.dispatcher.dispatch(
-        sign_order(cancel, [org.person("p-001")])
-    )
+    result = await services.dispatcher.dispatch(sign_order(cancel, [org.person("p-001")]))
     assert result.accepted, result.decision.reasons
 
     clock.advance(300)
@@ -118,8 +121,14 @@ async def test_an_invalid_ack_does_not_stop_escalation(services, org, clock):
     """Impersonation must not be able to silence the ladder."""
     order = await dispatch(services, org, clock)
     services.repo.record_ack(
-        order.order_id, "x-101", "ed25519:forged", "completed", clock.now(),
-        {"forged": True}, False, ["bad_signature"],
+        order.order_id,
+        "x-101",
+        "ed25519:forged",
+        "completed",
+        clock.now(),
+        {"forged": True},
+        False,
+        ["bad_signature"],
     )
     clock.advance(70)
     await services.escalation.tick()

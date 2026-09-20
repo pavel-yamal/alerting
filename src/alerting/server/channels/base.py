@@ -60,6 +60,4 @@ class DispatchContext:
 class Channel(Protocol):
     name: str
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt: ...
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt: ...

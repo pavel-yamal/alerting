@@ -69,7 +69,7 @@ async def submit_ack(body: AckRequest, request: Request) -> dict[str, Any]:
     ack = SignedAck(payload=body.payload, signature=body.signature)
     try:
         parsed = ack.parse_payload()
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise HTTPException(400, "malformed ack") from exc
 
     row = app.repo.order(parsed.order_id)

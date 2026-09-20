@@ -14,7 +14,7 @@ from typing import Any, Literal, Self
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from pydantic import Field, StrictInt, StrictStr, model_validator
 
-from alerting.core.envelope import CanonicalModel, Identifier, seq_of
+from alerting.core.envelope import CanonicalModel, Identifier, Seq
 from alerting.core.errors import Reason
 from alerting.core.signing import (
     DOMAIN_DIRECTORY,
@@ -59,8 +59,8 @@ class DirectoryPayload(CanonicalModel):
     org_id: Identifier
     version: StrictInt = Field(ge=1)
     issued_at: StrictInt = Field(ge=0)
-    keys: seq_of(KeyEntry)
-    revoked: seq_of(Revocation) = ()
+    keys: Seq[KeyEntry]
+    revoked: Seq[Revocation] = ()
 
     @model_validator(mode="after")
     def _unique_key_ids(self) -> Self:
@@ -135,9 +135,7 @@ class Directory:
             raise DirectoryRejected(Reason.NOT_CANONICAL)
         if payload.org_id != org_id:
             raise DirectoryRejected(Reason.ORG_MISMATCH)
-        if not verify_signature(
-            DOMAIN_DIRECTORY, payload_raw, signature, root_public_key
-        ):
+        if not verify_signature(DOMAIN_DIRECTORY, payload_raw, signature, root_public_key):
             raise DirectoryRejected(Reason.DIRECTORY_UNSIGNED)
         if payload.version < min_version:
             raise DirectoryRejected(Reason.DIRECTORY_ROLLBACK)

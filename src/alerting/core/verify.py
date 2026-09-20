@@ -88,8 +88,7 @@ def verify_envelope(
         payload = envelope.parse_payload()
     except ValidationError as exc:
         missing_drill = any(
-            error["loc"] == ("drill",) and error["type"] == "missing"
-            for error in exc.errors()
+            error["loc"] == ("drill",) and error["type"] == "missing" for error in exc.errors()
         )
         reason = Reason.DRILL_FLAG_MISSING if missing_drill else Reason.MALFORMED
         return _reject(reason, detail={"errors": exc.error_count()})
@@ -140,9 +139,7 @@ def verify_envelope(
         assert entry is not None  # signer_status returned None, so it exists
         from alerting.core.signing import DOMAIN_ORDER, verify_signature
 
-        if not verify_signature(
-            DOMAIN_ORDER, envelope.payload, signature.sig, entry.public()
-        ):
+        if not verify_signature(DOMAIN_ORDER, envelope.payload, signature.sig, entry.public()):
             reasons.append(Reason.BAD_SIGNATURE)
             continue
         valid_entries.append(entry)
@@ -189,15 +186,9 @@ def verify_envelope(
     if scenario is None:
         reasons.append(Reason.UNKNOWN_SCENARIO)
     else:
-        if (
-            scenario.min_severity is not None
-            and payload.severity.rank < scenario.min_severity.rank
-        ):
+        if scenario.min_severity is not None and payload.severity.rank < scenario.min_severity.rank:
             reasons.append(Reason.SEVERITY_BELOW_SCENARIO_MINIMUM)
-        if (
-            scenario.max_severity is not None
-            and payload.severity.rank > scenario.max_severity.rank
-        ):
+        if scenario.max_severity is not None and payload.severity.rank > scenario.max_severity.rank:
             reasons.append(Reason.SEVERITY_ABOVE_SCENARIO_MAXIMUM)
 
     deduped = tuple(dict.fromkeys(reasons))

@@ -99,9 +99,7 @@ def verify_ack(
     else:
         entry = directory.lookup(payload.device_key_id)
         assert entry is not None
-        if not verify_signature(
-            DOMAIN_ACK, ack.payload, ack.signature.sig, entry.public()
-        ):
+        if not verify_signature(DOMAIN_ACK, ack.payload, ack.signature.sig, entry.public()):
             reasons.append(Reason.BAD_SIGNATURE)
         elif entry.person_id != payload.person_id:
             reasons.append(Reason.UNKNOWN_SIGNER)

@@ -19,9 +19,7 @@ from alerting.core.signing import b64u_decode
 from alerting.server.channels.base import Recipient
 from alerting.server.db.repo import Repo
 
-WORDLIST_PATH = (
-    pathlib.Path(__file__).resolve().parents[3].parent / "config" / "wordlist.ru.txt"
-)
+WORDLIST_PATH = pathlib.Path(__file__).resolve().parents[3].parent / "config" / "wordlist.ru.txt"
 
 
 def load_wordlist(path: pathlib.Path | None = None) -> list[str]:

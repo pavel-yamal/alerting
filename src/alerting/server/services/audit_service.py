@@ -74,7 +74,7 @@ class AuditService:
             )
             self._maybe_publish_head(idx, b64u_encode(digest), now)
             return idx
-        except Exception:  # noqa: BLE001 - never let the logger stop the alert
+        except Exception:
             log.exception("AUDIT WRITE FAILED — dispatch continues, entry spooled")
             self._spool(event, data, now)
             return None
@@ -89,7 +89,7 @@ class AuditService:
             )
             with (self.spool_dir / "audit-spool.jsonl").open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("audit spool also failed")
 
     def _maybe_publish_head(self, idx: int, head: str, now: int) -> None:
@@ -107,9 +107,7 @@ class AuditService:
         """
         payload = {"idx": idx, "head": head, "ts": now}
         signature = (
-            sign_payload(DOMAIN_AUDIT_HEAD, payload, self.server_key)
-            if self.server_key
-            else ""
+            sign_payload(DOMAIN_AUDIT_HEAD, payload, self.server_key) if self.server_key else ""
         )
         self.repo.put_head(idx, head, now, signature)
         self._last_head_at = now
@@ -117,12 +115,10 @@ class AuditService:
             try:
                 self.heads_dir.mkdir(parents=True, exist_ok=True)
                 (self.heads_dir / f"head-{idx:08d}.json").write_text(
-                    json.dumps(
-                        {"payload": payload, "signature": signature}, ensure_ascii=False
-                    ),
+                    json.dumps({"payload": payload, "signature": signature}, ensure_ascii=False),
                     encoding="utf-8",
                 )
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("could not write head file")
         log.info("published audit head idx=%d", idx)
         return {"payload": payload, "signature": signature}

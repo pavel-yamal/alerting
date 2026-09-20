@@ -43,9 +43,7 @@ async def test_one_approver_can_stand_down_what_two_launched(services, org, cloc
     because the second director is on a plane."""
     order = await launch(services, org, clock)
     clock.advance(30)
-    cancel, result = await stand_down(
-        services, org, clock, order, [org.person("p-003")]
-    )
+    cancel, result = await stand_down(services, org, clock, order, [org.person("p-003")])
     assert result.accepted, result.decision.reasons
     assert cancel.cancels == order.order_id
 
@@ -67,9 +65,7 @@ async def test_the_original_order_is_not_erased(services, org, clock):
 
 async def test_a_drill_cancel_cannot_stand_down_a_real_order(services, org, clock):
     order = await launch(services, org, clock, drill=False)
-    _, result = await stand_down(
-        services, org, clock, order, [org.person("p-003")], drill=True
-    )
+    _, result = await stand_down(services, org, clock, order, [org.person("p-003")], drill=True)
     assert not result.accepted
     assert "drill_mismatch" in [str(r) for r in result.decision.reasons]
 
@@ -96,9 +92,7 @@ async def test_the_cancel_is_recorded_as_its_own_event(services, org, clock):
     order = await launch(services, org, clock)
     cancel, _ = await stand_down(services, org, clock, order, [org.person("p-003")])
     events = [
-        e["data"]
-        for e in services.repo.audit_entries(0, 1000)
-        if e["event"] == "cancel.issued"
+        e["data"] for e in services.repo.audit_entries(0, 1000) if e["event"] == "cancel.issued"
     ]
     assert events and events[0]["cancels"] == order.order_id
     assert events[0]["order_id"] == cancel.order_id

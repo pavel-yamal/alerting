@@ -60,9 +60,7 @@ class AppServices:
             spool_dir=settings.spool_dir,
             heads_dir=settings.heads_dir,
         )
-        self.dispatcher = Dispatcher(
-            self.repo, self.state, self.channels, self.audit, self.clock
-        )
+        self.dispatcher = Dispatcher(self.repo, self.state, self.channels, self.audit, self.clock)
         self.escalation = EscalationWorker(
             self.repo, self.dispatcher, self.audit, self.clock, _load_plan(settings)
         )

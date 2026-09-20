@@ -65,9 +65,7 @@ class SmsChannel:
             org=self.org_label, code=code, time=f"{minute // 60:02d}:{minute % 60:02d}"
         )
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt:
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         if not recipient.phone:
             return DeliveryReceipt(self.name, recipient.person_id, "failed", "no phone")
         text = self.render(recipient, context)

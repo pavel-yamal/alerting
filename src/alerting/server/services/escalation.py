@@ -117,7 +117,7 @@ class EscalationWorker:
             envelope = SignedEnvelope.model_validate(stored)
             try:
                 order = OrderPayload.model_validate(stored["payload"])
-            except Exception:  # noqa: BLE001
+            except Exception:
                 continue
             if order.is_cancel or not order.requires_ack:
                 continue
@@ -150,9 +150,7 @@ class EscalationWorker:
         now: int,
     ) -> int:
         targets = [
-            r
-            for r in outstanding
-            if self.repo.mark_rung(order.order_id, r.person_id, index, now)
+            r for r in outstanding if self.repo.mark_rung(order.order_id, r.person_id, index, now)
         ]
         if not targets:
             return 0
@@ -179,15 +177,11 @@ class EscalationWorker:
                 "person_ids": [r.person_id for r in targets],
             },
         )
-        log.info(
-            "escalation rung %d for %s -> %d people", index, order.order_id, len(targets)
-        )
+        log.info("escalation rung %d for %s -> %d people", index, order.order_id, len(targets))
         return 1
 
     def _people_with_role(self, role: str) -> list[Recipient]:
-        return [
-            self._recipient(row) for row in self.repo.contacts() if row["role"] == role
-        ]
+        return [self._recipient(row) for row in self.repo.contacts() if row["role"] == role]
 
     def _people_in_group(self, group: str) -> list[Recipient]:
         return [
@@ -213,7 +207,7 @@ class EscalationWorker:
         while True:
             try:
                 await self.tick()
-            except Exception:  # noqa: BLE001 - the worker must not die mid-incident
+            except Exception:
                 log.exception("escalation tick failed")
             await asyncio.sleep(interval)
 

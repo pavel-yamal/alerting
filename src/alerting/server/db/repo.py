@@ -67,28 +67,35 @@ class Repo:
         return int(row["s"] or 0) + 1
 
     def create_proposal(
-        self, order_id: str, stream_id: str, seq: int, payload: Mapping[str, Any],
-        created_at: int, created_by: str,
+        self,
+        order_id: str,
+        stream_id: str,
+        seq: int,
+        payload: Mapping[str, Any],
+        created_at: int,
+        created_by: str,
     ) -> None:
         self.db.execute(
             "INSERT INTO proposals (order_id, stream_id, seq, payload_json, created_at,"
             " created_by) VALUES (?, ?, ?, ?, ?, ?)",
-            (order_id, stream_id, seq, json.dumps(payload, ensure_ascii=False),
-             created_at, created_by),
+            (
+                order_id,
+                stream_id,
+                seq,
+                json.dumps(payload, ensure_ascii=False),
+                created_at,
+                created_by,
+            ),
         )
 
     def proposal(self, order_id: str) -> sqlite3.Row | None:
-        return self.db.execute(
-            "SELECT * FROM proposals WHERE order_id = ?", (order_id,)
-        ).fetchone()
+        return self.db.execute("SELECT * FROM proposals WHERE order_id = ?", (order_id,)).fetchone()
 
     def open_proposals(self) -> list[sqlite3.Row]:
         return list(self.db.execute("SELECT * FROM proposals WHERE status = 'open'"))
 
     def set_proposal_status(self, order_id: str, status: str) -> None:
-        self.db.execute(
-            "UPDATE proposals SET status = ? WHERE order_id = ?", (status, order_id)
-        )
+        self.db.execute("UPDATE proposals SET status = ? WHERE order_id = ?", (status, order_id))
 
     def add_signature(self, order_id: str, key_id: str, sig: str, observed_at: int) -> None:
         self.db.execute(
@@ -107,39 +114,53 @@ class Repo:
 
     # --- orders --------------------------------------------------------------
     def create_order(
-        self, order_id: str, envelope: Mapping[str, Any], dispatched_at: int,
-        drill: bool, severity: str, scenario: str, cancels: str | None, digest: str,
+        self,
+        order_id: str,
+        envelope: Mapping[str, Any],
+        dispatched_at: int,
+        drill: bool,
+        severity: str,
+        scenario: str,
+        cancels: str | None,
+        digest: str,
     ) -> None:
         self.db.execute(
             "INSERT INTO orders (order_id, envelope_json, dispatched_at, drill,"
             " severity, scenario, cancels, order_digest) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (order_id, json.dumps(envelope, ensure_ascii=False), dispatched_at,
-             int(drill), severity, scenario, cancels, digest),
+            (
+                order_id,
+                json.dumps(envelope, ensure_ascii=False),
+                dispatched_at,
+                int(drill),
+                severity,
+                scenario,
+                cancels,
+                digest,
+            ),
         )
 
     def order(self, order_id: str) -> sqlite3.Row | None:
-        return self.db.execute(
-            "SELECT * FROM orders WHERE order_id = ?", (order_id,)
-        ).fetchone()
+        return self.db.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,)).fetchone()
 
     def orders(self, limit: int = 50) -> list[sqlite3.Row]:
         return list(
-            self.db.execute(
-                "SELECT * FROM orders ORDER BY dispatched_at DESC LIMIT ?", (limit,)
-            )
+            self.db.execute("SELECT * FROM orders ORDER BY dispatched_at DESC LIMIT ?", (limit,))
         )
 
     def cancelled_order_ids(self) -> set[str]:
         return {
             row["cancels"]
-            for row in self.db.execute(
-                "SELECT cancels FROM orders WHERE cancels IS NOT NULL"
-            )
+            for row in self.db.execute("SELECT cancels FROM orders WHERE cancels IS NOT NULL")
         }
 
     # --- dispatch and acknowledgement ---------------------------------------
     def record_dispatch(
-        self, order_id: str, person_id: str, channel: str, at: int, status: str,
+        self,
+        order_id: str,
+        person_id: str,
+        channel: str,
+        at: int,
+        status: str,
         detail: str = "",
     ) -> None:
         self.db.execute(
@@ -157,21 +178,34 @@ class Repo:
         )
 
     def record_ack(
-        self, order_id: str, person_id: str, device_key_id: str, status: str, at: int,
-        ack: Mapping[str, Any], valid: bool, reasons: Sequence[str] = (),
+        self,
+        order_id: str,
+        person_id: str,
+        device_key_id: str,
+        status: str,
+        at: int,
+        ack: Mapping[str, Any],
+        valid: bool,
+        reasons: Sequence[str] = (),
     ) -> None:
         self.db.execute(
             "INSERT INTO acks (order_id, person_id, device_key_id, status, at,"
             " ack_json, valid, reasons) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (order_id, person_id, device_key_id, status, at,
-             json.dumps(ack, ensure_ascii=False), int(valid), ",".join(reasons)),
+            (
+                order_id,
+                person_id,
+                device_key_id,
+                status,
+                at,
+                json.dumps(ack, ensure_ascii=False),
+                int(valid),
+                ",".join(reasons),
+            ),
         )
 
     def acks(self, order_id: str) -> list[sqlite3.Row]:
         return list(
-            self.db.execute(
-                "SELECT * FROM acks WHERE order_id = ? ORDER BY at", (order_id,)
-            )
+            self.db.execute("SELECT * FROM acks WHERE order_id = ? ORDER BY at", (order_id,))
         )
 
     def acknowledged_person_ids(self, order_id: str) -> set[str]:
@@ -190,8 +224,7 @@ class Repo:
     def rung_fired(self, order_id: str, person_id: str, rung: int) -> bool:
         return (
             self.db.execute(
-                "SELECT 1 FROM escalation_state WHERE order_id = ? AND person_id = ?"
-                " AND rung = ?",
+                "SELECT 1 FROM escalation_state WHERE order_id = ? AND person_id = ? AND rung = ?",
                 (order_id, person_id, rung),
             ).fetchone()
             is not None
@@ -208,7 +241,12 @@ class Repo:
 
     # --- audit ---------------------------------------------------------------
     def append_audit(
-        self, idx: int, ts: int, prev: str, event: str, data: Mapping[str, Any],
+        self,
+        idx: int,
+        ts: int,
+        prev: str,
+        event: str,
+        data: Mapping[str, Any],
         entry_hash: str,
     ) -> None:
         self.db.execute(
@@ -241,8 +279,7 @@ class Repo:
 
     def put_head(self, idx: int, head: str, ts: int, signature: str = "") -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO audit_heads (idx, head, ts, signature)"
-            " VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO audit_heads (idx, head, ts, signature) VALUES (?, ?, ?, ?)",
             (idx, head, ts, signature),
         )
 
@@ -253,6 +290,4 @@ class Repo:
         }
 
     def latest_head(self) -> sqlite3.Row | None:
-        return self.db.execute(
-            "SELECT * FROM audit_heads ORDER BY idx DESC LIMIT 1"
-        ).fetchone()
+        return self.db.execute("SELECT * FROM audit_heads ORDER BY idx DESC LIMIT 1").fetchone()

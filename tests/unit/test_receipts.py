@@ -47,7 +47,7 @@ def test_ack_pins_the_exact_order_the_executor_saw(org, directory, order_pair):
     ack = make(org, order_pair)
     assert ack.parse_payload().order_digest == payload_digest(raw)
 
-    ok, reasons = verify_ack(
+    ok, _ = verify_ack(
         ack,
         directory=directory,
         org_id=org.org_id,
@@ -58,9 +58,7 @@ def test_ack_pins_the_exact_order_the_executor_saw(org, directory, order_pair):
 
 def test_tampered_ack_fails(org, directory, order_pair):
     ack = make(org, order_pair)
-    tampered = SignedAck(
-        payload={**ack.payload, "status": "completed"}, signature=ack.signature
-    )
+    tampered = SignedAck(payload={**ack.payload, "status": "completed"}, signature=ack.signature)
     ok, reasons = verify_ack(tampered, directory=directory, org_id=org.org_id)
     assert not ok
     assert Reason.BAD_SIGNATURE in reasons
@@ -111,9 +109,7 @@ def test_cannot_comply_requires_a_reason(org, order_pair):
 
 
 def test_cannot_comply_with_a_reason_is_valid(org, directory, order_pair):
-    ack = make(
-        org, order_pair, status=AckStatus.CANNOT_COMPLY, reason="путь отрезан огнём"
-    )
+    ack = make(org, order_pair, status=AckStatus.CANNOT_COMPLY, reason="путь отрезан огнём")
     ok, _ = verify_ack(ack, directory=directory, org_id=org.org_id)
     assert ok
 

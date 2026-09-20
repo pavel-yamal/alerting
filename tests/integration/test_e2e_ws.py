@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from alerting.core.clock import FixedClock
@@ -249,11 +250,10 @@ def test_device_with_a_bad_signature_cannot_open_a_stream(client, org, clock):
                 "sig": sign_payload(DOMAIN_DEVICE_AUTH, payload, other.private_key),
             }
         )
-        try:
-            frame = socket.receive_json()
-            assert frame.get("kind") != "ready"
-        except Exception:
-            pass  # closed, which is the expected outcome
+        # Either the socket is closed outright or it never says "ready"; both mean
+        # the handshake was refused.
+        with contextlib.suppress(Exception):
+            assert socket.receive_json().get("kind") != "ready"
 
 
 def test_replayed_handshake_nonce_is_refused(client, org, clock):
@@ -277,7 +277,5 @@ def test_replayed_handshake_nonce_is_refused(client, org, clock):
                 "sig": sign_payload(DOMAIN_DEVICE_AUTH, payload, person.private_key),
             }
         )
-        try:
+        with contextlib.suppress(Exception):
             assert socket.receive_json().get("kind") != "ready"
-        except Exception:
-            pass

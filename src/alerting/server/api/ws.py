@@ -56,9 +56,7 @@ async def stream(websocket: WebSocket) -> None:
 
     sink = WebSocketSink(websocket)
     await app.connections.attach(person_id, sink)
-    await websocket.send_json(
-        {"kind": "ready", "person_id": person_id, "org_id": app.state.org_id}
-    )
+    await websocket.send_json({"kind": "ready", "person_id": person_id, "org_id": app.state.org_id})
 
     try:
         while True:
@@ -121,7 +119,7 @@ async def _handle_frame(
             payload=frame["payload"], signature=Signature.model_validate(frame["signature"])
         )
         parsed = ack.parse_payload()
-    except Exception:  # noqa: BLE001
+    except Exception:
         await websocket.send_json({"kind": "ack-result", "accepted": False})
         return
 

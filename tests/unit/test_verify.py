@@ -8,6 +8,7 @@ never degrades open, delivery never degrades closed.
 from __future__ import annotations
 
 import pytest
+from tests.conftest import ISSUED_AT
 
 from alerting.core.directory import Directory, DirectoryPayload, Revocation
 from alerting.core.envelope import Action, Audience, Severity, Signature, SignedEnvelope
@@ -15,8 +16,6 @@ from alerting.core.errors import Reason
 from alerting.core.signing import ALG_ED25519, DOMAIN_DIRECTORY
 from alerting.core.verify import verify_envelope
 from alerting.orgkit import Org, make_order, sign_bundle, sign_order
-
-from tests.conftest import ISSUED_AT
 
 
 def two_approvers(org: Org):
@@ -126,9 +125,7 @@ def test_scenario_below_its_minimum_severity_is_rejected(org, verify_kwargs):
     """A building evacuation cannot be slipped through as an 'info' notice with a
     1-of-N quorum."""
     order = make_order(org, scenario="EVAC.BUILDING", severity=Severity.INFO)
-    decision = verify_envelope(
-        sign_order(order, [org.person("p-001")]), **verify_kwargs
-    )
+    decision = verify_envelope(sign_order(order, [org.person("p-001")]), **verify_kwargs)
     assert Reason.SEVERITY_BELOW_SCENARIO_MINIMUM in decision.reasons
 
 
@@ -139,9 +136,7 @@ def test_scenario_above_its_maximum_severity_is_rejected(org, verify_kwargs):
 
 
 def test_catastrophic_needs_three_signatures_including_a_director(org, verify_kwargs):
-    order = make_order(
-        org, scenario="SHELTER.IN.PLACE", severity=Severity.CATASTROPHIC
-    )
+    order = make_order(org, scenario="SHELTER.IN.PLACE", severity=Severity.CATASTROPHIC)
     no_director = [org.person("p-002"), org.person("p-003"), org.person("p-004")]
     decision = verify_envelope(sign_order(order, no_director), **verify_kwargs)
     assert Reason.ROLE_REQUIREMENT_UNMET in decision.reasons
@@ -160,9 +155,7 @@ def test_replayed_order_is_rejected(org, verify_kwargs):
 def test_duplicate_order_id_is_rejected(org, verify_kwargs):
     order = make_order(org)
     envelope = sign_order(order, two_approvers(org))
-    decision = verify_envelope(
-        envelope, seen_order_ids={order.order_id}, **verify_kwargs
-    )
+    decision = verify_envelope(envelope, seen_order_ids={order.order_id}, **verify_kwargs)
     assert Reason.DUPLICATE_ORDER_ID in decision.reasons
 
 
@@ -205,9 +198,7 @@ def test_stale_directory_still_verifies_with_a_banner(org, verify_kwargs):
 
 def test_unknown_envelope_version_is_rejected(org, verify_kwargs):
     envelope = sign_order(make_order(org), two_approvers(org))
-    bumped = SignedEnvelope(
-        payload={**envelope.payload, "v": 2}, signatures=envelope.signatures
-    )
+    bumped = SignedEnvelope(payload={**envelope.payload, "v": 2}, signatures=envelope.signatures)
     decision = verify_envelope(bumped, **verify_kwargs)
     assert decision.rejected
     assert Reason.MALFORMED in decision.reasons or Reason.UNKNOWN_VERSION in decision.reasons

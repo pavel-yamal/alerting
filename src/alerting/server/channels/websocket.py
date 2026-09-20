@@ -56,7 +56,7 @@ class ConnectionRegistry:
             try:
                 await sink.send_json(frame)
                 delivered += 1
-            except Exception:  # noqa: BLE001 - a dead socket must not stop the fan-out
+            except Exception:
                 await self.detach(person_id, sink)
         return delivered
 
@@ -75,9 +75,7 @@ class WebSocketChannel:
     def __init__(self, registry: ConnectionRegistry) -> None:
         self.registry = registry
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt:
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         frame = {"kind": "order", "envelope": context.envelope}
         delivered = await self.registry.deliver(recipient.person_id, frame)
         if delivered:

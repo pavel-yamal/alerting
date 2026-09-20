@@ -35,7 +35,19 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
-ignore = ["B008"]
+ignore = [
+    "B008",  # FastAPI dependency injection idiom
+    # This project is written in Russian. Cyrillic that resembles Latin is the
+    # content, not a homoglyph attack, and the wordlist would be unreadable with
+    # these on.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"scripts/**" = ["E402"]
 
 [tool.mypy]
 python_version = "3.11"

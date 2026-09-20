@@ -16,7 +16,7 @@ Three rules that are security controls rather than style:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Any, Literal, Self
+from typing import Annotated, Any, Literal, Self, TypeVar
 
 from pydantic import (
     BaseModel,
@@ -48,9 +48,10 @@ def _to_tuple(value: Any) -> Any:
     return tuple(value) if isinstance(value, list) else value
 
 
-def seq_of(item: Any) -> Any:
-    """An immutable sequence field that still loads from JSON."""
-    return Annotated[tuple[item, ...], BeforeValidator(_to_tuple)]
+_T = TypeVar("_T")
+
+#: An immutable sequence field that still loads from a JSON array.
+Seq = Annotated[tuple[_T, ...], BeforeValidator(_to_tuple)]
 
 
 class Severity(StrEnum):
@@ -104,9 +105,9 @@ class CanonicalModel(BaseModel):
 class Audience(CanonicalModel):
     """Who the order is addressed to. Empty everywhere means nobody, which is a bug."""
 
-    sites: seq_of(Identifier) = ()
-    groups: seq_of(Identifier) = ()
-    persons: seq_of(Identifier) = ()
+    sites: Seq[Identifier] = ()
+    groups: Seq[Identifier] = ()
+    persons: Seq[Identifier] = ()
 
     def is_empty(self) -> bool:
         return not (self.sites or self.groups or self.persons)
@@ -182,9 +183,7 @@ class SignedEnvelope(BaseModel):
         return OrderPayload.model_validate(self.payload)
 
     def with_signature(self, signature: Signature) -> SignedEnvelope:
-        return SignedEnvelope(
-            payload=self.payload, signatures=(*self.signatures, signature)
-        )
+        return SignedEnvelope(payload=self.payload, signatures=(*self.signatures, signature))
 
 
 class AckPayload(CanonicalModel):

@@ -87,15 +87,9 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     "SHELTER.IN.PLACE": ScenarioRule(
         min_severity=Severity.CRITICAL, description="Укрытие на месте, не выходить"
     ),
-    "MUSTER": ScenarioRule(
-        min_severity=Severity.WARNING, description="Сбор на пункте сбора"
-    ),
-    "STAND.BY": ScenarioRule(
-        max_severity=Severity.WARNING, description="Повышенная готовность"
-    ),
-    "TEST.PING": ScenarioRule(
-        max_severity=Severity.INFO, description="Технический тест канала"
-    ),
+    "MUSTER": ScenarioRule(min_severity=Severity.WARNING, description="Сбор на пункте сбора"),
+    "STAND.BY": ScenarioRule(max_severity=Severity.WARNING, description="Повышенная готовность"),
+    "TEST.PING": ScenarioRule(max_severity=Severity.INFO, description="Технический тест канала"),
 }
 
 #: Cancel quorum is deliberately one below launch: the safe direction is stopping.

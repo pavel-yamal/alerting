@@ -123,24 +123,19 @@ def verify_chain(
                 False,
                 count,
                 max(expected_idx - 1, 0),
-                f"entry {expected_idx - 1} was altered, or entry {expected_idx}.prev "
-                "was rewritten",
+                f"entry {expected_idx - 1} was altered, or entry {expected_idx}.prev was rewritten",
             )
 
         head = b64u_encode(entry_hash(entry))
         if expected_idx in expected_heads and expected_heads[expected_idx] != head:
-            return ChainVerdict(
-                False, count, expected_idx, "does not match the published head"
-            )
+            return ChainVerdict(False, count, expected_idx, "does not match the published head")
 
         prev = entry_hash(entry)
         count += 1
 
     missing = [i for i in expected_heads if i >= count]
     if missing:
-        return ChainVerdict(
-            False, count, min(missing), "chain is shorter than a published head"
-        )
+        return ChainVerdict(False, count, min(missing), "chain is shorter than a published head")
     return ChainVerdict(True, count)
 
 

@@ -49,17 +49,13 @@ def test_drill_is_covered_by_the_signature(org, verify_kwargs):
 
 
 def test_drill_order_verifies_and_is_labelled(org, verify_kwargs):
-    decision = verify_envelope(
-        sign_order(make_order(org, drill=True), two(org)), **verify_kwargs
-    )
+    decision = verify_envelope(sign_order(make_order(org, drill=True), two(org)), **verify_kwargs)
     assert decision.accepted
     assert decision.is_drill is True
 
 
 def test_real_order_is_labelled(org, verify_kwargs):
-    decision = verify_envelope(
-        sign_order(make_order(org, drill=False), two(org)), **verify_kwargs
-    )
+    decision = verify_envelope(sign_order(make_order(org, drill=False), two(org)), **verify_kwargs)
     assert decision.accepted
     assert decision.is_drill is False
 

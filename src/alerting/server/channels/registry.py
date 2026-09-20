@@ -24,9 +24,7 @@ class ChannelRegistry:
         return self._channels[name]
 
 
-def default_registry(
-    connections: ConnectionRegistry, org_label: str = "ACME"
-) -> ChannelRegistry:
+def default_registry(connections: ConnectionRegistry, org_label: str = "ACME") -> ChannelRegistry:
     """WebSocket is real; the rest are stubs with a clear seam for a provider."""
     return ChannelRegistry(
         {

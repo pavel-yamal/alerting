@@ -46,14 +46,10 @@ class VoiceChannel:
         label = f"{self.org_label} УЧЕНИЕ" if order.drill else self.org_label
         return SCRIPT.format(org=label, code=code)
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt:
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         if not recipient.phone:
             return DeliveryReceipt(self.name, recipient.person_id, "failed", "no phone")
         script = self.render(recipient, context)
         self.calls.append((recipient.phone, script))
         log.info("VOICE -> %s", recipient.phone)
-        return DeliveryReceipt(
-            self.name, recipient.person_id, "sent", "stub TTS", rendered=script
-        )
+        return DeliveryReceipt(self.name, recipient.person_id, "sent", "stub TTS", rendered=script)

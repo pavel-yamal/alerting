@@ -88,6 +88,5 @@ def verify_wake_code(
 
 def _normalize(words: Sequence[str]) -> bytes:
     return b"\x00".join(
-        unicodedata.normalize("NFC", word.strip()).upper().encode("utf-8")
-        for word in words
+        unicodedata.normalize("NFC", word.strip()).upper().encode("utf-8") for word in words
     )

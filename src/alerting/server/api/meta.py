@@ -66,9 +66,7 @@ async def publish_head(request: Request) -> dict[str, Any]:
     entries = list(app.repo.audit_entries(0, 1_000_000))
     if not entries:
         raise HTTPException(409, "empty chain")
-    return app.audit.publish_head(
-        len(entries) - 1, head_of(entries), app.clock.now()
-    )
+    return app.audit.publish_head(len(entries) - 1, head_of(entries), app.clock.now())
 
 
 @router.get("/healthz")

@@ -27,9 +27,7 @@ def directory(org: Org) -> Directory:
 
 @pytest.fixture
 def policy(org: Org) -> Policy:
-    return Policy.load(
-        org.policy_bundle, root_public_key=org.root_public_key, org_id=org.org_id
-    )
+    return Policy.load(org.policy_bundle, root_public_key=org.root_public_key, org_id=org.org_id)
 
 
 @pytest.fixture

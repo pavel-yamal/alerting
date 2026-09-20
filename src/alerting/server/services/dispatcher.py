@@ -117,7 +117,7 @@ class Dispatcher:
         stored = json.loads(row["envelope_json"])
         try:
             return OrderPayload.model_validate(stored["payload"])
-        except Exception:  # noqa: BLE001
+        except Exception:
             return None
 
     async def dispatch(
@@ -202,7 +202,7 @@ class Dispatcher:
             for recipient in recipients:
                 try:
                     receipt = await channel.send(recipient, context)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     log.exception("channel %s failed for %s", name, recipient.person_id)
                     receipt = DeliveryReceipt(name, recipient.person_id, "failed", str(exc))
                 receipts.append(receipt)

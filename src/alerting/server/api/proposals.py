@@ -78,9 +78,7 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         cancels=body.cancels,
     )
     raw = payload.to_payload()
-    app.repo.create_proposal(
-        payload.order_id, body.stream_id, seq, raw, now, body.created_by
-    )
+    app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, body.created_by)
     app.audit.append(
         Event.PROPOSAL_CREATED,
         {
@@ -122,9 +120,7 @@ async def get_proposal(order_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/{order_id}/signatures")
-async def add_signature(
-    order_id: str, body: SignatureRequest, request: Request
-) -> dict[str, Any]:
+async def add_signature(order_id: str, body: SignatureRequest, request: Request) -> dict[str, Any]:
     """Record an approver signature; dispatch automatically once quorum is met."""
     app = request.app.state.alerting
     row = app.repo.proposal(order_id)
@@ -138,9 +134,7 @@ async def add_signature(
     payload = json.loads(row["payload_json"])
     now = app.clock.now()
     app.repo.add_signature(order_id, body.key_id, body.sig, now)
-    app.audit.append(
-        Event.PROPOSAL_SIGNED, {"order_id": order_id, "key_id": body.key_id}
-    )
+    app.audit.append(Event.PROPOSAL_SIGNED, {"order_id": order_id, "key_id": body.key_id})
 
     stored = app.repo.signatures(order_id)
     envelope = SignedEnvelope(

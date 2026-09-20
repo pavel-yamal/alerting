@@ -15,6 +15,7 @@ and it is why heartbeats, escalation and out-of-band fallback exist.
 from __future__ import annotations
 
 import pytest
+from tests.integration.conftest import ISSUED_AT
 
 from alerting.core.directory import Directory, DirectoryPayload, DirectoryRejected, KeyEntry
 from alerting.core.envelope import Severity, SignedEnvelope
@@ -30,8 +31,6 @@ from alerting.core.signing import (
 )
 from alerting.core.verify import verify_envelope
 from alerting.orgkit import Person, make_order, sign_bundle, sign_order
-
-from tests.integration.conftest import ISSUED_AT
 
 
 @pytest.fixture
@@ -58,9 +57,7 @@ def evil_directory(org, attacker_person, attacker_public, version=99):
         role="director",
         valid_from=ISSUED_AT - 3600,
     )
-    widened = payload.model_copy(
-        update={"version": version, "keys": (*payload.keys, injected)}
-    )
+    widened = payload.model_copy(update={"version": version, "keys": (*payload.keys, injected)})
     evil_root, _ = generate_keypair()
     return sign_bundle(widened, DOMAIN_DIRECTORY, evil_root)
 

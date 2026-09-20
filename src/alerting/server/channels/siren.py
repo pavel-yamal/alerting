@@ -41,9 +41,7 @@ class SirenChannel:
         self._last_fired: dict[str, int] = {}
         self._fired_for_order: set[tuple[str, str]] = set()
 
-    async def send(
-        self, recipient: Recipient, context: DispatchContext
-    ) -> DeliveryReceipt:
+    async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         order = context.order
         site = recipient.site or "unknown"
 
@@ -66,9 +64,7 @@ class SirenChannel:
 
         last = self._last_fired.get(site)
         if last is not None and order.issued_at - last < MIN_INTERVAL_S:
-            return DeliveryReceipt(
-                self.name, recipient.person_id, "refused", "rate limited"
-            )
+            return DeliveryReceipt(self.name, recipient.person_id, "refused", "rate limited")
 
         self._last_fired[site] = order.issued_at
         self._fired_for_order.add((site, order.order_id))
