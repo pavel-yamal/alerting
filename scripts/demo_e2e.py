@@ -22,6 +22,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 import psycopg
 from psycopg.rows import dict_row
 
+from alerting.core.audit_chain import Event
 from alerting.core.clock import FixedClock
 from alerting.core.directory import Directory, DirectoryPayload, KeyEntry
 from alerting.core.envelope import AckStatus, Audience, Severity
@@ -192,6 +193,22 @@ async def main() -> int:
         clock.now() + 20,
         ack.model_dump(mode="json"),
         True,
+    )
+    # The chain entry too, exactly as the API does it. Without this the demo produces
+    # a chain with no acknowledgements in it at all -- and the metric docs/06 §9 and
+    # docs/07 §2 call the main one is computed from the chain, so `make demo` would
+    # ship a chain that cannot answer the question it is most often asked.
+    # Advance the clock so the demo shows a real interval rather than 0s: the metric
+    # is a duration, and a demonstration of it that reads "0s" demonstrates nothing.
+    clock.advance(20)
+    services.audit.append(
+        Event.ACK_RECEIVED,
+        {
+            "order_id": order.order_id,
+            "person_id": ivanov.person_id,
+            "status": "en_route",
+            "valid": True,
+        },
     )
     status = services.dispatcher.status(order.order_id)
     print(f"  подтвердили: {status['acknowledged']} из {len(status['people'])}")

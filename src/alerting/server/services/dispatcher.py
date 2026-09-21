@@ -196,6 +196,13 @@ class Dispatcher:
         # The fan-out stays outside: it awaits SMS, voice and socket sends, and a
         # transaction held across that would pin a pooled connection and the audit
         # chain lock for the length of a phone call.
+        # Resolved before the entry is written, not after, because the entry has to
+        # carry how many people the order went to. That count is the denominator of
+        # the metric both docs/06 §9 and docs/07 §2 call the main one -- without it
+        # "90% of acknowledgements" has no meaning, and the chain could not answer
+        # the one question it is most often asked.
+        recipients = self.state.recipients_for(order)
+
         with self.repo.tx():
             self.repo.create_order(
                 order.order_id,
@@ -223,11 +230,11 @@ class Dispatcher:
                     "scenario": order.scenario,
                     "drill": order.drill,
                     "cancels": order.cancels,
+                    "recipients": len(recipients),
                     "warnings": [str(w) for w in decision.warnings],
                 },
             )
 
-        recipients = self.state.recipients_for(order)
         if not recipients:
             # Degrading closed here would lose nothing (there is nobody to warn), but
             # returning a bare success would hide it. Record it loudly instead.

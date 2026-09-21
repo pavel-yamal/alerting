@@ -17,6 +17,7 @@ from typing import Any
 
 from alerting.clients.keystore import DEFAULT_DIR
 from alerting.core.audit_chain import verify_chain
+from alerting.core.metrics import MAIN_METRIC_SHARE, ack_timing, order_ids
 from alerting.core.signing import (
     DOMAIN_AUDIT_HEAD,
     public_key_from_b64u,
@@ -146,10 +147,26 @@ def cmd_report(args: argparse.Namespace) -> int:
             }
             print(f"  [{entry['idx']:>4}] {entry['ts']}  {entry['event']:<24} {detail}")
 
-    launches = [e for e in entries if e["event"] == "order.dispatched"]
+    # `order.dispatched` is also written when an order is REFUSED, with
+    # accepted=False -- so counting the event counted forged and replayed attempts as
+    # dispatches, and overstated what the system had actually sent.
+    launches = [
+        e
+        for e in entries
+        if e["event"] == "order.dispatched" and e["data"].get("accepted") is not False
+    ]
+    refused = [
+        e
+        for e in entries
+        if e["event"] == "order.dispatched" and e["data"].get("accepted") is False
+    ]
     cancels = [e for e in entries if e["event"] == "cancel.issued"]
     drills = [e for e in launches if e["data"].get("drill")]
     print(f"\norders: {len(launches)} dispatched ({len(drills)} drills), {len(cancels)} stood down")
+    if refused:
+        print(f"        {len(refused)} refused before dispatch")
+
+    _print_main_metric(entries, args.order_id)
 
     # A launch -> cancel -> launch cycle inside ten minutes is worth a human look:
     # it is what a coerced or mistaken stand-down would look like.
@@ -159,6 +176,47 @@ def cmd_report(args: argparse.Namespace) -> int:
         for order_id, seconds in suspicious:
             print(f"  {order_id} re-issued {seconds}s after a stand-down")
     return 0 if verdict.ok else 1
+
+
+def _print_main_metric(entries: list[dict[str, Any]], order_id: str) -> None:
+    """The metric docs/06 §9 and docs/07 §2 both call the main one.
+
+    They told the reader to get it from this command, and this command did not print
+    it -- so a duty officer was asked to watch a number no tool produced, and to
+    judge by it whether the system was rotting.
+
+    Reported per order rather than averaged across them: a drill with eight people
+    and one with eight hundred are not the same measurement, and one number over both
+    would hide the trend the metric exists to show.
+    """
+    # Drills are what docs/07 measures, but docs/06 §9 lists this as a continuous
+    # duty check -- so the default is the most recent dispatches, drill or not.
+    wanted = [order_id] if order_id else order_ids(entries)[-5:]
+    if not wanted:
+        return
+
+    share = int(MAIN_METRIC_SHARE * 100)
+    print(f"\nquorum -> {share}% acknowledged (the main metric):")
+    for candidate in wanted:
+        timing = ack_timing(entries, candidate)
+        if timing.quorum_at is None:
+            print(f"  {candidate}  never reached quorum")
+            continue
+
+        answered = f"{timing.acknowledged}"
+        if timing.recipients is not None:
+            answered += f"/{timing.recipients}"
+        median = f"{timing.median_s}s" if timing.median_s is not None else "--"
+
+        if timing.known:
+            headline = f"{timing.share_s}s"
+        elif timing.recipients is None:
+            # An order dispatched before the recipient count was recorded. Saying 0
+            # would make the worst case look like the best one.
+            headline = "unknown (chain has no recipient count)"
+        else:
+            headline = f"not reached ({timing.acknowledged} of {timing.recipients})"
+        print(f"  {candidate}  {headline:<44} median {median}  answered {answered}")
 
 
 def _relaunch_cycles(entries: list[dict[str, Any]], window_s: int = 600) -> list[tuple[str, int]]:
