@@ -23,3 +23,8 @@ AUDIT_CHAIN: Final = 0x41_4C_52_02
 #: the two above this one is *session* scoped, so it needs a connection of its own:
 #: a pooled connection is handed back after each statement, which would drop it.
 ESCALATION_LEADER: Final = 0x41_4C_52_03
+
+#: Held by whichever process runs the delivery canary. A separate key from the
+#: escalation lock: the two are different jobs, and a node that is fit to climb a
+#: ladder is not automatically the one that should be probing the delivery path.
+CANARY: Final = 0x41_4C_52_04

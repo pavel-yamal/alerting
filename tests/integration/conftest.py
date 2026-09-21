@@ -48,6 +48,7 @@ APP_DSN = os.environ.get(
 #: Tables emptied between tests, children before parents so one statement suffices.
 _TABLES = (
     "channel_heartbeats",
+    "canary_runs",
     "escalation_state",
     "http_nonces",
     "escalation_extra",

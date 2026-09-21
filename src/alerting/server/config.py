@@ -81,6 +81,12 @@ class Settings:
     #: How often each channel is asked whether it is still there.
     heartbeat_interval_s: float = 60.0
 
+    #: How often the delivery canary sends a drill order to the canary contact.
+    #: Hourly: frequent enough that a broken delivery path is found the same working
+    #: day, rare enough that the audit chain stays a record of events rather than of
+    #: probes. Zero disables it.
+    canary_interval_s: float = 3600.0
+
     #: Permits a node whose escalation ladder names a channel with no provider behind
     #: it. Required for the demo and for tests; a production node must not set it.
     allow_stub_channels: bool = False
@@ -108,6 +114,7 @@ class Settings:
             escalation_interval_s=_env_float("ALERTING_ESCALATION_INTERVAL_S", 5.0),
             node_id=os.environ.get("ALERTING_NODE_ID", "") or socket.gethostname(),
             heartbeat_interval_s=_env_float("ALERTING_HEARTBEAT_INTERVAL_S", 60.0),
+            canary_interval_s=_env_float("ALERTING_CANARY_INTERVAL_S", 3600.0),
             allow_stub_channels=_env_flag("ALERTING_ALLOW_STUB_CHANNELS"),
             log_level=os.environ.get("ALERTING_LOG_LEVEL", "INFO"),
             log_json=_env_flag("ALERTING_LOG_JSON"),

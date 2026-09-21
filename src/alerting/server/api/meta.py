@@ -6,8 +6,9 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
+from alerting.server.metrics import collect, render
 from alerting.wordlist import MIN_WORDLIST_SIZE
 
 log = logging.getLogger("alerting.api.meta")
@@ -185,6 +186,25 @@ def _schema_ok(app: Any) -> bool:
     with app.pool.connection() as connection:
         migrate.verify(connection)
     return True
+
+
+@public_router.get("/metricsz", response_class=PlainTextResponse)
+async def metricsz(request: Request) -> str:
+    """Prometheus exposition. Aggregates only -- never a series per person.
+
+    On the public router with liveness and readiness, and restricted the same way:
+    by IP in nginx. That is only defensible because of what is *not* here. There is
+    no ``person_id``, no name, no phone number and no roster; ``/v1/statusz``, which
+    does name who is currently connected and calls that a roster leak itself, stays
+    behind the signature gate. A scraper cannot sign Ed25519 requests, so the choice
+    was between an IP allowlist over harmless aggregates and no metrics at all.
+
+    Every value is computed here, from shared state. Nothing is accumulated in the
+    process: the unit runs ``--workers 2``, and an in-process counter would answer
+    differently depending on which worker was scraped.
+    """
+    app = request.app.state.alerting
+    return render(collect(app))
 
 
 @public_router.get("/healthz")

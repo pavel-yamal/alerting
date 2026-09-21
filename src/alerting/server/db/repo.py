@@ -215,11 +215,12 @@ class Repo:
         scenario: str,
         cancels: str | None,
         digest: str,
+        canary: bool = False,
     ) -> None:
         self._execute(
             "INSERT INTO orders (order_id, envelope_json, dispatched_at, drill,"
-            " severity, scenario, cancels, order_digest)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            " severity, scenario, cancels, order_digest, canary)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 json.dumps(envelope, ensure_ascii=False),
@@ -229,6 +230,7 @@ class Repo:
                 scenario,
                 cancels,
                 digest,
+                bool(canary),
             ),
         )
 
@@ -244,7 +246,8 @@ class Repo:
         ambiguous sort would silently choose a different set of rows each time.
         """
         return self._all(
-            "SELECT * FROM orders ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
+            "SELECT * FROM orders WHERE NOT canary"
+            " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
             (limit,),
         )
 
@@ -606,3 +609,50 @@ class Repo:
     def prune_request_nonces(self, now: int) -> int:
         """Drop nonces whose signatures could no longer be fresh anyway."""
         return self._execute("DELETE FROM http_nonces WHERE expires_at <= %s", (now,))
+
+    def order_counts(self) -> list[Row]:
+        """Order counts by severity and drill flag, for metrics.
+
+        Aggregated in the database rather than by loading rows: a scrape must stay
+        cheap, and nothing here needs a single order's detail.
+        """
+        return self._all(
+            "SELECT severity, drill, COUNT(*) AS n FROM orders"
+            " GROUP BY severity, drill ORDER BY severity, drill"
+        )
+
+    # --- canary ---------------------------------------------------------------
+    def record_canary_run(
+        self,
+        *,
+        node_id: str,
+        started_at: int,
+        finished_at: int,
+        ok: bool,
+        delivered: int,
+        detail: str = "",
+        order_id: str | None = None,
+    ) -> None:
+        self._execute(
+            "INSERT INTO canary_runs"
+            " (order_id, node_id, started_at, finished_at, ok, delivered, detail)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (order_id, node_id, started_at, finished_at, ok, delivered, detail),
+        )
+
+    def latest_canary_run(self) -> Row | None:
+        return self._one("SELECT * FROM canary_runs ORDER BY started_at DESC, id DESC LIMIT 1")
+
+    def prune_canary_runs(self, keep: int = 2000) -> int:
+        """Keep the recent history and drop the rest.
+
+        The canary's own record is operational, not evidentiary -- what is evidence
+        lives in the audit chain, which is never pruned. Keeping this table bounded
+        is why the canary can run hourly without anyone having to think about it.
+        """
+        return self._execute(
+            "DELETE FROM canary_runs WHERE id <= ("
+            " SELECT MIN(id) FROM (SELECT id FROM canary_runs ORDER BY id DESC LIMIT %s) t"
+            ") - 1",
+            (keep,),
+        )

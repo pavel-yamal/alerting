@@ -26,7 +26,10 @@ from tests.integration.conftest import signer_for, signing_client
 
 pytestmark = pytest.mark.asyncio
 
-PUBLIC_PATHS = {"/v1/healthz", "/v1/readyz"}
+#: Reachable without a signature, by design, and restricted by IP in nginx instead.
+#: Metrics are here only because they are aggregates: no person_id, no name, no phone
+#: number, no roster. `test_metrics.py` holds that to account.
+PUBLIC_PATHS = {"/v1/healthz", "/v1/readyz", "/v1/metricsz"}
 
 
 def guarded_routes(app: Any) -> list[tuple[str, str]]:

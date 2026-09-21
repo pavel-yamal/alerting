@@ -12,6 +12,7 @@ from alerting.core.signing import b64u_encode
 from alerting.orgkit import Org
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
+from alerting.server.services.canary import CANARY_PERSON_ID
 
 #: Who is in which group. Groups drive audience resolution and escalation reassignment.
 DEFAULT_GROUPS: dict[str, tuple[str, ...]] = {
@@ -55,6 +56,21 @@ def publish_org(
             wake_key=b64u_encode(person.wake_key),
             role=person.role,
         )
+
+    # The canary's recipient. A contact, not a directory entry: it never signs
+    # anything, so giving it a key would be giving the server a key for no reason.
+    # It is in no group and at its own site, which is what keeps it out of every
+    # real audience -- `recipients_for` matches on sites, groups and named persons,
+    # and nobody will name this one.
+    repo.upsert_contact(
+        CANARY_PERSON_ID,
+        name="canary",
+        phone="",
+        site="canary",
+        groups=(),
+        wake_key="",
+        role="canary",
+    )
 
     if audit is None:
         return

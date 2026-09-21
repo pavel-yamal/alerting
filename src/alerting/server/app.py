@@ -17,12 +17,13 @@ from alerting.server.auth import require_signed_request
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
 from alerting.server.config import Settings
-from alerting.server.db import migrate
+from alerting.server.db import locks, migrate
 from alerting.server.db.leader import LeaderLock
 from alerting.server.db.pool import open_pool
 from alerting.server.db.repo import Repo
 from alerting.server.logging_config import configure as configure_logging
 from alerting.server.services.audit_service import AuditService
+from alerting.server.services.canary import CanaryService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
 from alerting.server.services.heartbeat import HeartbeatService
@@ -125,6 +126,18 @@ class AppServices:
             node_id=settings.node_id or "node",
             interval=settings.heartbeat_interval_s,
         )
+        # Its own lock, not the escalation one: climbing a ladder and probing the
+        # delivery path are different jobs, and coupling them would exclude a node
+        # from one because it is unfit for the other.
+        self.canary = CanaryService(
+            self.repo,
+            self.dispatcher,
+            self.audit,
+            self.clock,
+            node_id=settings.node_id or "node",
+            interval=settings.canary_interval_s,
+            leader=LeaderLock(settings.load_dsn(), key=locks.CANARY),
+        )
 
     def close(self) -> None:
         """Synchronous teardown. Prefer :meth:`aclose`, which orders it correctly."""
@@ -132,9 +145,10 @@ class AppServices:
         # the pool does not touch it. Left behind, it keeps the escalation lock until
         # the server eventually reaps the connection -- and every other node sits
         # idle, not climbing ladders, for as long as that takes.
-        if self.escalation.leader is not None:
-            with contextlib.suppress(Exception):
-                self.escalation.leader.release()
+        for worker in (self.escalation, self.canary):
+            if worker.leader is not None:
+                with contextlib.suppress(Exception):
+                    worker.leader.release()
         with contextlib.suppress(Exception):
             self.pool.close()
 
@@ -160,6 +174,9 @@ class AppServices:
                 closed = await self.connections.close_all()
                 if closed:
                     log.info("closed %d executor socket(s) for restart", closed)
+
+            with contextlib.suppress(Exception):
+                await self.canary.stop()
 
             with contextlib.suppress(Exception):
                 await self.heartbeat.stop()
@@ -267,6 +284,8 @@ def create_app(
         if start_escalation:
             services.escalation.start(resolved.escalation_interval_s)
             services.heartbeat.start()
+            if resolved.canary_interval_s > 0:
+                services.canary.start()
         try:
             yield
         finally:

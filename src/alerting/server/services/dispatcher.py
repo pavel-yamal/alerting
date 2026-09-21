@@ -352,6 +352,68 @@ class Dispatcher:
             "reached_nobody": not people,
         }
 
+    #: The only scenario code the canary may use. Checked, not trusted: it is what
+    #: makes a canary order recognisable in the chain forever.
+    CANARY_SCENARIO = "CANARY"
+
+    #: Channels the canary may use. The siren is absent structurally rather than by
+    #: convention -- there is no configuration that puts it back.
+    CANARY_CHANNELS: tuple[str, ...] = ("ws", "push")
+
+    async def dispatch_canary(
+        self, order: OrderPayload, recipient: Recipient
+    ) -> list[DeliveryReceipt]:
+        """Dispatch a canary order without a quorum.
+
+        **This is the only path in the system that dispatches without one.** It
+        exists because the server deliberately holds no approver keys (ADR 0004): a
+        canary that needed M-of-N human signatures would not be a canary. The price
+        is that the limits below are enforced here, in code, rather than agreed to --
+        any one of them failing open turns this into a way to send an unapproved
+        order.
+
+        What it therefore cannot test, said plainly so nobody assumes otherwise: the
+        approval path, and acknowledgement by a real person. It answers "could an
+        order be dispatched right now", which is the question readiness only
+        approximates.
+        """
+        if not order.drill:
+            raise ValueError("canary orders must be drills")
+        if order.scenario != self.CANARY_SCENARIO:
+            raise ValueError(f"canary scenario must be {self.CANARY_SCENARIO}")
+        if order.requires_ack:
+            # Also what keeps the escalation ladder away from it: `tick` skips orders
+            # needing no acknowledgement, so a canary can never page anybody.
+            raise ValueError("canary orders must not require acknowledgement")
+        audience = order.audience
+        if tuple(audience.persons) != (recipient.person_id,) or audience.sites or audience.groups:
+            raise ValueError("canary audience must be exactly the canary recipient")
+
+        now = self.clock.now()
+        envelope = SignedEnvelope(payload=order.to_payload(), signatures=())
+        self.repo.create_order(
+            order.order_id,
+            envelope.model_dump(mode="json"),
+            now,
+            order.drill,
+            str(order.severity),
+            order.scenario,
+            None,
+            payload_digest(envelope.payload),
+            canary=True,
+        )
+        self.audit.append(
+            Event.ORDER_DISPATCHED,
+            {
+                "order_id": order.order_id,
+                "scenario": order.scenario,
+                "drill": True,
+                "canary": True,
+                "recipients": 1,
+            },
+        )
+        return await self.fan_out(order, envelope, [recipient], self.CANARY_CHANNELS)
+
 
 REASON_LABELS: dict[Reason, str] = {
     Reason.QUORUM_NOT_MET: "недостаточно подписей",
