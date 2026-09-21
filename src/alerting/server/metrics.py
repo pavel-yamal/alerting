@@ -326,11 +326,18 @@ def _replication(app: Any) -> list[Metric]:
         recovery = connection.execute("SELECT pg_is_in_recovery() AS r").fetchone()["r"]
         rows: Sequence[Any] = []
         if not recovery:
+            # No COALESCE on the lag, and that is the point. PostgreSQL blanks the LSN
+            # columns of `pg_stat_replication` for a role without `pg_read_all_stats`,
+            # so the row is there and every number in it is NULL. Defaulting that to
+            # zero -- which this did -- publishes "replication lag: 0 bytes" to a
+            # dashboard from a node that cannot see replication at all: a green light
+            # meaning nothing was measured. A NULL lag is reported as unknown instead.
             rows = connection.execute(
                 "SELECT COALESCE(application_name, client_addr::text, 'standby') AS peer,"
-                " COALESCE(pg_wal_lsn_diff(sent_lsn, replay_lsn), 0) AS lag"
+                " pg_wal_lsn_diff(sent_lsn, replay_lsn) AS lag"
                 " FROM pg_stat_replication"
             ).fetchall()
+    known = [row for row in rows if row["lag"] is not None]
 
     return [
         Metric(
@@ -351,7 +358,7 @@ def _replication(app: Any) -> list[Metric]:
                     int(row["lag"]),
                     (("peer", str(row["peer"])),),
                 )
-                for row in rows
+                for row in known
             ),
         ),
         Metric(
@@ -359,5 +366,13 @@ def _replication(app: Any) -> list[Metric]:
             "Standbys currently streaming from this node.",
             "gauge",
             (Sample("alerting_replication_standbys", len(rows)),),
+        ),
+        Metric(
+            "alerting_replication_lag_unknown",
+            "Streaming standbys whose lag this node is not permitted to read. Grant "
+            "pg_read_all_stats to the database role; until then the lag above is "
+            "silent about these, which is not the same as zero.",
+            "gauge",
+            (Sample("alerting_replication_lag_unknown", len(rows) - len(known)),),
         ),
     ]

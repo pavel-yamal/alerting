@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import os
 import pathlib
+import shutil
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -58,6 +59,14 @@ def step(number: str, title: str) -> None:
 
 async def main() -> int:
     tmp = pathlib.Path("var/demo")
+    # Снести целиком, а не просто создать. Демонстрация сбрасывает схему ниже, то есть
+    # каждый прогон — новая цепочка с нуля; а головы дописывались в тот же каталог и
+    # копились. Через три прогона там лежали головы от трёх разных цепочек, и проверка
+    # `verify --heads-dir var/demo/heads` сообщала расхождение — справедливо, но по
+    # поводу артефакта прошлого запуска, а не чего бы то ни было настоящего. Каталог
+    # опубликованных голов, смешивающий цепочки, не стоит ничего: он даёт ложную
+    # тревогу там, где механизм обязан давать только настоящую.
+    shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
 
     dsn = os.environ.get("ALERTING_DSN", "")
@@ -332,6 +341,14 @@ async def main() -> int:
     print(f" Готово. База: {redact_dsn(dsn)}")
     print(" Проверить аудит независимо:")
     print('   .venv/bin/python -m alerting.clients.auditor_cli report --dsn "$ALERTING_DSN"')
+    # Сказано вслух, потому что иначе следующий шаг молча не работает: демонстрация
+    # начинает с `migrate.reset` и публикует СВОЮ организацию с одноразовым корневым
+    # ключом, который существует только в этом процессе. После неё в базе лежит
+    # организация, к которой на диске нет ключа, и узел, запущенный по строке из
+    # `org-init`, откажется стартовать с `policy_unsigned` — верно, но непонятно.
+    print("\n ВНИМАНИЕ: база перезаписана демонстрационной организацией с одноразовым")
+    print(" корневым ключом. Перед запуском настоящего узла выполните `make org-init`")
+    print(" ещё раз — иначе узел откажется стартовать: ключа от этой организации нет.")
     print(RULE)
     services.close()
     return 0

@@ -46,6 +46,23 @@ STATEMENT_TIMEOUT_MS = 15_000
 #: here legitimately holds one across I/O.
 IDLE_IN_TRANSACTION_TIMEOUT_MS = 30_000
 
+#: How long a caller waits for a free connection before being told there is none.
+#:
+#: psycopg_pool's default is 30 seconds, and that default quietly broke the first
+#: promise ``AuditService`` makes -- "the logger never blocks the alert". The service
+#: is careful to catch a database failure, spool the entry and let the dispatch
+#: continue, but it can only do that once the pool gives up. With the default, a
+#: dispatch during a database outage sat for thirty seconds per audit append before
+#: reaching that handler. Measured against it, the failover this pool is meant to
+#: survive takes about a third of a second (docs/10-failover.md): the wait was two
+#: orders of magnitude longer than the outage it was waiting out.
+#:
+#: Five seconds, matching ``LOCK_TIMEOUT_MS``, because the two bound the same thing
+#: from opposite ends: under contention every connection may be queued on the audit
+#: chain's advisory lock, and a caller should not wait materially longer for a
+#: connection than the holder is allowed to keep one.
+CONNECTION_WAIT_TIMEOUT_S = 5.0
+
 
 def _configure(connection: Connection[Any]) -> None:
     connection.execute(f"SET lock_timeout = {LOCK_TIMEOUT_MS}")
@@ -63,6 +80,7 @@ def open_pool(dsn: str, *, min_size: int = 2, max_size: int = 10) -> ConnectionP
         max_size=max_size,
         kwargs={"row_factory": dict_row, "autocommit": True},
         configure=_configure,
+        timeout=CONNECTION_WAIT_TIMEOUT_S,
         open=False,
         name="alerting",
     )

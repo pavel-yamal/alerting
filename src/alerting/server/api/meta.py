@@ -153,6 +153,7 @@ async def readyz(request: Request) -> dict[str, Any]:
 
     for name, probe in (
         ("database", lambda: app.repo.audit_count() >= 0),
+        ("writable", lambda: _writable(app)),
         ("schema", lambda: _schema_ok(app)),
         ("directory", lambda: bool(app.state.directory().payload.keys)),
         ("policy", lambda: bool(app.state.policy().payload.severities)),
@@ -172,6 +173,23 @@ async def readyz(request: Request) -> dict[str, Any]:
     return JSONResponse(  # type: ignore[return-value]
         status_code=200 if ready else 503, content={"ready": ready, "checks": checks}
     )
+
+
+def _writable(app: Any) -> bool:
+    """Is this database accepting writes, or is it a standby?
+
+    Every other readiness probe is a read, so a node pointed at a read-only replica
+    passed all of them and reported itself ready -- while being unable to record a
+    single order, acknowledgement or audit entry. A balancer would have sent alerts
+    to it. That is the same blind spot readiness was introduced to close for an empty
+    database, one layer down.
+
+    Asked as a question about the server rather than by attempting a write: a probe
+    that wrote would put a row in a table on every scrape.
+    """
+    with app.pool.connection() as connection:
+        row = connection.execute("SELECT pg_is_in_recovery() AS recovering").fetchone()
+    return not row["recovering"]
 
 
 def _schema_ok(app: Any) -> bool:

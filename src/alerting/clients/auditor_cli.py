@@ -75,8 +75,29 @@ def cmd_pull(args: argparse.Namespace) -> int:
     return 0
 
 
+def _heads_from_dir(directory: pathlib.Path) -> dict[int, str]:
+    """Heads read from files published out of band, not from the database.
+
+    This is the only kind of head worth anything after a failover. A head the server
+    wrote is a row in the same database whose tail was lost, so it disappears with
+    it and the shortened chain verifies perfectly against what is left of itself.
+    The file an auditor already holds does not disappear, and
+    :func:`verify_chain` answers "chain is shorter than a published head".
+    """
+    heads: dict[int, str] = {}
+    for path in sorted(directory.glob("head-*.json")):
+        payload = json.loads(path.read_text(encoding="utf-8"))["payload"]
+        heads[int(payload["idx"])] = str(payload["head"])
+    return heads
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     entries, heads = _load(args)
+    if args.heads_dir:
+        # Replacing, not merging: the point of the flag is to check the chain against
+        # heads the database did not get to choose.
+        heads = _heads_from_dir(pathlib.Path(args.heads_dir))
+        print(f"     using {len(heads)} head(s) published out of band")
     if args.ignore_heads:
         heads = {}
     verdict = verify_chain(entries, expected_heads=heads)
@@ -261,6 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--ignore-heads",
         action="store_true",
         help="check internal linkage only (a rewritten tail then goes undetected)",
+    )
+    verify.add_argument(
+        "--heads-dir",
+        help="check against head files published out of band instead of the database's own",
     )
     verify.set_defaults(func=cmd_verify)
 

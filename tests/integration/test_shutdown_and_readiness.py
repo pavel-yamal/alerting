@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from typing import Any
 
 import pytest
 
@@ -196,12 +197,77 @@ async def test_a_wired_node_reports_ready(client):
     assert body["ready"] is True
     assert body["checks"] == {
         "database": True,
+        "writable": True,
         "schema": True,
         "directory": True,
         "policy": True,
         "wordlist": True,
         "escalation": True,
     }
+
+
+async def test_a_node_on_a_database_in_recovery_refuses_readiness(client):
+    """A standby answers every other probe perfectly and cannot record a thing.
+
+    This is the state a node is in for the length of a failover, and for as long as
+    someone leaves it pointed at the replica afterwards. Every other check here is a
+    read, so before ``writable`` existed such a node reported ``ready: true`` and a
+    balancer sent alerts to it -- which it accepted, and lost.
+
+    The other half of the assertion is that it *refuses*, rather than raising: an
+    exception here is a 500, and a load balancer reads a 500 the same as a 503 while
+    an operator reads it as "the node is broken" instead of "the node is a replica".
+    """
+    services = client.app.state.alerting
+    pool = services.pool
+
+    class InRecovery:
+        """The pool, answering `pg_is_in_recovery()` the way a standby does."""
+
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        @contextlib.contextmanager
+        def connection(self) -> Any:
+            with self._real.connection() as connection:
+                yield _Recovering(connection)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    class _Recovering:
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+            if "pg_is_in_recovery" in sql:
+                return _OneRow({"recovering": True})
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    class _OneRow:
+        def __init__(self, row: dict[str, Any]) -> None:
+            self._row = row
+
+        def fetchone(self) -> dict[str, Any]:
+            return self._row
+
+    services.pool = InRecovery(pool)
+    try:
+        response = client.get("/v1/readyz")
+    finally:
+        services.pool = pool
+
+    assert response.status_code == 503, "a read-only node must not be sent alerts"
+    body = response.json()
+    assert body["ready"] is False
+    assert body["checks"]["writable"] is False
+    # Everything else still passes, which is exactly why this check had to exist.
+    assert body["checks"]["database"] is True
+    assert body["checks"]["directory"] is True
+    assert body["checks"]["policy"] is True
 
 
 async def test_an_empty_database_is_live_but_not_ready(settings, clock, tmp_path):

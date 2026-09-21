@@ -9,6 +9,8 @@ was scraped.
 
 from __future__ import annotations
 
+import contextlib
+
 import pytest
 
 from alerting.server.app import AppServices
@@ -138,3 +140,72 @@ async def test_one_failing_collector_does_not_silence_the_rest(client, monkeypat
 def test_labels_are_escaped():
     metric = Metric("t", 'help with "quotes"', "gauge", (Sample("t", 1, (("peer", 'a"b\\c'),)),))
     assert 't{peer="a\\"b\\\\c"} 1' in render([metric])
+
+
+# --- replication -------------------------------------------------------------
+
+
+async def test_an_unreadable_replication_lag_is_not_reported_as_zero(services):
+    """ "Cannot see it" and "there is none" are different answers, and the gauge said
+    the second one.
+
+    PostgreSQL blanks the LSN columns of ``pg_stat_replication`` for a role that is
+    neither a superuser nor a member of ``pg_read_all_stats``. The row is still
+    there, one per streaming standby, with every number NULL. The collector wrapped
+    that in ``COALESCE(..., 0)``, so a node with no permission to see replication
+    published a steady ``alerting_replication_lag_bytes 0`` -- a dashboard reading
+    perfectly healthy from a node that had measured nothing at all. On a system whose
+    RPO is exactly this number, that is the worst kind of wrong.
+    """
+    from typing import Any
+
+    class BlankedStats:
+        """The pool, with `pg_stat_replication` redacted the way PostgreSQL redacts
+        it for an unprivileged role."""
+
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        @contextlib.contextmanager
+        def connection(self) -> Any:
+            with self._real.connection() as connection:
+                yield _Redacting(connection)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    class _Redacting:
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        def execute(self, sql: str, *args: Any, **kwargs: Any) -> Any:
+            if "pg_stat_replication" in sql:
+                return _Rows([{"peer": "16/standby", "lag": None}])
+            return self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    class _Rows:
+        def __init__(self, rows: list[dict[str, Any]]) -> None:
+            self._rows = rows
+
+        def fetchall(self) -> list[dict[str, Any]]:
+            return self._rows
+
+        def fetchone(self) -> dict[str, Any]:
+            return self._rows[0]
+
+    real = services.pool
+    services.pool = BlankedStats(real)
+    try:
+        body = render(collect(services))
+    finally:
+        services.pool = real
+
+    assert not values(body, "alerting_replication_lag_bytes{"), (
+        "a lag nobody is permitted to read must not be published as a number"
+    )
+    assert "alerting_replication_lag_unknown 1" in body
+    # The standby is still counted: it exists, and saying otherwise would hide it.
+    assert "alerting_replication_standbys 1" in body

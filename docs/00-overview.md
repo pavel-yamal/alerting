@@ -67,4 +67,5 @@
 | [09-deployment.md](09-deployment.md) | Развёртывание: systemd, nginx, бэкапы, готовность |
 | [07-drills-and-training.md](07-drills-and-training.md) | Режим учений и карточка исполнителя |
 | [08-personal-data.md](08-personal-data.md) | Реестр как персональные данные |
+| [10-failover.md](10-failover.md) | Переключение на резерв: процедура, измеренные RTO и RPO, и решение о том, что дальше не делается |
 | [adr/](adr/) | Обоснование ключевых развилок |
