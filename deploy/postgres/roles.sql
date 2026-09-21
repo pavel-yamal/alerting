@@ -40,3 +40,21 @@ REVOKE ALL ON SCHEMA public FROM PUBLIC;
 ALTER SCHEMA public OWNER TO alerting_owner;
 GRANT USAGE ON SCHEMA public TO alerting_app;
 GRANT CONNECT ON DATABASE alerting TO alerting_app;
+
+-- Read-only access to the statistics views, and it is needed for one number:
+-- replication lag, which on this system IS the recovery point objective
+-- (docs/10-failover.md). PostgreSQL blanks every LSN column in
+-- `pg_stat_replication` for a role that is neither superuser nor a member of this
+-- one -- the row per standby is still there, with all its numbers NULL. Without the
+-- grant the metrics endpoint answers `alerting_replication_lag_unknown 1` and can
+-- say nothing about how much a failover would lose.
+--
+-- pg_read_all_stats, not pg_monitor: pg_monitor also carries pg_read_all_settings
+-- and pg_stat_scan_tables, and neither is needed here.
+--
+-- Granting it to the runtime role does not weaken the split this file exists for.
+-- That split is about who can rewrite history; this privilege reads statistics and
+-- grants nothing on any table. A fully compromised `alerting_app` still cannot
+-- UPDATE, DELETE or TRUNCATE a single audit row.
+GRANT pg_read_all_stats TO alerting_owner;
+GRANT pg_read_all_stats TO alerting_app;
