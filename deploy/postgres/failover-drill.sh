@@ -22,6 +22,20 @@ set -Eeuo pipefail
 : "${PGVERSION:=16}"
 : "${PRIMARY_CLUSTER:=main}"
 : "${STANDBY_CLUSTER:=standby}"
+# Где стоят базы. Пусто — на этой же машине, как было измерено в фазе 6; адрес или
+# `user@host` — на разных, как в настоящем контуре.
+#
+# Это не удобство, а условие работоспособности. Убить основную и промоутнуть резерв
+# нельзя по сети: `pg_ctl` управляет локальным postmaster'ом по его каталогу данных.
+# Пока обе базы жили на одном хосте, разницы не было; на пяти ВМ скрипт без этого
+# останавливал и промоутил бы одну и ту же машину.
+: "${PRIMARY_SSH:=}"
+: "${STANDBY_SSH:=}"
+: "${PRIMARY_HOST:=127.0.0.1}"
+: "${STANDBY_HOST:=127.0.0.1}"
+: "${PRIMARY_PORT:=5432}"
+# 5433 — умолчание для двух кластеров на одной машине. На выделенной ВМ резерв стоит
+# на обычном 5432, и тогда это надо задать явно.
 : "${STANDBY_PORT:=5433}"
 : "${OWNER:=alerting_owner}"
 : "${PGPASSWORD:=devpass}"
@@ -55,15 +69,31 @@ standby_data="/var/lib/postgresql/${PGVERSION}/${STANDBY_CLUSTER}"
 # literal quotes inside it at the call site, not just around it: the outer quoting is
 # gone by the time the inner shell reads the line. Without them pg_ctl received `-o
 # -c` and a scatter of stray words, and failed instantly.
-pgctl() { su postgres -c "/usr/lib/postgresql/${PGVERSION}/bin/pg_ctl $*"; }
 
-primary_dsn="postgres://${OWNER}:${PGPASSWORD}@127.0.0.1:5432/alerting"
-standby_dsn="postgres://${OWNER}:${PGPASSWORD}@127.0.0.1:${STANDBY_PORT}/alerting"
+# Выполнить команду там, где она должна выполниться. Пустой хост — здесь; иначе ssh.
+# `-n` обязателен: без него ssh съедает stdin скрипта.
+on_host() {
+    local where="$1"; shift
+    if [ -n "$where" ]; then ssh -n "$where" "$*"; else eval "$*"; fi
+}
+on_primary() { on_host "$PRIMARY_SSH" "$@"; }
+on_standby() { on_host "$STANDBY_SSH" "$@"; }
+
+pgctl_on() {
+    local where="$1"; shift
+    on_host "$where" "su postgres -c \"/usr/lib/postgresql/${PGVERSION}/bin/pg_ctl $*\""
+}
+pgctl_primary() { pgctl_on "$PRIMARY_SSH" "$@"; }
+pgctl_standby() { pgctl_on "$STANDBY_SSH" "$@"; }
+
+primary_dsn="postgres://${OWNER}:${PGPASSWORD}@${PRIMARY_HOST}:${PRIMARY_PORT}/alerting"
+standby_dsn="postgres://${OWNER}:${PGPASSWORD}@${STANDBY_HOST}:${STANDBY_PORT}/alerting"
 
 tip() { psql -tAc "SELECT COALESCE(MAX(idx), -1) FROM audit_log" "$1"; }
 
-pg_lsclusters | awk '{print $2}' | grep -qx "$STANDBY_CLUSTER" \
-    || fail "no standby cluster '${STANDBY_CLUSTER}'; run standby-setup.sh first"
+on_standby "pg_lsclusters | awk '{print \$2}' | grep -qx ${STANDBY_CLUSTER}" \
+    || fail "no standby cluster '${STANDBY_CLUSTER}' on ${STANDBY_SSH:-this host}; \
+run standby-setup.sh there first"
 
 log "=== before ==="
 psql -tAc "SELECT 1" "$primary_dsn" >/dev/null || fail "cannot read the primary"
@@ -97,11 +127,11 @@ failed_at="$(date +%s.%N)"
 # overrides the mode. So the drill was measuring an orderly switchover -- with the
 # walsender given time to hand over everything it had -- while its own output said
 # "killing the primary". pg_ctl takes the mode literally.
-pgctl stop -m immediate -D "$primary_data" >/dev/null 2>&1 || true
+pgctl_primary "stop -m immediate -D $primary_data" >/dev/null 2>&1 || true
 
 log "=== promoting the standby ==="
-pgctl promote -D "$standby_data" >/dev/null 2>&1 \
-    || pg_ctlcluster "$PGVERSION" "$STANDBY_CLUSTER" promote >/dev/null
+pgctl_standby "promote -D $standby_data" >/dev/null 2>&1 \
+    || on_standby "pg_ctlcluster $PGVERSION $STANDBY_CLUSTER promote" >/dev/null
 
 for _ in $(seq 1 120); do
     state="$(psql -tAc "SELECT pg_is_in_recovery()" "$standby_dsn" 2>/dev/null || echo error)"
@@ -151,12 +181,12 @@ isolated_dsn="postgres://${OWNER}:${PGPASSWORD}@127.0.0.1:${ISOLATED_PORT}/alert
 # `-l` matters here beyond tidiness: without it the postmaster inherits pg_ctl's
 # stderr and holds it open, so any pipeline reading this script's output never sees
 # EOF and hangs after the drill has otherwise finished.
-pgctl start -w -D "$primary_data" -l "$primary_log" \
-    -o "'-c config_file=${primary_conf} -p ${ISOLATED_PORT}'" >/dev/null 2>&1 \
+pgctl_primary "start -w -D $primary_data -l $primary_log \
+    -o '-c config_file=${primary_conf} -p ${ISOLATED_PORT}'" >/dev/null 2>&1 \
     || fail "could not restart the old primary on port ${ISOLATED_PORT}"
 before="$(tip "$isolated_dsn")" || fail "cannot re-read the old primary"
 rpo=$((before - after))
-pgctl stop -D "$primary_data" >/dev/null 2>&1 || true
+pgctl_primary "stop -D $primary_data" >/dev/null 2>&1 || true
 
 log "=== results ==="
 log "RTO (database): ${rto}s   from primary down to standby accepting writes"
@@ -191,17 +221,18 @@ else
 fi
 
 log "=== restoring the original topology ==="
-pg_ctlcluster "$PGVERSION" "$PRIMARY_CLUSTER" start >/dev/null 2>&1 || true
+on_primary "pg_ctlcluster $PGVERSION $PRIMARY_CLUSTER start" >/dev/null 2>&1 || true
 until psql -tAc "SELECT 1" "$primary_dsn" >/dev/null 2>&1; do sleep 0.5; done
-pg_ctlcluster "$PGVERSION" "$STANDBY_CLUSTER" stop >/dev/null 2>&1 || true
-pg_dropcluster "$PGVERSION" "$STANDBY_CLUSTER" >/dev/null 2>&1 || true
+on_standby "pg_ctlcluster $PGVERSION $STANDBY_CLUSTER stop" >/dev/null 2>&1 || true
+on_standby "pg_dropcluster $PGVERSION $STANDBY_CLUSTER" >/dev/null 2>&1 || true
 # As postgres, not as the owner role: dropping a slot needs the REPLICATION
 # attribute, and the owner does not have it -- so this silently did nothing, and the
 # slot survived every drill, making the primary retain WAL for a standby that no
 # longer existed.
-su postgres -c "psql -q -p 5432 -tAc \"SELECT pg_drop_replication_slot('${SLOT}') \
-    WHERE EXISTS (SELECT 1 FROM pg_replication_slots \
-                  WHERE slot_name='${SLOT}' AND NOT active)\"" >/dev/null 2>&1 || true
+on_primary "su postgres -c \"psql -q -p ${PRIMARY_PORT} -tAc \\\"\
+SELECT pg_drop_replication_slot('${SLOT}') WHERE EXISTS (SELECT 1 FROM \
+pg_replication_slots WHERE slot_name='${SLOT}' AND NOT active)\\\"\"" \
+    >/dev/null 2>&1 || true
 log "primary is back; rebuild the standby with standby-setup.sh"
 
 printf '\nRTO_DB_SECONDS=%s\nRTO_SERVICE_SECONDS=%s\nRPO_ENTRIES=%s\nCHAIN=%s\n' \

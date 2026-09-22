@@ -68,4 +68,5 @@
 | [07-drills-and-training.md](07-drills-and-training.md) | Режим учений и карточка исполнителя |
 | [08-personal-data.md](08-personal-data.md) | Реестр как персональные данные |
 | [10-failover.md](10-failover.md) | Переключение на резерв: процедура, измеренные RTO и RPO, и решение о том, что дальше не делается |
+| [11-installation.md](11-installation.md) | Установка контура с нуля: по шагам, с приёмкой |
 | [adr/](adr/) | Обоснование ключевых развилок |

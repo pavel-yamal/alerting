@@ -30,12 +30,25 @@
 
 ```ini
 # alerting.service — роль приложения
-LoadCredential=dsn-app:/etc/alerting/credentials/dsn-app
+LoadCredential=dsn:/etc/alerting/credentials/dsn-app
 LoadCredential=server-key:/etc/alerting/credentials/server-key
+Environment=ALERTING_DSN_FILE=%d/dsn
+Environment=ALERTING_SERVER_KEY_FILE=%d/server-key
 
 # alerting-migrate.service — роль владельца, только на время миграции
 LoadCredential=dsn:/etc/alerting/credentials/dsn-owner
+Environment=ALERTING_DSN_FILE=%d/dsn
+
+# alerting-backup.service — узел базы, роль владельца
+LoadCredential=dsn:/etc/alerting/credentials/dsn-owner
+Environment=ALERTING_DSN_FILE=%d/dsn
 ```
+
+Имя credential слева от двоеточия — это то, во что раскроется `%d/<имя>`. Здесь оно
+`dsn` во всех трёх юнитах, хотя файлы разные: имя локально для юнита, а какой именно
+DSN приедет, решает путь справа. Раньше в этом примере стояло `dsn-app:`, а юнит
+объявлял `dsn:` — скопировавший пример получил бы узел, который не стартует, потому
+что `%d/dsn` не существовало бы.
 
 ## Две роли базы, и почему это не формальность
 
@@ -53,9 +66,15 @@ LoadCredential=dsn:/etc/alerting/credentials/dsn-owner
 Практическое следствие: **никогда не выдавайте серверу DSN владельца.** Если оба
 юнита читают один файл, разделение исчезает, и об этом ничто не сообщит.
 
-systemd копирует их в приватный каталог процесса и подставляет путь вместо `%d`,
-поэтому в `alerting.env` стоит `ALERTING_SERVER_KEY_FILE=%d/server-key`. Файлы видны
-только этому юниту: ни другой сервис, ни пользователь с shell их не прочитают.
+systemd копирует их в приватный каталог процесса и подставляет путь вместо `%d`.
+Файлы видны только этому юниту: ни другой сервис, ни пользователь с shell их не
+прочитают.
+
+**`%d` раскрывается в директивах юнита, а не в `alerting.env`.** Это различие стоило
+бы запуска: пути к DSN и к ключу подписи голов стояли внутри `EnvironmentFile=`, куда
+раскрытие спецификаторов не доходит, — сервер получил бы строку `%d/dsn` буквально и
+не нашёл бы ни того, ни другого. Поэтому оба пути теперь заданы `Environment=` в
+`alerting.service`, как это с самого начала было сделано в `alerting-migrate.service`.
 
 ## Ключа HTTP здесь больше нет
 

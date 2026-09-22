@@ -5,10 +5,22 @@
 # The shape that matters: users never reach the app node. They reach nginx, which
 # reaches the app. Nothing inbound from the user VLAN belongs here.
 
-define PROXY_NET   = 10.0.10.0/24      # ADJUST: nginx / load balancer
-define ADMIN_NET   = 10.0.99.0/24      # ADJUST: bastion
-define SIREN_NET   = 10.0.30.0/24      # ADJUST: site OT VLAN, siren controllers
-define AUDITOR_HOST = 10.0.20.7        # ADJUST: where published heads are shipped
+# Значения берутся из deploy/inventory.env — заполненной копии
+# deploy/inventory.example.env. `deploy/install/common.sh` подставляет их сюда, так
+# что править этот файл руками не нужно и не следует: он должен согласовываться с
+# nginx и с юнитом, а согласование, которое держится на внимательности, не держится.
+define PROXY_NET    = 10.0.10.0/24     # ALERTING_PROXY_NET
+define ADMIN_NET    = 10.0.99.0/24     # ALERTING_ADMIN_NET
+define SIREN_NET    = 10.0.30.0/24     # ALERTING_SIREN_NET
+define AUDITOR_HOST = 10.0.20.7        # ALERTING_AUDITOR_HOST
+# Базы данных. Раньше этой строки здесь не было, и это был не недосмотр в мелочи:
+# пока база стояла на том же хосте, соединение шло через loopback и правила не
+# касалось. На отдельной ВМ узел не дошёл бы до базы вообще — то есть не запустился
+# бы, не применил миграции и не разослал ни одного приказа. `docs/09-deployment.md`
+# §9 при этом обещал «выход: 5432 к PostgreSQL»: правило было описано в документе и
+# не существовало в правилах.
+define DB_PRIMARY   = 10.0.10.21       # ALERTING_DB_PRIMARY_ADDR
+define DB_STANDBY   = 10.0.10.22       # ALERTING_DB_STANDBY_ADDR
 
 table inet alerting {
     chain input {
@@ -39,6 +51,12 @@ table inet alerting {
 
         tcp dport 53 accept
         udp dport 53 accept
+
+        # PostgreSQL. Резерв здесь же и намеренно: узел, направленный в резерв,
+        # обязан отвечать `readyz: 503 writable=false`, а чтобы ответить это, он
+        # должен до него дойти. Firewall, который «защищает» узел от резерва,
+        # превращает внятный отказ в необъяснимую недоступность.
+        ip daddr { $DB_PRIMARY, $DB_STANDBY } tcp dport 5432 accept
 
         # Providers for SMS, push and voice, once they exist. Until then nothing here
         # delivers and this rule is aspirational — see docs/09-deployment.md §0.

@@ -24,6 +24,14 @@ set -Eeuo pipefail
 : "${PGVERSION:=16}"
 : "${PRIMARY_CLUSTER:=main}"
 : "${STANDBY_CLUSTER:=standby}"
+# Где стоят базы: пусто — на этой же машине, иначе `user@host`. Причина та же, что и
+# в failover-drill.sh: остановить основную и промоутнуть резерв по сети нельзя,
+# `pg_ctl` управляет локальным postmaster'ом.
+: "${PRIMARY_SSH:=}"
+: "${STANDBY_SSH:=}"
+: "${PRIMARY_HOST:=127.0.0.1}"
+: "${STANDBY_HOST:=127.0.0.1}"
+: "${PRIMARY_PORT:=5432}"
 : "${STANDBY_PORT:=5433}"
 : "${OWNER:=alerting_owner}"
 : "${PGPASSWORD:=devpass}"
@@ -39,10 +47,21 @@ fail() { log "CHECK FAILED: $*"; exit 1; }
 
 primary_data="/var/lib/postgresql/${PGVERSION}/${PRIMARY_CLUSTER}"
 standby_data="/var/lib/postgresql/${PGVERSION}/${STANDBY_CLUSTER}"
-pgctl() { su postgres -c "/usr/lib/postgresql/${PGVERSION}/bin/pg_ctl $*"; }
+on_host() {
+    local where="$1"; shift
+    if [ -n "$where" ]; then ssh -n "$where" "$*"; else eval "$*"; fi
+}
+on_primary() { on_host "$PRIMARY_SSH" "$@"; }
+on_standby() { on_host "$STANDBY_SSH" "$@"; }
+pgctl_on() {
+    local where="$1"; shift
+    on_host "$where" "su postgres -c \"/usr/lib/postgresql/${PGVERSION}/bin/pg_ctl $*\""
+}
+pgctl_primary() { pgctl_on "$PRIMARY_SSH" "$@"; }
+pgctl_standby() { pgctl_on "$STANDBY_SSH" "$@"; }
 
-primary_dsn="postgres://${OWNER}:${PGPASSWORD}@127.0.0.1:5432/alerting"
-standby_dsn="postgres://${OWNER}:${PGPASSWORD}@127.0.0.1:${STANDBY_PORT}/alerting"
+primary_dsn="postgres://${OWNER}:${PGPASSWORD}@${PRIMARY_HOST}:${PRIMARY_PORT}/alerting"
+standby_dsn="postgres://${OWNER}:${PGPASSWORD}@${STANDBY_HOST}:${STANDBY_PORT}/alerting"
 tip() { psql -tAc "SELECT COALESCE(MAX(idx), -1) FROM audit_log" "$1"; }
 
 [ -n "$HEADS_DIR" ] && [ -d "$HEADS_DIR" ] \
@@ -52,9 +71,10 @@ psql -tAc "SELECT 1" "$primary_dsn" >/dev/null || fail "cannot read the primary"
 psql -tAc "SELECT 1" "$standby_dsn" >/dev/null || fail "cannot read the standby"
 
 log "=== severing replication (walreceiver off, primary still committing) ==="
-su postgres -c "psql -q -p ${STANDBY_PORT} -c \"ALTER SYSTEM SET primary_conninfo = ''\"" \
+on_standby "su postgres -c \"psql -q -p ${STANDBY_PORT} -c \\\"\
+ALTER SYSTEM SET primary_conninfo = '"''"'\\\"\"" >/dev/null
+on_standby "su postgres -c \"psql -q -p ${STANDBY_PORT} -tAc 'SELECT pg_reload_conf()'\"" \
     >/dev/null
-su postgres -c "psql -q -p ${STANDBY_PORT} -tAc 'SELECT pg_reload_conf()'" >/dev/null
 sleep "$SEVERED_SECONDS"
 
 primary_tip="$(tip "$primary_dsn")"
@@ -67,9 +87,9 @@ here would mean nothing. Put traffic on the primary -- a drill order, or anythin
 appends to the chain -- and run this again, or raise SEVERED_SECONDS"
 
 log "=== killing the primary and promoting the stale standby ==="
-pgctl stop -m immediate -D "$primary_data" >/dev/null 2>&1 || true
-pgctl promote -D "$standby_data" >/dev/null 2>&1 \
-    || pg_ctlcluster "$PGVERSION" "$STANDBY_CLUSTER" promote >/dev/null
+pgctl_primary "stop -m immediate -D $primary_data" >/dev/null 2>&1 || true
+pgctl_standby "promote -D $standby_data" >/dev/null 2>&1 \
+    || on_standby "pg_ctlcluster $PGVERSION $STANDBY_CLUSTER promote" >/dev/null
 for _ in $(seq 1 120); do
     state="$(psql -tAc "SELECT pg_is_in_recovery()" "$standby_dsn" 2>/dev/null || echo error)"
     [ "$state" = "f" ] && break
@@ -100,11 +120,12 @@ log "OK -- a failover that loses the tail cannot pass verification unnoticed."
 # any more and must not be left looking like one, so it is dropped rather than
 # reattached. Rebuild it from the restored primary with standby-setup.sh.
 log "=== restoring the original topology ==="
-pg_ctlcluster "$PGVERSION" "$PRIMARY_CLUSTER" start >/dev/null 2>&1 || true
+on_primary "pg_ctlcluster $PGVERSION $PRIMARY_CLUSTER start" >/dev/null 2>&1 || true
 until psql -tAc "SELECT 1" "$primary_dsn" >/dev/null 2>&1; do sleep 0.5; done
-pg_ctlcluster "$PGVERSION" "$STANDBY_CLUSTER" stop >/dev/null 2>&1 || true
-pg_dropcluster "$PGVERSION" "$STANDBY_CLUSTER" >/dev/null 2>&1 || true
-su postgres -c "psql -q -p 5432 -tAc \"SELECT pg_drop_replication_slot('${SLOT}') \
-    WHERE EXISTS (SELECT 1 FROM pg_replication_slots \
-                  WHERE slot_name='${SLOT}' AND NOT active)\"" >/dev/null 2>&1 || true
+on_standby "pg_ctlcluster $PGVERSION $STANDBY_CLUSTER stop" >/dev/null 2>&1 || true
+on_standby "pg_dropcluster $PGVERSION $STANDBY_CLUSTER" >/dev/null 2>&1 || true
+on_primary "su postgres -c \"psql -q -p ${PRIMARY_PORT} -tAc \\\"\
+SELECT pg_drop_replication_slot('${SLOT}') WHERE EXISTS (SELECT 1 FROM \
+pg_replication_slots WHERE slot_name='${SLOT}' AND NOT active)\\\"\"" \
+    >/dev/null 2>&1 || true
 log "primary is back; rebuild the standby with standby-setup.sh"

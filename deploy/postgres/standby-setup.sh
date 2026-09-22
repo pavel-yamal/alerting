@@ -8,7 +8,12 @@
 # the audit chain, and that loss is measured by failover-drill.sh and detected by the
 # published heads.
 #
-#   PRIMARY_DSN=postgres://…  ./standby-setup.sh <cluster-name> <port>
+# Запускается НА РЕЗЕРВНОЙ машине. На разнесённых хостах это единственный из трёх
+# скриптов, которому чужой хост нужен только по сети (pg_basebackup и так ходит по
+# TCP) — за одним исключением, отмеченным ниже: сброс залипшего слота делается НА
+# ОСНОВНОЙ, и локальным сокетом туда не попасть.
+#
+#   PRIMARY_HOST=10.0.10.21 REPL_PASSWORD=… ./standby-setup.sh <cluster-name> <port>
 set -Eeuo pipefail
 
 cluster="${1:?usage: standby-setup.sh <cluster-name> <port>}"
@@ -41,11 +46,31 @@ pg_createcluster "$PGVERSION" "$cluster" --port "$port" >/dev/null
 # it is not harmless: an inactive slot makes the primary retain WAL forever, which
 # eventually fills the disk of the node that must never stop dispatching. Dropping it
 # is deliberate, and it is safe precisely because the standby it belonged to is gone.
-log "dropping any stale replication slot named ${SLOT}"
-su postgres -c "psql -q -p ${PRIMARY_PORT} -tAc \
-    \"SELECT pg_drop_replication_slot('${SLOT}') WHERE EXISTS \
-      (SELECT 1 FROM pg_replication_slots WHERE slot_name='${SLOT}' AND NOT active)\"" \
-    >/dev/null 2>&1 || true
+#
+# Слот живёт НА ОСНОВНОЙ машине, и раньше эта команда шла в локальный сокет: пока обе
+# базы стояли на одном хосте, это и была основная. На разнесённых хостах она молча
+# уходила в резерв, где слота нет, — `|| true` проглатывал ошибку, слот на основной
+# оставался, и основная копила WAL для резерва, которого больше не существует.
+# Поэтому здесь либо SSH на основную (PRIMARY_SSH), либо psql по сети под ролью,
+# у которой есть право на слоты.
+log "dropping any stale replication slot named ${SLOT} on ${PRIMARY_HOST}"
+drop_slot="SELECT pg_drop_replication_slot('${SLOT}') WHERE EXISTS \
+    (SELECT 1 FROM pg_replication_slots WHERE slot_name='${SLOT}' AND NOT active)"
+if [ -n "${PRIMARY_SSH:-}" ]; then
+    ssh -n "$PRIMARY_SSH" "su postgres -c \"psql -q -tAc \\\"${drop_slot}\\\"\"" \
+        >/dev/null 2>&1 || true
+elif [ "$PRIMARY_HOST" = "127.0.0.1" ] || [ "$PRIMARY_HOST" = "localhost" ]; then
+    su postgres -c "psql -q -p ${PRIMARY_PORT} -tAc \"${drop_slot}\"" >/dev/null 2>&1 || true
+else
+    # Без PRIMARY_SSH остаётся сеть. Роль репликации слот не удалит — для этого нужны
+    # права суперпользователя или владельца с REPLICATION, — поэтому если не вышло,
+    # об этом надо сказать, а не проглотить: залипший слот съедает диск основной.
+    PGPASSWORD="$REPL_PASSWORD" psql -q -h "$PRIMARY_HOST" -p "$PRIMARY_PORT" \
+        -U "$REPL_USER" -d postgres -tAc "$drop_slot" >/dev/null 2>&1 \
+        || log "WARNING: не удалось проверить слот ${SLOT} на ${PRIMARY_HOST}. \
+Если он остался от прежнего резерва и неактивен, основная будет копить WAL до \
+заполнения диска. Задайте PRIMARY_SSH или удалите слот вручную."
+fi
 
 log "base backup from ${PRIMARY_HOST}:${PRIMARY_PORT} (slot ${SLOT})"
 rm -rf "${data:?}"/*

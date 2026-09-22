@@ -92,20 +92,22 @@
 /var/backups/alerting/               резервные копии
 ```
 
-Установка:
+Раскладывает это `deploy/install/` — по скрипту на роль. Процедура целиком, с
+приёмкой, в [11-installation.md](11-installation.md); здесь только то, что должно
+получиться.
 
 ```bash
-install -d -o alerting -g alerting -m 0750 /var/lib/alerting/{spool,heads}
-install -d -o root -g alerting -m 0750 /etc/alerting
-install -d -o root -g root -m 0700 /etc/alerting/credentials
-cp deploy/systemd/*.service deploy/systemd/*.timer /etc/systemd/system/
-cp deploy/nginx/*.conf /etc/nginx/conf.d/
-cp deploy/env/alerting.env.example /etc/alerting/alerting.env   # заполнить
-systemctl daemon-reload
-systemctl enable --now alerting alerting-backup.timer
-# alerting.service требует alerting-migrate.service, поэтому миграции применятся
-# первыми, а узел не поднимется, если они не прошли.
+./deploy/install/common.sh app        # пользователь, каталоги, chrony, firewall
+NODE=app1 ./deploy/install/app-node.sh # релиз, venv, юниты, конфигурация
 ```
+
+Раньше на этом месте стояли пять команд `install -d` и `cp`. Они не создавали
+пользователя, не собирали venv, не ставили пакет, не заводили каталог релизов — и
+копировали конфиг nginx на узел приложения, которому он не нужен. Как памятка о
+раскладке это работало; как установка — нет.
+
+Все адреса приходят из `deploy/inventory.env` (образец —
+`deploy/inventory.example.env`). Это единственное место, где они вписываются руками.
 
 ## 4. Конфигурация
 
@@ -224,6 +226,22 @@ journalctl -u alerting -f
 схемы, имея разные схемы, и об этом не скажет ничто.
 
 ## 7. Резервные копии
+
+**Бэкап — это две вещи на разных машинах, а не одна.** Дамп базы снимается на узле
+базы, где есть `pg_dump` и где лежит сама база; спул аудита и опубликованные головы
+пишет сервер, каждый на своём узле, и у двух узлов они разные. Один юнит, забиравший
+и то и другое, существовал только потому, что раньше всё лежало на одном хосте — и
+не мог отработать ни одной ночи, как только хостов стало пять: он не объявлял
+credential и указывал на DSN роли приложения, которой не хватает прав прочитать
+триггеры и гранты.
+
+| Юнит | Где | Что берёт |
+|---|---|---|
+| `alerting-backup.service` | db-1 | дамп базы ролью владельца |
+| `alerting-artifacts-backup.service` | app-1, app-2 | спул и головы |
+
+Каждый вслух говорит в журнал, какую половину он делает: пропуск «молча» неотличим
+от «скопировал пустое».
 
 `alerting-backup.timer` раз в сутки. Копируются три вещи:
 

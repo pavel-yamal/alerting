@@ -44,6 +44,18 @@ EnvironmentFile=/etc/alerting/alerting.env
 # nothing else. The owner's DSN lives only in alerting-migrate.service.
 LoadCredential=dsn:/etc/alerting/credentials/dsn-app
 LoadCredential=server-key:/etc/alerting/credentials/server-key
+# Пути к этим файлам задаются ЗДЕСЬ, а не в alerting.env, и это не перестановка ради
+# порядка. `%d` — спецификатор systemd, и раскрывается он в директивах юнита;
+# содержимое файла из EnvironmentFile= через раскрытие спецификаторов не проходит.
+# Пока строки `ALERTING_DSN_FILE=%d/dsn` и `ALERTING_SERVER_KEY_FILE=%d/server-key`
+# стояли в alerting.env, узел получал их буквально — путь `%d/dsn` не существует, и
+# ни DSN, ни ключ подписи голов не нашлись бы. Ни разу не проверялось, потому что ни
+# один из этих юнитов ни разу не запускался на настоящем systemd.
+#
+# alerting-migrate.service делал это правильно с самого начала: там `Environment=`
+# внутри юнита. Здесь теперь так же.
+Environment=ALERTING_DSN_FILE=%d/dsn
+Environment=ALERTING_SERVER_KEY_FILE=%d/server-key
 # There is no HTTP secret here any more. Callers sign each request with their own
 # key and the server checks it against the root-signed directory it already holds,
 # so there is nothing to deploy, nothing to rotate for everyone at once, and no way

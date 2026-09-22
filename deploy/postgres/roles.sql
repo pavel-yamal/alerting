@@ -15,6 +15,7 @@
 --
 --     sudo -u postgres psql -v ON_ERROR_STOP=1 \
 --         -v owner_password="'...'" -v app_password="'...'" \
+--         -v repl_password="'...'" \
 --         -f deploy/postgres/roles.sql
 
 \set ON_ERROR_STOP on
@@ -23,6 +24,17 @@
 -- to this role explicitly, not by anything that holds a password.
 CREATE ROLE alerting_owner LOGIN PASSWORD :owner_password;
 CREATE ROLE alerting_app   LOGIN PASSWORD :app_password;
+
+-- Роль репликации. `dev-bootstrap.sql` утверждал, что она заводится «в roles.sql с
+-- настоящим паролем и правилом pg_hba, ограниченным адресом резерва» — и в roles.sql
+-- её не было. Обещание в комментарии, которого нет в коде, хуже отсутствия обоих:
+-- по нему не собирается резерв, а причина ищется где угодно, кроме этого файла.
+--
+-- REPLICATION и ничего больше. Эта роль не владеет ни одним объектом и не имеет прав
+-- ни на одну таблицу: `pg_basebackup` и walsender их не спрашивают. Пароль у неё
+-- отдельный от двух других, потому что он уезжает на резервный сервер, а пароли
+-- владельца и приложения туда не едут никогда.
+CREATE ROLE alerting_repl  LOGIN REPLICATION PASSWORD :repl_password;
 
 CREATE DATABASE alerting OWNER alerting_owner;
 -- CREATEDB, and only that. The quarterly restore drill restores into a scratch

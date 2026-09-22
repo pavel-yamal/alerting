@@ -224,15 +224,22 @@ active/active — `--workers N` и несколько узлов безопас�
 
 ## 6. Как прогнать это самому
 
+**На разнесённых машинах задаются `PRIMARY_SSH` и `STANDBY_SSH`.** Убить основную и
+промоутнуть резерв по сети нельзя: `pg_ctl` управляет локальным postmaster'ом по его
+каталогу данных. Пока обе базы жили на одном хосте, разницы не было — и скрипт без
+этих переменных останавливал и промоутил бы одну и ту же машину.
+
 ```
-# 1. Резерв
-deploy/postgres/standby-setup.sh standby 5433
+# 1. Резерв (на резервной машине; на выделенной ВМ порт обычный, 5432)
+PRIMARY_HOST=<db-1> REPL_PASSWORD=… deploy/postgres/standby-setup.sh main 5432
 
 # 2. Узел, смотрящий в резерв (пока база в recovery — 503, writable: false)
 ALERTING_DSN=postgres://…@127.0.0.1:5433/alerting alerting-server --port 8094
 
 # 3. Учение с измерением
-READYZ_URL=http://127.0.0.1:8094/v1/readyz \
+PRIMARY_SSH=root@<db-1> STANDBY_SSH=root@<db-2> \
+PRIMARY_HOST=<db-1> STANDBY_HOST=<db-2> STANDBY_PORT=5432 STANDBY_CLUSTER=main \
+READYZ_URL=http://<app-N>:8080/v1/readyz \
 HEADS_DIR=/var/lib/alerting/heads \
     deploy/postgres/failover-drill.sh
 

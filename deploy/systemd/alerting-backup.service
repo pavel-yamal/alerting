@@ -1,18 +1,51 @@
+# Ночной бэкап базы. Ставится на УЗЕЛ БАЗЫ, а не на узел приложения.
+#
+# Раньше этот юнит стоял рядом с сервером и не мог отработать ни одной ночи — три
+# причины сразу, и каждая из них видна только на разнесённых машинах:
+#
+#   1. Он не объявлял ни одного LoadCredential=, но читал alerting.env, где путь к
+#      DSN был записан как `%d/dsn`. Без credential раскрывать нечего.
+#   2. Даже с ним это был бы DSN РОЛИ ПРИЛОЖЕНИЯ, а скрипту нужен владелец
+#      (alerting-backup.sh, строка 19): дамп обязан содержать триггеры и гранты —
+#      то, что и делает восстановленную копию такой же запертой, как оригинал, — а
+#      роль приложения их не прочитает.
+#   3. `pg_dump` на узле приложения не установлен вовсе.
+#
+# Отсюда и переезд. На пяти машинах бэкап — это две разные вещи: дамп базы здесь, а
+# спул аудита и опубликованные головы живут на узлах приложения и копируются своим
+# юнитом (alerting-artifacts-backup.service). Один скрипт, забирающий и то и другое,
+# существовал только потому, что всё лежало на одном хосте.
+#
+# Установить в /etc/systemd/system/alerting-backup.service на узле базы.
+
 [Unit]
-Description=Alerting — back up the database, audit spool and published heads
+Description=Alerting — back up the database
 Documentation=file:///opt/alerting/current/docs/09-deployment.md
-After=alerting.service
+After=postgresql.service
+Wants=postgresql.service
 
 [Service]
 Type=oneshot
 User=alerting
 Group=alerting
-EnvironmentFile=/etc/alerting/alerting.env
+
+# Никакого EnvironmentFile=/etc/alerting/alerting.env: это конфигурация СЕРВЕРА, и
+# на узле базы её нет. Всё нужное — здесь, явно.
+LoadCredential=dsn:/etc/alerting/credentials/dsn-owner
+Environment=ALERTING_DSN_FILE=%d/dsn
 Environment=ALERTING_BACKUP_DIR=/var/backups/alerting
+Environment=ALERTING_PG_BIN=/usr/lib/postgresql/16/bin
+# Спула и голов здесь нет — они на узлах приложения. Пустые пути честнее, чем
+# несуществующие каталоги, которые скрипт молча пропустит: так в логе видно, что
+# эта половина бэкапа делается не здесь.
+Environment=ALERTING_SPOOL_DIR=
+Environment=ALERTING_HEADS_DIR=
+
 ExecStart=/opt/alerting/current/deploy/backup/alerting-backup.sh
+
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/backups/alerting /var/lib/alerting
+ReadWritePaths=/var/backups/alerting
 UMask=0077
