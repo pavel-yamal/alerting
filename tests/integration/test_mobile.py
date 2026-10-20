@@ -146,7 +146,7 @@ def dispatch(server: TestClient, org: Org, clock: FixedClock, **overrides: Any) 
                 "sig": sign_payload(DOMAIN_ORDER, proposal["payload"], person.private_key),
             },
         ).raise_for_status()
-        if overrides.get("severity") == "info":
+        if overrides.get("severity") in ("info", "warning"):  # one signature suffices
             break
     order_id: str = proposal["order_id"]
     return order_id
@@ -304,3 +304,41 @@ def test_an_ack_needs_the_app_header(mobile_app, server, org, clock):
     wait_for(lambda: executor.get("/api/inbox").json()["orders"])
     response = executor.post(f"/api/orders/{order_id}/ack", json={"status": "acknowledged"})
     assert response.status_code == 403
+
+
+def test_receipt_is_reported_only_once_the_page_has_fetched_the_order(
+    mobile_app, server, org, clock
+):
+    """The stream keeps running after the phone page is closed. A "received" sent
+    then would tell the duty officer the handset got an alert it never showed."""
+    phone(mobile_app, "x-101")
+    session = next(iter(mobile_app.state.mobile.sessions.values()))
+    order_id = dispatch(server, org, clock)
+    wait_for(lambda: order_id in session.inbox)
+
+    def mine() -> dict[str, Any]:
+        people = status_of(server, org, clock, order_id)["people"]
+        return next(p for p in people if p["person_id"] == "x-101")
+
+    assert mine()["ack_status"] is None  # delivered to the client, not yet to a page
+
+    page = TestClient(mobile_app)
+    page.cookies.update({"alerting_mobile": next(iter(mobile_app.state.mobile.sessions))})
+    page.get("/api/inbox")
+    assert mine()["ack_status"] == "received"
+
+
+def test_an_older_unanswered_order_stays_answerable(mobile_app, server, org, clock):
+    executor = phone(mobile_app, "x-101")
+    first = dispatch(server, org, clock, scenario="MUSTER", severity="warning")
+    second = dispatch(server, org, clock, scenario="TEST.PING", severity="info")
+    orders = wait_for(
+        lambda: (o := executor.get("/api/inbox").json()["orders"]) and len(o) == 2 and o
+    )
+    assert [o["order_id"] for o in orders] == [second, first]  # newest first, by arrival
+
+    response = executor.post(
+        f"/api/orders/{first}/ack", json={"status": "acknowledged"}, headers=MOBILE
+    )
+    assert response.status_code == 200, response.text
+    assert "x-101" not in status_of(server, org, clock, first)["outstanding"]

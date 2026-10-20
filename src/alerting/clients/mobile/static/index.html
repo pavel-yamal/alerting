@@ -222,6 +222,13 @@ function row(o) {
     el("div", { class: "muted" }, `${time(o.received_at)}${o.my_ack ? " · " + ACK_TEXT[o.my_ack] : ""}`));
 }
 
+const needsAnswer = (o) => o.accepted && !o.cancels && !o.cancelled_by && o.requires_ack && !o.my_ack;
+
+function offline(text) {
+  $("dot").classList.remove("on");
+  $("link").textContent = text;
+}
+
 async function refresh() {
   const data = await api("/api/inbox");
   $("who").textContent = data.name;
@@ -233,8 +240,14 @@ async function refresh() {
   known = new Set(ids);
   for (const o of fresh) alertPerson(o);
 
-  const [first, ...rest] = data.orders;
-  fill($("current"), first ? card(first, fresh.length > 0) : el("div", { class: "card waiting" },
+  // Every order still waiting for the person's answer gets a full card with its
+  // buttons, not just the newest: an older order pushed down by a newer one must
+  // stay answerable, or its escalation never stops.
+  const open = data.orders.filter(needsAnswer);
+  const freshIds = new Set(fresh.map((o) => o.order_id));
+  const shown = open.length ? open : data.orders.slice(0, 1);
+  const rest = data.orders.filter((o) => !shown.includes(o));
+  fill($("current"), shown.length ? shown.map((o) => card(o, freshIds.has(o.order_id))) : el("div", { class: "card waiting" },
     el("div", { class: "big" }, data.connected ? "Приказов нет" : "Подключение…"),
     "Держите страницу открытой. Новый приказ появится здесь со звуком и вибрацией."));
   $("history-title").classList.toggle("hidden", rest.length === 0);
@@ -283,7 +296,13 @@ async function start() {
 }
 
 if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
-setInterval(() => { if (!$("app").classList.contains("hidden")) refresh().catch(() => {}); }, 2000);
+// A failed poll must turn the indicator red: a stale "на связи" is a lie told
+// exactly when the phone can no longer receive anything.
+setInterval(() => {
+  if ($("app").classList.contains("hidden")) return;
+  refresh().catch((error) => { if (error.message !== "401") offline("нет связи с приложением"); });
+}, 2000);
+window.addEventListener("offline", () => offline("нет сети на телефоне"));
 start().catch(() => showLogin());
 </script>
 </body>

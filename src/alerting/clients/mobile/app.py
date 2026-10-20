@@ -96,8 +96,15 @@ class InboxItem:
     signers: list[str]
     received_at: int
     payload: OrderPayload | None
+    #: Arrival order. ``received_at`` has one-second resolution, so two orders can
+    #: share it; this breaks the tie.
+    arrival: int = 0
     my_ack: str | None = None
     cancelled_by: str | None = None
+    #: Whether "received" has been reported. It is reported when the page fetches
+    #: the order, not when the stream delivers it: with the page closed, nothing
+    #: has shown, sounded or vibrated, and the operator must not be told otherwise.
+    received_reported: bool = False
 
 
 @dataclass
@@ -325,6 +332,7 @@ class Mobile:
             directory = session.directory
             names = {e.person_id: e.name for e in directory.payload.keys}
             item = InboxItem(
+                arrival=len(session.inbox) + 1,
                 envelope=envelope,
                 accepted=decision.accepted,
                 reasons=[describe(r) for r in decision.reasons],
@@ -337,15 +345,28 @@ class Mobile:
                 session.inbox[order_id] = item
             if decision.accepted and target is not None:
                 target.cancelled_by = order_id
+        return item
 
-        if decision.accepted and decision.payload is not None:
-            # Automatic, like the CLI: tells the operator the order reached a device
-            # and verified there. The person's own acknowledgement is a separate tap.
+    def report_received(self, session: Session) -> None:
+        """Send "received" for verified orders the page has now fetched.
+
+        Called from the page's own poll. The CLI sends it the moment an order
+        verifies, because the terminal it prints to is right there; here the stream
+        keeps running after the phone page is closed, and a receipt sent then would
+        be false delivery evidence on the duty officer's board.
+        """
+        with session.lock:
+            pending = [
+                order_id
+                for order_id, item in session.inbox.items()
+                if item.accepted and item.payload is not None and not item.received_reported
+            ]
+        for order_id in pending:
             try:
-                self.send_ack(session, order_id, AckStatus.RECEIVED)
+                if self.send_ack(session, order_id, AckStatus.RECEIVED):
+                    session.inbox[order_id].received_reported = True
             except Exception as exc:
                 log.warning("received-ack for %s failed: %s", order_id, exc)
-        return item
 
     def send_ack(
         self, session: Session, order_id: str, status: AckStatus, reason: str | None = None
@@ -371,6 +392,9 @@ class Mobile:
         accepted = bool(result.get("accepted"))
         if accepted and status != AckStatus.RECEIVED:
             item.my_ack = str(status)
+            # A person answering has plainly received it; a later automatic
+            # "received" must not overwrite their answer on the board.
+            item.received_reported = True
         return accepted
 
     # --- rendering ------------------------------------------------------------
@@ -480,8 +504,9 @@ def create_mobile(
 
     @app.get("/api/inbox")
     def inbox(session: Session = Depends(current)) -> dict[str, Any]:
+        mobile.report_received(session)
         with session.lock:
-            items = sorted(session.inbox.items(), key=lambda kv: kv[1].received_at, reverse=True)
+            items = sorted(session.inbox.items(), key=lambda kv: kv[1].arrival, reverse=True)
             views = [mobile.view(session, order_id, item) for order_id, item in items]
         return {
             "person_id": session.stored.person_id,
