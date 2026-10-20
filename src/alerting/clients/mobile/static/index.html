@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#b42318">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<title>Оповещение</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #fff; --text: #1b1f24; --muted: #5d6670; --line: #dde1e6;
+    --drill: #1f5fbf; --drill-bg: #e6eefb; --real: #b42318; --real-bg: #fdecea;
+    --ok: #1a7f37; --ok-bg: #e7f5ec; --warn: #9a6700; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e1114; --card: #181c21; --text: #e9ecef; --muted: #9aa4ae; --line: #2b3239;
+      --drill: #79adff; --drill-bg: #15253c; --real: #ff7b72; --real-bg: #3a1916;
+      --ok: #56d364; --ok-bg: #132b1a; --warn: #e3b341; --warn-bg: #362b10;
+    }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         padding: env(safe-area-inset-top) 16px calc(24px + env(safe-area-inset-bottom)); }
+  header { display: flex; align-items: center; gap: 10px; padding: 14px 0; }
+  header .name { font-weight: 700; }
+  header .link { margin-left: auto; display: flex; align-items: center; gap: 6px; font-size: 14px; color: var(--muted); }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--real); }
+  .dot.on { background: var(--ok); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .banner { border-radius: 10px; padding: 14px; text-align: center; font-size: 24px; font-weight: 900; letter-spacing: .04em; margin-bottom: 12px; }
+  .banner.drill { background: var(--drill-bg); color: var(--drill); }
+  .banner.real { background: var(--real); color: #fff; }
+  .verdict { border-radius: 10px; padding: 12px; font-weight: 800; font-size: 19px; margin-bottom: 10px; }
+  .verdict.ok { background: var(--ok-bg); color: var(--ok); }
+  .verdict.bad { background: var(--real-bg); color: var(--real); }
+  .verdict small { display: block; font-weight: 500; font-size: 14px; margin-top: 4px; }
+  .scenario { font-size: 26px; font-weight: 800; margin: 6px 0 2px; }
+  .desc { font-size: 19px; margin-bottom: 8px; }
+  .text { padding: 10px 12px; border-left: 4px solid var(--line); color: var(--muted); margin: 8px 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .note { border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 15px; }
+  .note.warn { background: var(--warn-bg); color: var(--warn); }
+  .note.bad { background: var(--real-bg); color: var(--real); }
+  .note.ok { background: var(--ok-bg); color: var(--ok); }
+  .code { font-size: 20px; font-weight: 800; letter-spacing: .03em; margin-top: 4px; }
+  .acks { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+  button { font: inherit; border-radius: 12px; border: 2px solid var(--line); background: var(--bg);
+           color: var(--text); padding: 14px 10px; font-weight: 700; min-height: 54px; }
+  button.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+  button.chosen { border-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
+  button.wide { grid-column: 1 / -1; }
+  button:disabled { opacity: .5; }
+  input { width: 100%; font: inherit; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg); color: var(--text); margin: 6px 0 12px; }
+  h2 { font-size: 16px; color: var(--muted); margin: 22px 0 8px; font-weight: 600; }
+  .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+  .tag { font-size: 12px; font-weight: 800; padding: 2px 7px; border-radius: 5px; }
+  .tag.drill { background: var(--drill-bg); color: var(--drill); }
+  .tag.real { background: var(--real-bg); color: var(--real); }
+  .tag.bad { background: var(--real-bg); color: var(--real); }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .hidden { display: none !important; }
+  .waiting { text-align: center; padding: 40px 10px; color: var(--muted); }
+  .waiting .big { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  @keyframes flash { 50% { opacity: .55; } }
+  .banner.real.fresh { animation: flash 1s steps(2) 6; }
+</style>
+</head>
+<body>
+
+<section id="login" class="card hidden" style="margin-top:12vh">
+  <div class="banner real" style="font-size:20px">Оповещение</div>
+  <form id="login-form">
+    <label for="person">Ваш идентификатор</label>
+    <input id="person" autocomplete="username" autocapitalize="off" placeholder="например, x-101" required>
+    <label for="pass">Пароль ключа</label>
+    <input id="pass" type="password" autocomplete="current-password" required>
+    <button class="primary wide" style="width:100%" type="submit">Войти и ждать приказов</button>
+  </form>
+  <div id="login-msg"></div>
+  <p class="muted">Приказ считается подлинным, только если его подписали уполномоченные лица — это проверяется по ключу организации, полученному при регистрации, а не по слову сервера.</p>
+</section>
+
+<div id="app" class="hidden">
+  <header>
+    <span class="name" id="who"></span>
+    <span class="link"><span class="dot" id="dot"></span><span id="link">нет связи</span></span>
+  </header>
+  <div id="current"></div>
+  <h2 id="history-title" class="hidden">Ранее</h2>
+  <div id="history"></div>
+  <div class="row" style="margin-top:20px">
+    <button id="notify" type="button" class="hidden">Включить уведомления</button>
+    <button id="logout" type="button">Выйти</button>
+  </div>
+  <p class="muted">Это демонстрационный веб-клиент: проверка подписи выполняется в клиенте исполнителя на стенде, а не в самом телефоне. Пока страница закрыта или телефон спит, приказ сюда не придёт — для этого нужно приложение с push-уведомлениями.</p>
+</div>
+
+<script>
+"use strict";
+
+const SEVERITY = { info: "информация", warning: "предупреждение", critical: "критическая", catastrophic: "катастрофическая" };
+const ACKS = [
+  ["acknowledged", "Принял"], ["en_route", "Выдвинулся"],
+  ["completed", "Выполнил"], ["cannot_comply", "Не могу"],
+];
+const ACK_TEXT = Object.fromEntries(ACKS);
+
+let known = null;          // order ids already shown, to spot new ones
+let audio = null;
+
+// Everything from the server goes in through text nodes; nothing is parsed as HTML.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+const $ = (id) => document.getElementById(id);
+const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
+const time = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "—";
+
+async function api(path, options = {}) {
+  const init = { method: options.method || "GET", headers: {}, credentials: "same-origin" };
+  if (init.method !== "GET") {
+    init.headers["X-Alerting-Mobile"] = "1";
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(options.body || {});
+  }
+  const response = await fetch(path, init);
+  let data = null;
+  try { data = await response.json(); } catch (_) {}
+  if (response.status === 401 && path !== "/api/login") { showLogin(data && data.detail); throw new Error("401"); }
+  if (!response.ok) throw new Error((data && typeof data.detail === "string") ? data.detail : `ошибка ${response.status}`);
+  return data;
+}
+
+// ---- alerting the person -----------------------------------------------------
+function beep() {
+  if (!audio) return;
+  const now = audio.currentTime;
+  for (let i = 0; i < 3; i++) {
+    const osc = audio.createOscillator(), gain = audio.createGain();
+    osc.frequency.value = 880; osc.connect(gain); gain.connect(audio.destination);
+    gain.gain.setValueAtTime(0.0001, now + i * 0.5);
+    gain.gain.exponentialRampToValueAtTime(0.4, now + i * 0.5 + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + i * 0.5 + 0.35);
+    osc.start(now + i * 0.5); osc.stop(now + i * 0.5 + 0.4);
+  }
+}
+
+function alertPerson(order) {
+  beep();
+  if (navigator.vibrate) navigator.vibrate([400, 150, 400, 150, 400]);
+  if ("Notification" in window && Notification.permission === "granted") {
+    const title = order.accepted ? `${order.drill ? "УЧЕНИЕ" : "БОЕВОЕ"}: ${order.scenario}` : "Отклонённое сообщение";
+    try { new Notification(title, { body: order.description || order.text || "", tag: order.order_id, icon: "/icon.svg" }); } catch (_) {}
+  }
+}
+
+// ---- rendering ---------------------------------------------------------------
+function card(o, fresh) {
+  const isCancel = Boolean(o.cancels);
+  const banner = el("div", { class: "banner " + (o.drill ? "drill" : "real") + (fresh && !o.drill ? " fresh" : "") },
+    (isCancel ? "ОТБОЙ · " : "") + (o.drill ? "УЧЕНИЕ" : "БОЕВОЕ"));
+
+  const verdict = o.accepted
+    ? el("div", { class: "verdict ok" }, "✓ ПОДЛИННЫЙ ПРИКАЗ",
+        el("small", {}, `Подписали: ${o.signers.join(", ") || "—"}`))
+    : el("div", { class: "verdict bad" }, "✗ ОТКЛОНЕНО — НЕ ВЫПОЛНЯТЬ",
+        el("small", {}, "Сообщите дежурному по номеру с вашей карточки."));
+
+  const acks = o.accepted && !isCancel && !o.cancelled_by ? el("div", { class: "acks" },
+    ACKS.map(([status, label]) => el("button", {
+      type: "button",
+      class: (o.my_ack === status ? "chosen" : status === "acknowledged" && !o.my_ack ? "primary" : "") + (status === "acknowledged" ? " wide" : ""),
+      onclick: async (event) => {
+        let reason = null;
+        if (status === "cannot_comply") {
+          reason = prompt("Почему не можете выполнить?");
+          if (!reason) return;
+        }
+        event.target.disabled = true;
+        try { await api(`/api/orders/${encodeURIComponent(o.order_id)}/ack`, { method: "POST", body: { status, reason } }); await refresh(); }
+        catch (error) { alert(error.message); event.target.disabled = false; }
+      },
+    }, label))) : null;
+
+  return el("div", { class: "card" },
+    banner,
+    verdict,
+    o.reasons.length ? el("div", { class: "note bad" }, el("b", {}, "Почему: "), o.reasons.join("; ")) : null,
+    o.warnings.map((w) => el("div", { class: "note warn" }, "! ", w)),
+    o.cancelled_by ? el("div", { class: "note ok" }, "Этот приказ отменён — получен отбой.") : null,
+    el("div", { class: "scenario" }, o.scenario || "—"),
+    o.description ? el("div", { class: "desc" }, o.description) : null,
+    o.text ? el("div", { class: "text" }, o.text) : null,
+    el("div", { class: "muted" }, `${SEVERITY[o.severity] || o.severity || ""} · получено в ${time(o.received_at)}`),
+    o.wake_words ? el("div", { class: "note warn" }, "Код в SMS по этому приказу:",
+      el("div", { class: "code" }, o.wake_words.join(" · ").toUpperCase()),
+      el("div", {}, "Другие слова в SMS — это не мы. Ссылок мы не присылаем.")) : null,
+    o.my_ack ? el("div", { class: "note ok" }, `Вы ответили: ${ACK_TEXT[o.my_ack] || o.my_ack}`) : null,
+    acks,
+  );
+}
+
+function row(o) {
+  return el("div", { class: "card", style: "padding:12px" },
+    el("div", { class: "row" },
+      el("span", {}, el("span", { class: "tag " + (o.drill ? "drill" : "real") }, o.drill ? "УЧЕНИЕ" : "БОЕВОЕ"), " ",
+        o.cancels ? "ОТБОЙ " : "", o.scenario),
+      el("span", { class: "tag " + (o.accepted ? "ok" : "bad") }, o.accepted ? "подлинный" : "отклонён")),
+    el("div", { class: "muted" }, `${time(o.received_at)}${o.my_ack ? " · " + ACK_TEXT[o.my_ack] : ""}`));
+}
+
+async function refresh() {
+  const data = await api("/api/inbox");
+  $("who").textContent = data.name;
+  $("dot").classList.toggle("on", data.connected);
+  $("link").textContent = data.connected ? "на связи" : (data.last_error ? "нет связи — переподключаюсь" : "подключаюсь…");
+
+  const ids = data.orders.map((o) => o.order_id);
+  const fresh = known ? data.orders.filter((o) => !known.has(o.order_id)) : [];
+  known = new Set(ids);
+  for (const o of fresh) alertPerson(o);
+
+  const [first, ...rest] = data.orders;
+  fill($("current"), first ? card(first, fresh.length > 0) : el("div", { class: "card waiting" },
+    el("div", { class: "big" }, data.connected ? "Приказов нет" : "Подключение…"),
+    "Держите страницу открытой. Новый приказ появится здесь со звуком и вибрацией."));
+  $("history-title").classList.toggle("hidden", rest.length === 0);
+  fill($("history"), rest.map(row));
+}
+
+// ---- login -------------------------------------------------------------------
+function showLogin(reason) {
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  fill($("login-msg"), reason ? el("div", { class: "note warn" }, reason) : null);
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  // The tap is the user gesture browsers require before a page may make sound.
+  try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (_) {}
+  fill($("login-msg"), el("div", { class: "note warn" }, "Расшифровываю ключ и проверяю справочник…"));
+  try {
+    await api("/api/login", { method: "POST", body: { person_id: $("person").value.trim(), passphrase: $("pass").value } });
+    $("pass").value = "";
+    await start();
+  } catch (error) {
+    fill($("login-msg"), el("div", { class: "note bad" }, error.message));
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  await api("/api/logout", { method: "POST" }).catch(() => {});
+  known = null;
+  showLogin("Вы вышли. Приказы на это устройство больше не приходят.");
+});
+
+$("notify").addEventListener("click", async () => {
+  try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (_) {}
+  if ("Notification" in window) await Notification.requestPermission();
+  $("notify").classList.add("hidden");
+});
+
+async function start() {
+  await refresh();
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  const canNotify = "Notification" in window && window.isSecureContext && Notification.permission === "default";
+  $("notify").classList.toggle("hidden", !canNotify);
+}
+
+if ("serviceWorker" in navigator && window.isSecureContext) navigator.serviceWorker.register("/sw.js").catch(() => {});
+setInterval(() => { if (!$("app").classList.contains("hidden")) refresh().catch(() => {}); }, 2000);
+start().catch(() => showLogin());
+</script>
+</body>
+</html>
