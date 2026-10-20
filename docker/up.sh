@@ -35,8 +35,10 @@ build_log=$(mktemp)
 if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . >"$build_log" 2>&1; then
     # Без этого видно только «exit code: 1», а причина — в выводе pip выше.
     # Сводка docker в конце одинакова при любой причине; причина — в строках pip.
-    grep -E 'ERROR|[Ee]rror:|Could not|Retrying|Failed|denied|resolve host' "$build_log" \
-        | grep -v 'failed to solve' | sed 's/^#[0-9]* [0-9.]* *//' | awk '!seen[$0]++' | head -15
+    # `|| true`: под set -e и pipefail пустой grep иначе молча завершил бы скрипт.
+    cause=$(grep -E 'ERROR|[Ee]rror:|Could not|Retrying|Failed|denied|resolve host' "$build_log" \
+        | grep -v 'failed to solve' | sed 's/^#[0-9]* [0-9.]* *//' | awk '!seen[$0]++' | head -15 || true)
+    if [[ -n "$cause" ]]; then printf '%s\n' "$cause"; else tail -20 "$build_log"; fi
     rm -f "$build_log"
     fail "сборка не прошла (полный лог: docker build --progress=plain .)
 Частые причины:
