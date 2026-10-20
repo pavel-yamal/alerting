@@ -77,6 +77,13 @@
   #login { max-width: 360px; margin: 10vh auto; }
   .hidden { display: none !important; }
   code { font-size: 12px; color: var(--muted); }
+  nav.tabs { display: flex; gap: 6px; }
+  nav.tabs button.active { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+  main.dir { grid-template-columns: 1fr 1fr 1fr; }
+  main.dir section.wide { grid-column: 1 / -1; }
+  @media (max-width: 1100px) { main.dir { grid-template-columns: 1fr; } }
+  textarea#codebook { font: 12px/1.4 ui-monospace, Menlo, Consolas, monospace; min-height: 180px; }
+  ol.pending li { margin: 6px 0; }
   .keybox { font: 600 15px/1.4 ui-monospace, Menlo, Consolas, monospace; word-break: break-all;
             padding: 10px; border: 1px dashed var(--line); border-radius: 6px; margin: 6px 0; }
 </style>
@@ -128,10 +135,14 @@
   <header>
     <h1>Панель дежурного</h1>
     <span id="org" class="hint"></span>
+    <nav class="tabs">
+      <button type="button" id="tab-alerts" class="active">Оповещения</button>
+      <button type="button" id="tab-directory">Справочник и ключи</button>
+    </nav>
     <span class="who" id="who"></span>
     <button id="logout" type="button">Выйти</button>
   </header>
-  <main>
+  <main id="alerts-view">
     <section>
       <h2>Новое оповещение</h2>
       <form id="new-form">
@@ -185,6 +196,75 @@
 
     <section id="detail">
       <div class="empty">Выберите приказ слева или создайте новый.</div>
+    </section>
+  </main>
+
+  <main id="directory-view" class="hidden dir">
+    <section class="wide">
+      <h2>Люди и ключи <span id="dir-versions" class="hint"></span></h2>
+      <div id="dir-msg"></div>
+      <table id="people"></table>
+      <div class="hint">«Отозвать сейчас» — ключом отзыва этого устройства, без хранителей, за секунды. «В заявку» — изменение уйдёт хранителям на подпись корневым ключом.</div>
+    </section>
+
+    <section>
+      <h2>Добавить человека</h2>
+      <form id="add-form">
+        <label for="add-person">Идентификатор</label>
+        <input id="add-person" type="text" placeholder="например, p-012 или x-110" required>
+        <label for="add-name">ФИО</label>
+        <input id="add-name" type="text" required>
+        <label for="add-role">Роль</label>
+        <select id="add-role">
+          <option value="executor">исполнитель</option>
+          <option value="duty_officer">дежурный</option>
+          <option value="deputy">заместитель</option>
+          <option value="director">директор</option>
+          <option value="auditor">аудитор</option>
+        </select>
+        <label for="add-key">Публичный ключ — с экрана регистрации его устройства</label>
+        <input id="add-key" type="text" placeholder="43 символа" required>
+        <div class="hint" id="add-kid"></div>
+        <h3>Куда слать оповещения (для исполнителей)</h3>
+        <label for="add-phone">Телефон</label><input id="add-phone" type="text">
+        <label for="add-site">Площадка</label><input id="add-site" type="text">
+        <label for="add-groups">Группы через запятую</label><input id="add-groups" type="text" placeholder="fire-wardens">
+        <div class="row"><button class="primary" type="submit">В заявку</button></div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Ключ отзыва дежурной смены</h2>
+      <div id="revoker-box"></div>
+      <form id="revoker-form" class="hidden">
+        <label for="revoker-label">Название</label>
+        <input id="revoker-label" type="text" value="дежурная смена" required>
+        <label for="revoker-pass">Пароль — не короче 10 символов</label>
+        <input id="revoker-pass" type="password" autocomplete="new-password" minlength="10" required>
+        <label for="revoker-pass2">Пароль ещё раз</label>
+        <input id="revoker-pass2" type="password" autocomplete="new-password" required>
+        <div class="row"><button type="submit">Создать на этом устройстве</button></div>
+      </form>
+      <h3>Кодовая книга</h3>
+      <textarea id="codebook" rows="10" spellcheck="false"></textarea>
+      <div class="row">
+        <label class="inline">Срок политики, дней <input id="renew-days" type="text" value="365" size="4"></label>
+        <button type="button" id="codebook-add">В заявку</button>
+      </div>
+      <div class="hint" id="policy-expiry"></div>
+    </section>
+
+    <section>
+      <h2>Заявка хранителям</h2>
+      <ol id="pending" class="pending"></ol>
+      <div class="row">
+        <button class="primary" type="button" id="request-download">Скачать заявку</button>
+        <button type="button" id="request-clear">Очистить</button>
+      </div>
+      <div class="hint">Файл заявки несут хранителям на носителе. Они подписывают его на компьютере без сети и возвращают файл ответа.</div>
+      <h2 style="margin-top:20px">Ответ хранителей</h2>
+      <input id="answer-file" type="file" accept=".json,application/json">
+      <div id="answer-msg"></div>
     </section>
   </main>
 </div>

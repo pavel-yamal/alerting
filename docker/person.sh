@@ -31,6 +31,15 @@ keys=/var/lib/alerting/demo-keys
 clients=/var/lib/alerting/clients
 as_operator="--server http://server:8080 --person ${operator} --home ${clients}/${operator} --passphrase demo"
 
+# После переноса на ключ хранителей (rotate-root.sh) корневого ключа на сервере нет —
+# и так должно быть. Тогда всё, кроме просмотра, делается в панели.
+if [[ "$action" != show ]] && ! docker run --rm --entrypoint test \
+        -v alerting_demo-keys:/k alerting:local -f /k/root-key.SECRET 2>/dev/null; then
+    echo "Корневого ключа на сервере нет (организация на ключе хранителей)." >&2
+    echo "Добавление и отзыв — в панели: «Справочник и ключи» → заявка хранителям / «Отозвать сейчас»." >&2
+    exit 2
+fi
+
 case "$action" in
 add)
     [[ $# -ge 2 ]] || usage

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import pathlib
 import re
 import sys
 from typing import Any
@@ -43,10 +44,22 @@ def build_parser() -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="serve",
-        choices=["serve", "migrate"],
+        choices=["serve", "migrate", "import-root"],
         help="serve (default), or apply pending database migrations and exit. "
         "`migrate` connects as the owner role and is meant to run from a oneshot "
-        "unit before the service, not from the service itself.",
+        "unit before the service, not from the service itself. `import-root` moves "
+        "the organisation to a new root key from the custodians' answer file.",
+    )
+    parser.add_argument(
+        "answer",
+        nargs="?",
+        type=pathlib.Path,
+        help="import-root: the custodians' answer file (a migration)",
+    )
+    parser.add_argument(
+        "--fingerprint",
+        default="",
+        help="import-root: the new root's fingerprint, typed from the custodians' card",
     )
     parser.add_argument("--host", default="127.0.0.1", help="bind address")
     parser.add_argument("--port", type=int, default=8080)
@@ -141,6 +154,123 @@ def _migrate(settings: Settings) -> int:
     return 0
 
 
+def _import_root(settings: Settings, answer_path: pathlib.Path | None, typed: str) -> int:
+    """Move this server to the custodians' new root key.
+
+    The one step that cannot go through the panel or the API, on purpose: it changes
+    what the server trusts, so it must not be reachable by anyone who only holds a
+    login. It runs on the server, by its administrator, with the server stopped.
+
+    Checks, in order: the fingerprint the administrator typed from the custodians'
+    printed card matches the answer's root key (a file swapped on its way here is
+    caught by a person, not by the file); the bundles verify under that key; their
+    versions exceed everything stored. Then both are stored and the change recorded
+    in the audit chain. ``ALERTING_ROOT_PUBKEY`` is changed by the caller
+    (``docker/rotate-root.sh``) afterwards.
+    """
+    import json
+
+    from alerting import custody
+    from alerting.core.audit_chain import Event
+    from alerting.core.clock import SystemClock
+    from alerting.core.directory import Directory
+    from alerting.core.policy import Policy
+    from alerting.core.signing import public_key_from_b64u
+    from alerting.server.db import migrate
+    from alerting.server.db.pool import open_pool
+    from alerting.server.db.repo import Repo
+    from alerting.server.services.audit_service import AuditService
+
+    if answer_path is None or not answer_path.exists():
+        log.error("import-root needs the answer file")
+        return 2
+    answer = json.loads(answer_path.read_text(encoding="utf-8"))
+    try:
+        bundles = custody.read_answer(answer, org_id=settings.org_id)
+    except custody.CustodyError as exc:
+        log.error("%s", exc)
+        return 2
+    new_root = str(answer.get("root_public_key", ""))
+    expected = custody.fingerprint(new_root)
+    if "".join(typed.split()).lower() != "".join(expected.split()).lower():
+        log.error(
+            "the fingerprint typed does not match the answer's root key (%s). Compare it "
+            "with the custodians' printed card; do not proceed if they differ",
+            expected,
+        )
+        return 2
+    if new_root == settings.root_public_key:
+        log.error("this server already trusts that root key; publish the answer in the panel")
+        return 2
+    if set(bundles) != {"directory", "policy"}:
+        log.error("a migration answer carries both the directory and the policy")
+        return 2
+    root = public_key_from_b64u(new_root)
+    try:
+        org = settings.org_id
+        directory = Directory.load(bundles["directory"], root_public_key=root, org_id=org)
+        policy = Policy.load(bundles["policy"], root_public_key=root, org_id=org)
+    except Exception as exc:
+        log.error("the answer does not verify under its own root key: %s", exc)
+        return 2
+
+    pool = open_pool(settings.load_dsn())
+    try:
+        with pool.connection() as connection:
+            migrate.verify(connection)
+        repo = Repo(pool)
+        clock = SystemClock()
+        now = clock.now()
+        for kind, loaded, bundle in (
+            ("directory", directory, bundles["directory"]),
+            ("policy", policy, bundles["policy"]),
+        ):
+            current = repo.latest_bundle(kind)
+            seen = int(current["payload"]["version"]) if current else 0
+            if loaded.version <= seen:
+                log.error("%s version %d is not above the stored %d", kind, loaded.version, seen)
+                return 2
+            stored = repo.put_bundle_if_latest(
+                kind, loaded.version, bundle, now, expected_latest=seen
+            )
+            if not stored:
+                log.error("%s changed while importing; run again", kind)
+                return 1
+        raw_key = settings.load_server_key()
+        from alerting.core.signing import private_key_from_b64u
+
+        audit = AuditService(
+            repo,
+            clock,
+            server_key=private_key_from_b64u(raw_key) if raw_key else None,
+            spool_dir=settings.spool_dir,
+            heads_dir=settings.heads_dir,
+        )
+        audit.append(
+            Event.ROOT_ROTATED,
+            {
+                "previous_fingerprint": (
+                    custody.fingerprint(settings.root_public_key)
+                    if settings.root_public_key
+                    else None
+                ),
+                "fingerprint": expected,
+                "directory_version": directory.version,
+                "policy_version": policy.version,
+            },
+        )
+    finally:
+        pool.close()
+    print(f"ALERTING_ROOT_PUBKEY={new_root}")
+    log.info(
+        "imported directory v%d and policy v%d under root %s; set ALERTING_ROOT_PUBKEY and restart",
+        directory.version,
+        policy.version,
+        expected,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -154,6 +284,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "migrate":
         return _migrate(settings)
+    if args.command == "import-root":
+        return _import_root(settings, args.answer, args.fingerprint)
 
     log.info("alerting server starting\n%s", _describe_settings(settings))
 

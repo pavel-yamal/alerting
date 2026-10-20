@@ -48,6 +48,8 @@ class Event(StrEnum):
     #: Validity ended on purpose (rotation, leaving): earlier signatures still count.
     KEY_RETIRED = "key.retired"
     #: Where orders go changed. Pseudonym only: the contact itself is personal data.
+    #: The organisation moved to a new root key (docs/adr/0013). Fingerprints only.
+    ROOT_ROTATED = "root.rotated"
     CONTACT_SET = "contact.set"
     CONTACT_DEACTIVATED = "contact.deactivated"
     #: A channel that was answering has stopped. This is the anti-suppression

@@ -428,6 +428,255 @@ setInterval(async () => {
   } catch (_) { /* shown on the next action */ }
 }, 3000);
 
+// ---- directory, custodians' requests, revocation key --------------------------------
+// The panel never holds the root key. Changes to who may sign are collected here into
+// a request file for the custodians' offline laptop; their signed answer is uploaded
+// back and published. Only revocation is immediate: the duty shift's revocation key,
+// kept in this browser, signs the next revocation list.
+const ROLE = { executor: "исполнитель", duty_officer: "дежурный", deputy: "заместитель",
+               director: "директор", auditor: "аудитор" };
+let dir = null;
+let codebookDirty = false;
+let pending = [];
+try { pending = JSON.parse(sessionStorage.getItem("alerting.pending") || "[]"); } catch (_) { pending = []; }
+function savePending() {
+  try { sessionStorage.setItem("alerting.pending", JSON.stringify(pending)); } catch (_) { /* private mode */ }
+  renderPending();
+}
+
+function showTab(name) {
+  $("alerts-view").classList.toggle("hidden", name !== "alerts");
+  $("directory-view").classList.toggle("hidden", name !== "directory");
+  $("tab-alerts").classList.toggle("active", name === "alerts");
+  $("tab-directory").classList.toggle("active", name === "directory");
+  if (name === "directory") loadDirectory();
+}
+$("tab-alerts").addEventListener("click", () => showTab("alerts"));
+$("tab-directory").addEventListener("click", () => showTab("directory"));
+
+function download(name, data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const link = el("a", { href: URL.createObjectURL(blob), download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+const stamp = () => new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "");
+
+async function loadDirectory() {
+  try { dir = await api("/api/directory"); }
+  catch (error) { $("dir-msg").replaceChildren(msg("err", error.message)); return; }
+  renderDirectory();
+}
+
+function keyName(keyId) {
+  const p = dir && dir.people.find((x) => x.key_id === keyId);
+  return p ? `${p.person_id} ${p.name}` : keyId;
+}
+
+function describeChange(c) {
+  switch (c.op) {
+    case "add_key": return `Добавить ${c.person_id} «${c.name}», ${ROLE[c.role] || c.role}`;
+    case "retire": return `Вывести ключ ${keyName(c.key_id)} (прежние подписи в силе)`;
+    case "revoke": return `Отозвать ключ ${keyName(c.key_id)}: ${c.reason}`;
+    case "add_revoker": return `Внести ключ отзыва «${c.label}»`;
+    case "remove_revoker": return `Убрать ключ отзыва ${c.key_id} — ${c.fate === "absorb" ? "отзывы перенести" : "отзывы отбросить (украден)"}`;
+    case "absorb_revocations": return "Перенести быстрые отзывы в справочник";
+    case "policy": return `Новая кодовая книга, срок ${c.renew_days} дн.`;
+    default: return c.op;
+  }
+}
+
+function queue(change, note) {
+  pending.push(change);
+  savePending();
+  $("dir-msg").replaceChildren(msg("ok", `В заявку: ${describeChange(change)}.${note ? " " + note : ""}`));
+}
+
+function renderDirectory() {
+  $("dir-versions").textContent = `справочник v${dir.directory_version} · политика v${dir.policy_version} · быстрые отзывы v${dir.revocations_version}`;
+  const state = (p) => p.state === "live" ? el("span", { class: "tag ok" }, "действует")
+    : p.state === "retired" ? el("span", { class: "tag warn" }, "выведен")
+    : el("span", { class: "tag real" }, `отозван${p.reason ? ": " + p.reason : ""}`);
+  $("people").replaceChildren(
+    el("tr", {}, el("th", {}, "Кто"), el("th", {}, "Роль"), el("th", {}, "Ключ"), el("th", {}, "Состояние"), el("th", {}, "")),
+    ...dir.people.map((p) => el("tr", {},
+      el("td", {}, `${p.name} `, el("code", {}, p.person_id)),
+      el("td", {}, ROLE[p.role] || p.role),
+      el("td", {}, el("code", {}, p.key_id)),
+      el("td", {}, state(p)),
+      el("td", {}, p.state !== "live" ? null : [
+        el("button", { type: "button", class: "danger", onclick: () => fastRevoke(p) }, "Отозвать сейчас"), " ",
+        el("button", { type: "button", onclick: () => queue({ op: "retire", key_id: p.key_id }) }, "В заявку: вывести"), " ",
+        el("button", { type: "button", onclick: () => {
+          const reason = prompt(`Причина отзыва ключа ${p.person_id} ${p.name}:`);
+          if (reason) queue({ op: "revoke", key_id: p.key_id, reason });
+        } }, "В заявку: отозвать"),
+      ])))
+  );
+  if (!codebookDirty) $("codebook").value = dir.scenarios_yaml;
+  $("policy-expiry").textContent = `Текущая политика действует до ${new Date(dir.policy_not_valid_after * 1000).toLocaleDateString("ru-RU")}. Продлить — та же кнопка «В заявку» без правок.`;
+  renderRevoker();
+  renderPending();
+}
+
+function renderRevoker() {
+  const mine = DeviceKey.list("revoker").filter((k) => !k.org_id || k.org_id === dir.org_id);
+  const named = new Map(dir.revokers.map((r) => [r.key_id, r]));
+  const rows = [];
+  for (const k of mine) {
+    rows.push(el("div", { class: "item" },
+      el("div", { class: "top" }, `«${k.person_id}» `, el("code", {}, k.key_id)),
+      named.has(k.key_id) ? el("div", { class: "sub" }, "На этом устройстве, внесён в справочник — «Отозвать сейчас» работает.")
+        : el("div", { class: "sub" }, "На этом устройстве, ещё не внесён в справочник. ",
+          el("button", { type: "button", onclick: () => queue({ op: "add_revoker", public_key: k.public_key, label: k.person_id }) }, "В заявку: внести"))));
+  }
+  for (const r of dir.revokers) {
+    if (mine.some((k) => k.key_id === r.key_id)) continue;
+    rows.push(el("div", { class: "item" },
+      el("div", { class: "top" }, `«${r.label}» `, el("code", {}, r.key_id)),
+      el("div", { class: "sub" }, "В справочнике, но не на этом устройстве. ",
+        el("button", { type: "button", onclick: () => queue({ op: "remove_revoker", key_id: r.key_id, fate: "absorb" }) }, "В заявку: убрать"), " ",
+        el("button", { type: "button", onclick: () => queue({ op: "remove_revoker", key_id: r.key_id, fate: "discard" }, "Отзывы, сделанные им, перестанут действовать — повторите настоящие.") }, "Украден: убрать и отбросить отзывы"))));
+  }
+  if (!rows.length) rows.push(el("div", { class: "empty" }, "Ключа отзыва нет — отзыв идёт только через хранителей."));
+  $("revoker-box").replaceChildren(...rows);
+  $("revoker-form").classList.toggle("hidden", mine.length > 0);
+}
+
+async function fastRevoke(person) {
+  const keys = DeviceKey.list("revoker").filter((k) => dir.revokers.some((r) => r.key_id === k.key_id));
+  if (!keys.length) {
+    $("dir-msg").replaceChildren(msg("err", "На этом устройстве нет ключа отзыва, внесённого в справочник. Отзовите через заявку хранителям или с устройства дежурной смены."));
+    return;
+  }
+  const reason = el("input", { type: "text", placeholder: "Причина: например, утерян телефон" });
+  const pass = el("input", { type: "password", autocomplete: "off", placeholder: "Пароль ключа отзыва" });
+  const out = el("div");
+  const go = el("button", { type: "button", class: "danger" }, "Отозвать");
+  go.addEventListener("click", async () => {
+    if (!reason.value.trim()) { out.replaceChildren(msg("err", "Укажите причину.")); return; }
+    go.disabled = true;
+    try {
+      const record = keys[0];
+      const key = await DeviceKey.unlock(record.key_id, pass.value);
+      const prepared = await api("/api/revocations/prepare", { method: "POST", body: {
+        signer: record.key_id, reason: reason.value.trim(), key_id: person.key_id } });
+      const list = prepared.payload;
+      // Checked before signing: our key, our organisation, every earlier entry kept,
+      // and nothing revoked beyond the key the person clicked.
+      const ids = new Set(list.entries.map((e) => e.key_id));
+      const fresh = list.entries.filter((e) => !prepared.previous.includes(e.key_id)).map((e) => e.key_id);
+      if (list.type !== "revocations" || list.signer !== record.key_id || list.org_id !== dir.org_id
+          || prepared.previous.some((k) => !ids.has(k)) || fresh.length !== 1 || fresh[0] !== person.key_id) {
+        throw new Error("панель прислала неверный список отзыва — не подписано");
+      }
+      const signature = await DeviceKey.sign(key, "revocations", list);
+      const result = await api("/api/revocations/publish", { method: "POST", body: { payload: list, signature } });
+      fill(out, msg("ok", `Отозван ${person.person_id} ${person.name}. Сервер отказывает этому ключу; открытые соединения закроются в течение 15 с.`),
+        result.invalidated && result.invalidated.length ? msg("warn", `Действующие события, подписанные этим ключом, больше не проверяются: ${result.invalidated.join("; ")}. Переиздайте их.`) : null);
+      await loadDirectory();
+      $("dir-msg").replaceChildren(...out.childNodes);
+    } catch (error) {
+      out.replaceChildren(msg("err", error.message));
+      go.disabled = false;
+    }
+  });
+  $("dir-msg").replaceChildren(el("div", { class: "msg warn" },
+    el("strong", {}, `Отозвать ключ ${person.person_id} ${person.name} (${person.key_id})? `),
+    "Все его подписи перестанут действовать, включая прошлые.",
+    el("div", { class: "row" }, reason, pass, go), out));
+}
+
+$("revoker-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const label = $("revoker-label").value.trim();
+  if ($("revoker-pass").value.length < 10 || $("revoker-pass").value !== $("revoker-pass2").value) {
+    $("dir-msg").replaceChildren(msg("err", "Пароль ключа отзыва — не короче 10 символов, оба раза одинаково."));
+    return;
+  }
+  try {
+    const record = await DeviceKey.create(label, $("revoker-pass").value, dir.org_id, "revoker");
+    $("revoker-pass").value = ""; $("revoker-pass2").value = "";
+    queue({ op: "add_revoker", public_key: record.public_key, label }, "Ключ отзыва создан на этом устройстве.");
+    renderRevoker();
+  } catch (error) {
+    $("dir-msg").replaceChildren(msg("err", error.message));
+  }
+});
+
+$("add-key").addEventListener("input", async () => {
+  const text = $("add-key").value.trim();
+  try {
+    const raw = DeviceKey.fromB64u(text);
+    $("add-kid").textContent = raw.length === 32 ? `Идентификатор ключа: ${await DeviceKey.keyId(raw)} — сверьте с экраном устройства.` : "Ключ должен быть 43 символа.";
+  } catch (_) { $("add-kid").textContent = "Ключ не читается."; }
+});
+
+$("add-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const person = $("add-person").value.trim();
+  const change = { op: "add_key", person_id: person, name: $("add-name").value.trim(),
+                   role: $("add-role").value, public_key: $("add-key").value.trim() };
+  const groups = $("add-groups").value.split(",").map((g) => g.trim()).filter(Boolean);
+  try {
+    if ($("add-phone").value.trim() || $("add-site").value.trim() || groups.length) {
+      await api("/api/contacts", { method: "POST", body: { person_id: person, name: change.name,
+        phone: $("add-phone").value.trim(), site: $("add-site").value.trim(), groups, role: change.role } });
+    }
+    queue(change, groups.length ? "Контакт сохранён на сервере." : "");
+    for (const id of ["add-person", "add-name", "add-key", "add-phone", "add-site", "add-groups"]) $(id).value = "";
+    $("add-kid").textContent = "";
+  } catch (error) {
+    $("dir-msg").replaceChildren(msg("err", error.message));
+  }
+});
+
+$("codebook").addEventListener("input", () => { codebookDirty = true; });
+$("codebook-add").addEventListener("click", () => {
+  queue({ op: "policy", scenarios_yaml: $("codebook").value, renew_days: Number($("renew-days").value) || 365 });
+});
+
+function renderPending() {
+  $("pending").replaceChildren(...(pending.length ? pending.map((c, i) => el("li", {},
+    describeChange(c), " ", el("button", { type: "button", onclick: () => { pending.splice(i, 1); savePending(); } }, "убрать")))
+    : [el("div", { class: "empty" }, "Изменений нет.")]));
+  $("request-download").disabled = !pending.length;
+}
+
+$("request-clear").addEventListener("click", () => { pending = []; codebookDirty = false; savePending(); });
+
+$("request-download").addEventListener("click", async () => {
+  try {
+    const request = await api("/api/custody/request", { method: "POST", body: { changes: pending } });
+    download(`заявка-${request.org_id}-${stamp()}.json`, request);
+    $("dir-msg").replaceChildren(msg("ok", "Файл заявки сохранён. Отнесите его хранителям; ответ загрузите ниже."));
+    pending = []; codebookDirty = false; savePending();
+  } catch (error) {
+    $("dir-msg").replaceChildren(msg("err", error.message));
+  }
+});
+
+$("answer-file").addEventListener("change", async () => {
+  const out = $("answer-msg");
+  try {
+    const file = $("answer-file").files[0];
+    if (!file) return;
+    let answer;
+    try { answer = JSON.parse(await file.text()); } catch (_) { throw new Error("файл не читается как JSON"); }
+    const result = await api("/api/custody/answer", { method: "POST", body: { answer } });
+    const invalidated = result.published.flatMap((r) => r.invalidated || []);
+    fill(out,
+      msg("ok", "Опубликовано: " + result.published.map((r) => `${r.kind} v${r.version}`).join(", ")),
+      el("ul", {}, result.summary.map((line) => el("li", {}, line))),
+      invalidated.length ? msg("warn", `Больше не проверяются: ${invalidated.join("; ")}`) : null);
+    $("answer-file").value = "";
+    await loadDirectory();
+  } catch (error) {
+    out.replaceChildren(msg("err", error.message));
+  }
+});
+
 async function start() {
   me = await api("/api/me");
   if (me.device_key && !deviceKey) {

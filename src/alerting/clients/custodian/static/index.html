@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Хранители корневого ключа</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1b1f24; --muted: #5d6670; --line: #dde1e6;
+    --accent: #1f5fbf; --real: #b42318; --real-bg: #fdecea; --ok: #1a7f37; --ok-bg: #e7f5ec;
+    --warn: #9a6700; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1f25; --text: #e6e9ed; --muted: #9aa4ae; --line: #2c333b;
+      --accent: #6ea8ff; --real: #ff7b72; --real-bg: #3a1a18; --ok: #56d364; --ok-bg: #16301e;
+      --warn: #e3b341; --warn-bg: #3a2e12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0; }
+  header .who { margin-left: auto; color: var(--muted); }
+  main { max-width: 980px; margin: 0 auto; padding: 16px 20px; display: grid; gap: 16px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  h2 { font-size: 16px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); }
+  label { display: block; font-weight: 600; margin: 10px 0 4px; }
+  label.inline { display: inline-flex; gap: 8px; align-items: center; font-weight: 400; }
+  input[type=text], input[type=password] { width: 100%; padding: 8px; border: 1px solid var(--line);
+    border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { background: var(--real); border-color: var(--real); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .two { grid-template-columns: 1fr; } }
+  .box { border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .msg { margin-top: 12px; padding: 10px; border-radius: 6px; }
+  .msg.err { background: var(--real-bg); color: var(--real); }
+  .msg.ok { background: var(--ok-bg); color: var(--ok); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner { padding: 14px; border-radius: 6px; font-size: 18px; font-weight: 800; background: var(--real-bg); color: var(--real); }
+  .fp { font: 700 22px/1.4 ui-monospace, Menlo, Consolas, monospace; letter-spacing: .05em; }
+  .mono { font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; word-break: break-all; }
+  ol.changes li { margin: 6px 0; font-weight: 600; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  td, th { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; }
+  .hidden { display: none !important; }
+  #card { border: 2px solid var(--text); border-radius: 8px; padding: 18px; }
+  @media print {
+    body * { visibility: hidden; }
+    #card, #card * { visibility: visible; }
+    #card { position: absolute; left: 0; top: 0; width: 100%; border-color: #000; color: #000; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Хранители корневого ключа</h1>
+  <span class="hint">Компьютер без сети. Заявки и ответы — только файлами на носителе.</span>
+  <span class="who" id="who"></span>
+</header>
+<main>
+  <div id="global-msg"></div>
+
+  <section id="setup" class="hidden">
+    <h2>Корневого ключа на этом компьютере нет</h2>
+    <form id="create-form">
+      <label for="org">Идентификатор организации</label>
+      <input id="org" type="text" placeholder="например, acme" required>
+      <div class="hint">Тот же, что у сервера (ALERTING_ORG).</div>
+      <div class="two">
+        <div class="box">
+          <h3>Хранитель 1 — вводит сам</h3>
+          <label for="n1">ФИО</label><input id="n1" type="text" required>
+          <label for="p1">Пароль — не короче 12 символов</label><input id="p1" type="password" autocomplete="new-password" required>
+          <label for="p1b">Пароль ещё раз</label><input id="p1b" type="password" autocomplete="new-password" required>
+        </div>
+        <div class="box">
+          <h3>Хранитель 2 — вводит сам</h3>
+          <label for="n2">ФИО</label><input id="n2" type="text" required>
+          <label for="p2">Пароль — не короче 12 символов</label><input id="p2" type="password" autocomplete="new-password" required>
+          <label for="p2b">Пароль ещё раз</label><input id="p2b" type="password" autocomplete="new-password" required>
+        </div>
+      </div>
+      <div class="hint">Ключ откроется только при обоих паролях. Потеря любого из них — потеря ключа: пароли хранятся каждым отдельно, в запечатанном конверте в сейфе.</div>
+      <div class="row"><button class="primary" type="submit">Создать корневой ключ</button></div>
+    </form>
+    <h3>Или восстановить из резервной копии</h3>
+    <input id="restore-file" type="file" accept=".json,application/json">
+    <div id="setup-msg"></div>
+  </section>
+
+  <section id="vault" class="hidden">
+    <h2>Корневой ключ</h2>
+    <div id="card"></div>
+    <div class="row">
+      <button id="print-card" type="button">Напечатать карточку</button>
+      <a id="backup" href="/api/vault/file" download><button type="button">Скачать резервную копию</button></a>
+    </div>
+    <div class="hint">Карточку с отпечатком хранят хранители и администратор сервера: по ней сверяют ключ при каждом переключении. Резервная копия зашифрована — без обоих паролей бесполезна; храните её во втором сейфе.</div>
+  </section>
+
+  <section id="request" class="hidden">
+    <h2>Заявка дежурного</h2>
+    <input id="request-file" type="file" accept=".json,application/json">
+    <div class="hint">Файл заявки, который дежурный выгрузил из панели («Заявка хранителям»).</div>
+    <div id="review"></div>
+  </section>
+</main>
+<script src="/custodian.js"></script>
+</body>
+</html>

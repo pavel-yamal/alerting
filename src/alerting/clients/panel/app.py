@@ -32,12 +32,14 @@ from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import yaml
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from alerting import custody
 from alerting.clients.approver_cli import KNOWN_PAYLOAD_FIELDS
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import load_key
@@ -55,6 +57,7 @@ from alerting.core.signing import (
     sign_payload,
     verify_signature,
 )
+from alerting.orgadmin import next_revocations
 from alerting.server.auth import OPERATORS
 
 log = logging.getLogger("alerting.panel")
@@ -146,6 +149,35 @@ class SignForm(BaseModel):
     #: The order signature made in the browser by the device key. Required, and the
     #: only way to sign, when the key lives there.
     sig: str | None = None
+
+
+class CustodyForm(BaseModel):
+    changes: list[dict[str, Any]] = Field(min_length=1, max_length=100)
+
+
+class AnswerForm(BaseModel):
+    answer: dict[str, Any]
+
+
+class ContactForm(BaseModel):
+    person_id: str
+    name: str
+    phone: str = ""
+    site: str = ""
+    groups: list[str] = Field(default_factory=list)
+    role: str = "executor"
+
+
+class RevokeForm(BaseModel):
+    signer: str
+    reason: str = Field(min_length=1, max_length=500)
+    person_id: str | None = None
+    key_id: str | None = None
+
+
+class SignedList(BaseModel):
+    payload: dict[str, Any]
+    signature: str
 
 
 class DeviceBegin(BaseModel):
@@ -795,6 +827,173 @@ def create_panel(
         )
         panel.remember(proposal["order_id"])
         return {"order_id": proposal["order_id"]}
+
+    # --- the directory, and what goes to the custodians ------------------------------
+    #
+    # The panel never holds the root key. It shows who is enrolled, prepares a request
+    # file for the custodians' offline laptop, and publishes the signed answer they
+    # bring back -- which the server verifies against the root it trusts. A revocation
+    # in a hurry is signed in the browser with the duty shift's revocation key.
+
+    def fresh(session: Session) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
+        """Current bundles from the server, verified and version-checked here first."""
+        directory = _server(session.api.get, "/v1/directory")
+        policy = _server(session.api.get, "/v1/policy")
+        revocations = _server(session.api.get, "/v1/revocations") or None
+        try:
+            session.cache.accept("directory", directory)
+            session.cache.accept("revocations", revocations or {})
+            session.cache.accept("policy", policy)
+        except Exception as exc:
+            raise HTTPException(502, f"справочник или политика не прошли проверку: {exc}") from None
+        return directory, policy, revocations
+
+    @app.get("/api/directory")
+    def directory_view(session: Session = Depends(current)) -> dict[str, Any]:
+        fresh(session)
+        directory = session.directory
+        now = panel.clock.now()
+        people = []
+        for entry in sorted(directory.payload.keys, key=lambda e: (e.person_id, e.valid_from)):
+            revocation = directory.revocation(entry.key_id)
+            state = (
+                "revoked"
+                if revocation
+                else "retired"
+                if entry.valid_until is not None and entry.valid_until <= now
+                else "live"
+            )
+            people.append(
+                {
+                    "person_id": entry.person_id,
+                    "name": entry.name,
+                    "role": entry.role,
+                    "key_id": entry.key_id,
+                    "state": state,
+                    "valid_until": entry.valid_until,
+                    "reason": revocation.reason if revocation else "",
+                }
+            )
+        return {
+            "org_id": session.pin.org_id,
+            "directory_version": directory.version,
+            "policy_version": session.policy.version,
+            "revocations_version": directory.revocations.version if directory.revocations else 0,
+            "revokers": [{"key_id": k, "label": r.label} for k, r in directory.revokers.items()],
+            "people": people,
+            "scenarios_yaml": yaml.safe_dump(
+                {c: r.to_payload() for c, r in session.policy.payload.scenarios.items()},
+                allow_unicode=True,
+                sort_keys=True,
+            ),
+            "policy_not_valid_after": session.policy.payload.not_valid_after,
+        }
+
+    @app.post("/api/custody/request")
+    def custody_request(body: CustodyForm, session: Session = Depends(guarded)) -> dict[str, Any]:
+        directory, policy, revocations = fresh(session)
+        changes = []
+        for change in body.changes:
+            if change.get("op") == "policy" and isinstance(change.get("scenarios_yaml"), str):
+                try:
+                    scenarios = yaml.safe_load(change["scenarios_yaml"])
+                except yaml.YAMLError as exc:
+                    raise HTTPException(422, f"кодовая книга не читается: {exc}") from None
+                change = {k: v for k, v in change.items() if k != "scenarios_yaml"}
+                change["scenarios"] = scenarios
+            changes.append(change)
+        try:
+            request = custody.build_request(
+                org_id=session.pin.org_id,
+                root_public_key=session.pin.root_public_key_b64u,
+                directory=directory,
+                policy=policy,
+                revocations=revocations,
+                changes=changes,
+                created_by=session.person_id,
+                created_at=panel.clock.now(),
+            )
+            # Checked here as the custodians will check it, so a typo is caught at the
+            # desk rather than in the safe room.
+            for parsed in custody.parse_changes(request["changes"]):
+                if isinstance(parsed, custody.PolicyChange):
+                    custody._next_policy(session.policy.payload, parsed, panel.clock.now())
+        except custody.CustodyError as exc:
+            raise HTTPException(422, str(exc)) from None
+        log.info("panel: %s prepared a custody request: %s", session.person_id, changes)
+        return request
+
+    @app.post("/api/custody/answer")
+    def custody_answer(body: AnswerForm, session: Session = Depends(guarded)) -> dict[str, Any]:
+        try:
+            bundles = custody.read_answer(body.answer, org_id=session.pin.org_id)
+        except custody.CustodyError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if body.answer.get("root_public_key") != session.pin.root_public_key_b64u:
+            raise HTTPException(
+                409,
+                "ответ подписан другим корневым ключом (отпечаток "
+                f"{body.answer.get('root_fingerprint', '?')}): это перенос организации. "
+                "Его применяет администратор сервера: ./docker/rotate-root.sh <файл ответа>",
+            )
+        published = []
+        for kind in ("directory", "policy"):
+            if kind not in bundles:
+                continue
+            result = _server(session.api.post, "/v1/bundles", {"bundle": bundles[kind]})
+            published.append(result)
+        fresh(session)
+        log.info("panel: %s published custody answer %s", session.person_id, published)
+        return {"published": published, "summary": body.answer.get("summary", [])}
+
+    @app.post("/api/contacts")
+    def set_contact(body: ContactForm, session: Session = Depends(guarded)) -> dict[str, Any]:
+        result: dict[str, Any] = _server(
+            session.api.post, "/v1/contacts", body.model_dump(exclude_none=True)
+        )
+        return result
+
+    @app.post("/api/contacts/{person_id}/deactivate")
+    def deactivate_contact(person_id: str, session: Session = Depends(guarded)) -> dict[str, Any]:
+        result: dict[str, Any] = _server(session.api.post, f"/v1/contacts/{person_id}/deactivate")
+        return result
+
+    @app.post("/api/revocations/prepare")
+    def prepare_revocation(body: RevokeForm, session: Session = Depends(guarded)) -> dict[str, Any]:
+        """The next revocation list, for the browser's revocation key to sign."""
+        _, _, latest = fresh(session)
+        directory = session.directory
+        try:
+            payload, chosen = next_revocations(
+                directory,
+                latest,
+                signer=body.signer,
+                person_id=body.person_id,
+                kid=body.key_id,
+                at=panel.clock.now(),
+                reason=body.reason,
+            )
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return {
+            "payload": payload.to_payload(),
+            "previous": [r["key_id"] for r in (latest or {}).get("payload", {}).get("entries", [])],
+            "revoking": [
+                {"person_id": e.person_id, "name": e.name, "role": e.role, "key_id": e.key_id}
+                for e in chosen
+            ],
+        }
+
+    @app.post("/api/revocations/publish")
+    def publish_revocation(body: SignedList, session: Session = Depends(guarded)) -> dict[str, Any]:
+        result: dict[str, Any] = _server(
+            session.api.post,
+            "/v1/bundles",
+            {"bundle": {"payload": body.payload, "signature": body.signature}},
+        )
+        fresh(session)
+        log.warning("panel: %s published revocation list %s", session.person_id, result)
+        return result
 
     return app
 

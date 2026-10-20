@@ -18,6 +18,7 @@
   const DOMAIN = {
     order: "alerting.order.v1\u0000",
     delegation: "alerting.session-delegation.v1\u0000",
+    revocations: "alerting.revocations.v1\u0000",
   };
   // Every field an order may carry. Anything else is a field the review screen did
   // not show, and the page refuses to sign it -- the same rule as the CLI.
@@ -113,8 +114,11 @@
   function save(records) {
     root.localStorage.setItem(STORE, JSON.stringify(records));
   }
-  const list = () => load().map(({ person_id, key_id, org_id, public_key, created }) =>
-    ({ person_id, key_id, org_id, public_key, created }));
+  // Two kinds live here: a person's device key, and the duty shift's revocation key
+  // (which can only sign revocation lists; docs/adr/0011).
+  const list = (kind = "device") => load()
+    .filter((r) => (r.kind || "device") === kind)
+    .map(({ person_id, key_id, org_id, public_key, created }) => ({ person_id, key_id, org_id, public_key, created }));
   function forget(keyIdToDrop) {
     save(load().filter((r) => r.key_id !== keyIdToDrop));
   }
@@ -128,7 +132,7 @@
 
   // Create, wrap and store a key for this person in this browser. The private key is
   // extractable only for the moment it takes to wrap it.
-  async function create(personId, password, orgId) {
+  async function create(personId, password, orgId, kind = "device") {
     const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const rawPublic = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
     const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -137,9 +141,9 @@
     const record = {
       person_id: personId, org_id: orgId, key_id: await keyId(rawPublic), public_key: b64u(rawPublic),
       salt: b64u(salt), iv: b64u(iv), wrapped: b64u(wrapped), iterations: PBKDF2_ITERATIONS,
-      created: Math.floor(Date.now() / 1000),
+      created: Math.floor(Date.now() / 1000), kind,
     };
-    save([...load().filter((r) => r.person_id !== personId), record]);
+    save([...load().filter((r) => !(r.person_id === personId && (r.kind || "device") === kind)), record]);
     // Ask the browser not to evict this site's storage. Safari honours it for a page
     // added to the home screen; elsewhere it is a hint.
     if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
