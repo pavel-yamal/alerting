@@ -1,0 +1,140 @@
+# Один узел alerting + PostgreSQL в Docker. Порядок запуска и смысл каждого шага —
+# docs/12-docker.md. Коротко:
+#
+#   cp docker/.env.example docker/.env
+#   docker compose --env-file docker/.env --profile init run --rm org-init   # ТОЛЬКО демо
+#   # вписать ALERTING_ROOT_PUBKEY из вывода в docker/.env
+#   docker compose --env-file docker/.env up -d
+#
+# Секреты не ходят через окружение: они генерируются в томах, каждый файл 0400 и
+# принадлежит тому процессу, который его читает.
+
+name: alerting
+
+x-app: &app
+  image: alerting:${ALERTING_IMAGE_TAG:-local}
+  build: .
+  restart: unless-stopped
+  environment: &app-env
+    ALERTING_ORG: ${ALERTING_ORG:-acme}
+    ALERTING_ORG_LABEL: ${ALERTING_ORG_LABEL:-ACME}
+    ALERTING_ROOT_PUBKEY: ${ALERTING_ROOT_PUBKEY:-}
+    ALERTING_NODE_ID: ${ALERTING_NODE_ID:-app-1}
+    ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
+    ALERTING_LOG_JSON: ${ALERTING_LOG_JSON:-1}
+    ALERTING_DRILL_SITES: ${ALERTING_DRILL_SITES:-}
+    ALERTING_ALLOW_STUB_CHANNELS: ${ALERTING_ALLOW_STUB_CHANNELS:-0}
+    ALERTING_CANARY_INTERVAL_S: ${ALERTING_CANARY_INTERVAL_S:-3600}
+
+services:
+  # Пароли и DSN, один раз. Повторный запуск ничего не перезаписывает.
+  secrets-init:
+    image: busybox:1.36
+    restart: "no"
+    command: ["sh", "/secrets-init.sh"]
+    volumes:
+      - ./docker/secrets-init.sh:/secrets-init.sh:ro
+      - db-secrets:/db
+      - owner-secrets:/owner
+      - app-secrets:/app
+
+  db:
+    image: postgres:16-bookworm
+    restart: unless-stopped
+    depends_on:
+      secrets-init: {condition: service_completed_successfully}
+    environment:
+      POSTGRES_PASSWORD_FILE: /secrets/postgres-password
+    volumes:
+      - db-secrets:/secrets:ro
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d alerting"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    # Наружу база не публикуется: к ней ходят только контейнеры этой сети.
+
+  # Миграции — ролью владельца, отдельным одноразовым контейнером, до сервера.
+  migrate:
+    <<: *app
+    restart: "no"
+    command: ["migrate"]
+    healthcheck: {disable: true}
+    depends_on:
+      db: {condition: service_healthy}
+    environment:
+      <<: *app-env
+      ALERTING_DSN_FILE: /run/alerting-owner/dsn
+    volumes:
+      - owner-secrets:/run/alerting-owner:ro
+
+  server:
+    <<: *app
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    command:
+      - serve
+      - --host=0.0.0.0
+      - --port=8080
+      - --workers=${ALERTING_WORKERS:-2}
+      - --forwarded-allow-ips=${ALERTING_FORWARDED_ALLOW_IPS:-}
+    environment:
+      <<: *app-env
+      ALERTING_DSN_FILE: /run/alerting-app/dsn
+      ALERTING_SERVER_KEY_FILE: /run/alerting-app/server-key
+    volumes:
+      - app-secrets:/run/alerting-app:ro
+      - heads:/var/lib/alerting/heads
+      - spool:/var/lib/alerting/spool
+    ports:
+      # По умолчанию только localhost: TLS терминирует nginx на хосте
+      # (deploy/nginx/alerting.conf). Открывать 8080 в сеть напрямую нельзя.
+      - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PORT:-8080}:8080"
+    stop_grace_period: 45s
+
+  # ДЕМО-организация. Стирает схему и пишет корневой закрытый ключ на диск —
+  # на боевом сервере не запускать никогда (docs/02-trust-and-approval.md).
+  org-init:
+    <<: *app
+    profiles: ["init"]
+    restart: "no"
+    healthcheck: {disable: true}
+    depends_on:
+      db: {condition: service_healthy}
+    entrypoint: ["sh", "-c"]
+    command:
+      - >-
+        python /opt/alerting/scripts/org_init.py --i-understand-this-is-a-demo
+        --org "$$ALERTING_ORG" --dsn "$$(cat /run/alerting-owner/dsn)"
+        --home /var/lib/alerting/clients --secrets-dir /var/lib/alerting/demo-keys
+        && install -m 0400 /var/lib/alerting/demo-keys/server-key.SECRET
+        /run/alerting-app/server-key.new
+        && mv -f /run/alerting-app/server-key.new /run/alerting-app/server-key
+    volumes:
+      - owner-secrets:/run/alerting-owner:ro
+      - app-secrets:/run/alerting-app
+      - clients:/var/lib/alerting/clients
+      - demo-keys:/var/lib/alerting/demo-keys
+
+  # CLI ЛПР, исполнителя и аудитора: docker compose run --rm cli alerting-approver ...
+  cli:
+    <<: *app
+    profiles: ["cli"]
+    restart: "no"
+    healthcheck: {disable: true}
+    entrypoint: []
+    command: ["alerting-approver", "--help"]
+    volumes:
+      - clients:/var/lib/alerting/clients
+
+volumes:
+  pgdata:
+  db-secrets:
+  owner-secrets:
+  app-secrets:
+  heads:
+  spool:
+  clients:
+  demo-keys:

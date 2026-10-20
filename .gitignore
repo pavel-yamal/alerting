@@ -26,3 +26,6 @@ wake_key.hex
 # Адреса контура. Пример — `deploy/inventory.example.env` — в репозитории;
 # заполненный инвентарь боевого контура в нём не хранится.
 deploy/inventory.env
+
+# Окружение docker compose
+docker/.env

@@ -1,0 +1,39 @@
+# Образ узла alerting: сервер и три CLI в одном пакете.
+#
+# Запускается от непривилегированного пользователя с фиксированным uid 10001: файлы
+# секретов в томах принадлежат именно ему с правами 0400, а сервер отказывается
+# читать секрет, доступный группе или остальным.
+
+FROM python:3.11-slim-bookworm AS build
+WORKDIR /src
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir --prefix=/install .
+
+FROM python:3.11-slim-bookworm
+COPY --from=build /install /usr/local
+WORKDIR /opt/alerting
+COPY config ./config
+COPY scripts ./scripts
+COPY src ./src
+
+RUN useradd --system --uid 10001 --home-dir /var/lib/alerting --shell /usr/sbin/nologin alerting \
+    && install -d -o alerting -g alerting -m 0700 \
+        /var/lib/alerting /var/lib/alerting/heads /var/lib/alerting/spool \
+        /var/lib/alerting/clients /run/alerting-app /run/alerting-owner
+
+# Все пути абсолютные: относительные отказывают молча (docs/09-deployment.md §4).
+ENV PYTHONUNBUFFERED=1 \
+    ALERTING_WORDLIST=/opt/alerting/config/wordlist.ru.txt \
+    ALERTING_ESCALATION_CONFIG=/opt/alerting/config/escalation.example.yaml \
+    ALERTING_HEADS_DIR=/var/lib/alerting/heads \
+    ALERTING_SPOOL_DIR=/var/lib/alerting/spool
+
+USER alerting
+EXPOSE 8080
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/v1/readyz', timeout=4).status == 200 else 1)"
+
+ENTRYPOINT ["alerting-server"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "8080"]
