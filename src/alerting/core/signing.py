@@ -147,3 +147,8 @@ DOMAIN_DEVICE_AUTH = b"alerting.device-auth.v1\x00"
 #: WebSocket handshake signature can never be replayed as an HTTP call, and separate
 #: from the order and ACK domains so neither can ever be replayed as transport auth.
 DOMAIN_HTTP_REQUEST = b"alerting.http-request.v1\x00"
+
+#: A device key handing HTTP authentication to a short-lived session key, so a web
+#: panel can sign requests without ever holding the device key. Its own domain: a
+#: delegation must never verify as an order, an ACK or a request, nor they as it.
+DOMAIN_SESSION_DELEGATION = b"alerting.session-delegation.v1\x00"

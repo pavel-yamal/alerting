@@ -1,19 +1,21 @@
 """Web panel for the duty officer and the decision-makers.
 
-**This is a client, not part of the server.** It holds the person's unlocked key for
-the length of a session and signs every request with it, exactly as
-``alerting-approver`` does from a terminal. The server still never sees a private
-key, and still cannot make anyone sign anything: the panel re-derives the bytes it
-signs from the payload itself and refuses to sign unless the person approved *those*
-bytes (see :func:`sign_proposal`).
+Two ways to sign in, and they differ in where the person's key lives.
 
-Where it runs follows from that. On a real installation it belongs on the operator's
-workstation, next to their key, not on the alerting server. On the Docker stand it
-runs in its own container beside the server, because there the demo keys already
-live in a shared volume.
+**Device key (the real one).** The key is created in the person's browser -- phone,
+iPad, workstation -- and never leaves it (docs/adr/0012). At login the browser signs a
+short-lived *delegation* handing HTTP authentication to a session key this process
+generates; the panel signs requests with that. Orders are signed **in the browser**,
+over the payload the page itself renders. So this process, and whoever breaks into
+it, can read and propose but cannot put anyone's signature on an order.
 
-What the browser talks to is this process, same-origin, behind a session cookie. The
-browser never sees a key, a passphrase after login, or the server's address.
+**Server-held demo keys.** Keys under ``--homes``, unlocked here with a passphrase --
+how the Docker stand shows the flow with no enrolment at all. Whoever learns two
+passphrases, or controls this process, can sign. Off unless enabled.
+
+Either way the panel re-derives what is signed from the payload itself and refuses
+unless the person approved *those* bytes (see :func:`sign_proposal`), and the server
+never sees a device key.
 """
 
 from __future__ import annotations
@@ -31,20 +33,28 @@ from typing import Any
 
 import httpx
 from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from alerting.clients.approver_cli import KNOWN_PAYLOAD_FIELDS
 from alerting.clients.bundles import BundleCache, PinnedOrg
-from alerting.clients.keystore import StoredKey, load_key
+from alerting.clients.keystore import load_key
 from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.canonical import canonicalize
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
 from alerting.core.envelope import Severity
+from alerting.core.http_auth import MAX_DELEGATION_S, delegation_payload, encode_delegation
 from alerting.core.policy import Policy
-from alerting.core.signing import DOMAIN_ORDER, sign_payload
+from alerting.core.signing import (
+    DOMAIN_ORDER,
+    generate_keypair,
+    public_key_to_b64u,
+    sign_payload,
+    verify_signature,
+)
 from alerting.server.auth import OPERATORS
 
 log = logging.getLogger("alerting.panel")
@@ -72,13 +82,25 @@ SWEEP_INTERVAL_S = 30
 #: Person ids become path components of the key store. Anything else is refused
 #: before it gets near the filesystem.
 PERSON_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+KEY_ID = re.compile(r"^ed25519:[A-Za-z0-9_-]{22}$")
+
+#: How long a browser has to sign the delegation it was handed.
+CHALLENGE_TTL_S = 120
+
+#: The delegation's own lifetime. The session idles out after 15 minutes anyway and
+#: drops the session key; this caps what a key leaked from this process is worth.
+DELEGATION_S = MAX_DELEGATION_S
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
 
 
 @dataclass
 class Session:
-    stored: StoredKey
+    person_id: str
+    key_id: str
+    #: The device key, when it is held here (demo mode). ``None`` when it lives in the
+    #: person's browser, which then signs orders itself.
+    signer: Ed25519PrivateKey | None
     pin: PinnedOrg
     cache: BundleCache
     api: Api
@@ -121,6 +143,28 @@ class SignForm(BaseModel):
     #: The digest of the payload the person was shown. Signing proceeds only if the
     #: payload the server holds *now* has the same digest.
     digest: str
+    #: The order signature made in the browser by the device key. Required, and the
+    #: only way to sign, when the key lives there.
+    sig: str | None = None
+
+
+class DeviceBegin(BaseModel):
+    person_id: str
+    key_id: str
+
+
+class DeviceFinish(BaseModel):
+    challenge: str
+    signature: str
+
+
+@dataclass
+class Challenge:
+    person_id: str
+    key_id: str
+    payload: dict[str, Any]
+    session_key: Ed25519PrivateKey
+    created: float
 
 
 class CancelForm(BaseModel):
@@ -169,11 +213,15 @@ class Panel:
     def __init__(
         self,
         *,
-        homes: pathlib.Path,
+        homes: pathlib.Path | None,
         server_url: str,
         transport: httpx.BaseTransport | None = None,
         clock: Clock | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        org_id: str | None = None,
+        root_public_key: str | None = None,
+        state_dir: pathlib.Path | None = None,
+        server_keys: bool = True,
     ) -> None:
         self.homes = homes
         self.server_url = server_url
@@ -182,12 +230,26 @@ class Panel:
         # Idle time is measured on a monotonic clock, injected so a test can advance it.
         self.monotonic = monotonic
         self.sessions: dict[str, Session] = {}
+        self.challenges: dict[str, Challenge] = {}
+        # Device-key sessions verify bundles against the root key configured here --
+        # pinned by whoever installed the panel, never fetched from the server.
+        self.pin: PinnedOrg | None = None
+        if org_id and root_public_key:
+            home = state_dir or pathlib.Path("var/panel")
+            home.mkdir(parents=True, exist_ok=True)
+            self.pin = PinnedOrg(org_id, root_public_key, home)
+            self.pin.save()
+        self.server_keys = server_keys and homes is not None
         # The server has no "list open proposals" route, so the panel remembers the
         # ones created or opened through it. Every person using this panel sees them,
         # which is the point: the second signer finds the first one's proposal here.
         self.proposal_ids: list[str] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
+
+    @property
+    def device_login(self) -> bool:
+        return self.pin is not None
 
     def remember(self, order_id: str) -> None:
         with self._lock:
@@ -197,6 +259,11 @@ class Panel:
             del self.proposal_ids[50:]
 
     def login(self, person_id: str, passphrase: str) -> tuple[str, Session]:
+        """Demo mode: unlock a key held under ``--homes``."""
+        if not self.server_keys or self.homes is None:
+            raise HTTPException(
+                404, "вход по ключам на сервере отключён — войдите ключом устройства"
+            )
         if not PERSON_ID.match(person_id):
             raise HTTPException(400, "некорректный идентификатор")
         home = self.homes / person_id
@@ -218,9 +285,65 @@ class Panel:
             ),
             transport=self.transport,
         )
+        return self._open(api, pin, stored.person_id, stored.key_id, stored.private_key)
 
+    def begin_device_login(self, person_id: str, key_id: str) -> tuple[str, dict[str, Any]]:
+        """Hand the browser a delegation to sign for a session key made here."""
+        if self.pin is None:
+            raise HTTPException(404, "вход ключом устройства не настроен на этой панели")
+        if not PERSON_ID.match(person_id) or not KEY_ID.match(key_id):
+            raise HTTPException(400, "некорректный идентификатор или ключ")
+        session_key, session_public = generate_keypair()
+        now = self.clock.now()
+        payload = delegation_payload(
+            org_id=self.pin.org_id,
+            key_id=key_id,
+            person_id=person_id,
+            session_key=public_key_to_b64u(session_public),
+            not_before=now,
+            not_after=now + DELEGATION_S,
+        )
+        challenge = secrets.token_urlsafe(24)
+        with self._lock:
+            cutoff = self.monotonic() - CHALLENGE_TTL_S
+            for stale in [c for c, v in self.challenges.items() if v.created < cutoff]:
+                del self.challenges[stale]
+            self.challenges[challenge] = Challenge(
+                person_id, key_id, payload, session_key, self.monotonic()
+            )
+        return challenge, payload
+
+    def finish_device_login(self, challenge: str, signature: str) -> tuple[str, Session]:
+        with self._lock:
+            pending = self.challenges.pop(challenge, None)
+        if pending is None or self.monotonic() - pending.created > CHALLENGE_TTL_S:
+            raise HTTPException(401, "вход устарел — начните заново")
+        assert self.pin is not None
+        api = Api(
+            self.server_url,
+            auth=SignedRequests(
+                org_id=self.pin.org_id,
+                key_id=pending.key_id,
+                person_id=pending.person_id,
+                private_key=pending.session_key,
+                clock=self.clock,
+                delegation=encode_delegation(pending.payload, signature),
+            ),
+            transport=self.transport,
+        )
+        return self._open(api, self.pin, pending.person_id, pending.key_id, None)
+
+    def _open(
+        self,
+        api: Api,
+        pin: PinnedOrg,
+        person_id: str,
+        key_id: str,
+        signer: Ed25519PrivateKey | None,
+    ) -> tuple[str, Session]:
         # Verified against the pinned root key, with rollback protection, before the
-        # panel trusts a single name, role or scenario from the server.
+        # panel trusts a single name, role or scenario from the server. For a device
+        # login this first request is also where the server checks the delegation.
         cache = BundleCache(pin)
         try:
             cache.accept("directory", api.get("/v1/directory"))
@@ -228,6 +351,8 @@ class Panel:
             policy = cache.accept("policy", api.get("/v1/policy"))
         except ServerError as exc:
             api.close()
+            if "403" in str(exc) or "401" in str(exc):
+                raise HTTPException(401, f"ключ не принят сервером: {exc}") from None
             raise HTTPException(502, f"сервер отказал: {exc}") from None
         except Exception as exc:
             api.close()
@@ -235,8 +360,8 @@ class Panel:
             raise HTTPException(502, f"справочник или политика не прошли проверку: {exc}") from None
 
         assert isinstance(directory, Directory) and isinstance(policy, Policy)
-        entry = directory.lookup(stored.key_id)
-        if entry is None or directory.is_revoked(stored.key_id):
+        entry = directory.lookup(key_id)
+        if entry is None or directory.is_revoked(key_id) or entry.person_id != person_id:
             api.close()
             raise HTTPException(403, "ключ отсутствует в справочнике или отозван")
         # The same gate the server applies to creating proposals, not the quorum
@@ -250,7 +375,9 @@ class Panel:
 
         token = secrets.token_urlsafe(32)
         session = Session(
-            stored,
+            person_id,
+            key_id,
+            signer,
             pin,
             cache,
             api,
@@ -261,7 +388,12 @@ class Panel:
         )
         with self._lock:
             self.sessions[token] = session
-        log.info("panel login: %s (%s)", person_id, entry.role)
+        log.info(
+            "panel login: %s (%s, %s)",
+            person_id,
+            entry.role,
+            "server-held key" if signer else "device key",
+        )
         return token, session
 
     def session(self, token: str | None, *, activity: bool) -> Session:
@@ -283,7 +415,7 @@ class Panel:
             dropped = [self.sessions.pop(t) for t in expired]
         for session in dropped:
             session.api.close()
-            log.info("panel session expired: %s", session.stored.person_id)
+            log.info("panel session expired: %s", session.person_id)
 
     def start_sweeper(self) -> None:
         def run() -> None:
@@ -311,14 +443,26 @@ def _server(call: Any, *args: Any, **kwargs: Any) -> Any:
 
 def create_panel(
     *,
-    homes: pathlib.Path,
+    homes: pathlib.Path | None,
     server_url: str,
     transport: httpx.BaseTransport | None = None,
     clock: Clock | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    org_id: str | None = None,
+    root_public_key: str | None = None,
+    state_dir: pathlib.Path | None = None,
+    server_keys: bool = True,
 ) -> FastAPI:
     panel = Panel(
-        homes=homes, server_url=server_url, transport=transport, clock=clock, monotonic=monotonic
+        homes=homes,
+        server_url=server_url,
+        transport=transport,
+        clock=clock,
+        monotonic=monotonic,
+        org_id=org_id,
+        root_public_key=root_public_key,
+        state_dir=state_dir,
+        server_keys=server_keys,
     )
     panel.start_sweeper()
     app = FastAPI(title="alerting panel", docs_url=None, redoc_url=None, openapi_url=None)
@@ -346,26 +490,83 @@ def create_panel(
             result.append(f"{entry.name} ({entry.role})" if entry else signature["key_id"])
         return result
 
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next: Any) -> Response:
+        """Scripts only from this origin, and never in a frame.
+
+        With the key in the browser, script injection is the attack that matters:
+        injected code could ask the unlocked key to sign. So no inline script, no
+        foreign script, no ``eval`` -- the page's code is the two files below.
+        """
+        response: Response = await call_next(request)
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self' data:; object-src 'none'; base-uri 'none'; "
+            "frame-ancestors 'none'; form-action 'self'"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        return response
+
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
+
+    @app.get("/panel.js", include_in_schema=False)
+    def panel_js() -> FileResponse:
+        return FileResponse(STATIC_DIR / "panel.js", media_type="text/javascript")
+
+    @app.get("/devicekey.js", include_in_schema=False)
+    def devicekey_js() -> FileResponse:
+        return FileResponse(STATIC_DIR / "devicekey.js", media_type="text/javascript")
 
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, bool]:
         return {"ok": True}
 
-    @app.post("/api/login")
-    def login(body: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
-        if request.headers.get(CSRF_HEADER) != "1":
-            raise HTTPException(403, "запрос не из панели")
-        token, session = panel.login(body.person_id.strip(), body.passphrase)
-        response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
+    def who(session: Session) -> dict[str, Any]:
         return {
-            "person_id": session.stored.person_id,
+            "person_id": session.person_id,
+            "key_id": session.key_id,
             "name": session.name,
             "role": session.role,
             "can_sign": session.can_sign,
+            # The page signs orders itself when the key lives in the browser.
+            "device_key": session.signer is None,
         }
+
+    def require_csrf(request: Request) -> None:
+        if request.headers.get(CSRF_HEADER) != "1":
+            raise HTTPException(403, "запрос не из панели")
+
+    @app.get("/api/config")
+    def config() -> dict[str, Any]:
+        """What the login page needs before anyone is signed in. Nothing secret."""
+        return {
+            "org_id": panel.pin.org_id if panel.pin else None,
+            "device_login": panel.device_login,
+            "server_keys": panel.server_keys,
+        }
+
+    @app.post("/api/login")
+    def login(body: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
+        require_csrf(request)
+        token, session = panel.login(body.person_id.strip(), body.passphrase)
+        response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
+        return who(session)
+
+    @app.post("/api/device/begin")
+    def device_begin(body: DeviceBegin, request: Request) -> dict[str, Any]:
+        require_csrf(request)
+        challenge, payload = panel.begin_device_login(body.person_id.strip(), body.key_id)
+        return {"challenge": challenge, "delegation": payload}
+
+    @app.post("/api/device/finish")
+    def device_finish(body: DeviceFinish, request: Request, response: Response) -> dict[str, Any]:
+        require_csrf(request)
+        token, session = panel.finish_device_login(body.challenge, body.signature)
+        response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
+        return who(session)
 
     @app.post("/api/logout")
     def logout(request: Request, response: Response) -> dict[str, bool]:
@@ -375,12 +576,7 @@ def create_panel(
 
     @app.get("/api/me")
     def me(session: Session = Depends(current)) -> dict[str, Any]:
-        return {
-            "person_id": session.stored.person_id,
-            "name": session.name,
-            "role": session.role,
-            "can_sign": session.can_sign,
-        }
+        return who(session)
 
     @app.get("/api/meta")
     def meta(session: Session = Depends(current)) -> dict[str, Any]:
@@ -392,7 +588,7 @@ def create_panel(
             session.cache.accept("revocations", session.api.get("/v1/revocations"))
             session.cache.accept("policy", session.api.get("/v1/policy"))
         except Exception as exc:
-            log.warning("bundle refresh failed for %s: %s", session.stored.person_id, exc)
+            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
         policy = session.policy.payload
         roster = _server(session.api.get, "/v1/roster")["people"]
         return {
@@ -485,13 +681,15 @@ def create_panel(
             "order_id": order_id,
             "status": proposal["status"],
             "fields": describe_payload(payload),
+            # The raw payload, for a page that signs in the browser: it renders the
+            # review from this very object and signs the same object, so what the
+            # person reads is what the device key signs.
+            "payload": payload,
             "digest": payload_digest(payload),
             "required": rule.m if rule else None,
             "signed_by": signer_names(session, proposal["signatures"]),
             "can_sign": session.can_sign,
-            "signed_by_me": any(
-                s["key_id"] == session.stored.key_id for s in proposal["signatures"]
-            ),
+            "signed_by_me": any(s["key_id"] == session.key_id for s in proposal["signatures"]),
             "now": session_now(panel),
         }
 
@@ -520,15 +718,26 @@ def create_panel(
         if payload.get("org_id") != session.pin.org_id:
             raise HTTPException(409, "приказ другой организации")
 
+        if session.signer is not None:
+            signature = sign_payload(DOMAIN_ORDER, payload, session.signer)
+        else:
+            # Signed in the browser. Checked here against the device key in the
+            # directory before it goes anywhere: a signature over anything but this
+            # payload is a page and a panel that disagree, and nothing is sent.
+            entry = session.directory.lookup(session.key_id)
+            if not body.sig or entry is None:
+                raise HTTPException(400, "подпись не получена от устройства")
+            if not verify_signature(DOMAIN_ORDER, payload, body.sig, entry.public()):
+                raise HTTPException(
+                    409, "подпись устройства не сходится с приказом — проверьте заново"
+                )
+            signature = body.sig
         result = _server(
             session.api.post,
             f"/v1/proposals/{order_id}/signatures",
-            {
-                "key_id": session.stored.key_id,
-                "sig": sign_payload(DOMAIN_ORDER, payload, session.stored.private_key),
-            },
+            {"key_id": session.key_id, "sig": signature},
         )
-        log.info("panel: %s signed %s", session.stored.person_id, order_id)
+        log.info("panel: %s signed %s", session.person_id, order_id)
         return {
             "dispatched": bool(result.get("dispatched")),
             "recipients": len(result.get("recipients") or []),

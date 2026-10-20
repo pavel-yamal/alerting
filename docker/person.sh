@@ -3,6 +3,7 @@
 #
 #   ./docker/person.sh add x-104 "Новиков П. С." fire-wardens      # исполнитель
 #   ROLE=duty_officer SITE=HQ ./docker/person.sh add p-004 "Орлова Е. В."
+#   ROLE=director PUBLIC_KEY=<с экрана регистрации панели> ./docker/person.sh add p-010 "Орлова Е. В."
 #   ./docker/person.sh retire x-104                 # уволился: прежние подписи в силе
 #   ./docker/person.sh revoke x-104 "утерян телефон" # ключом отзыва смены, за секунды
 #   ./docker/person.sh show
@@ -40,12 +41,19 @@ add)
       set -e
       org=\$(python -c 'import json; print(json.load(open(\"${clients}/${operator}/pin.json\"))[\"org_id\"])')
       root=\$(python -c 'import json; print(json.load(open(\"${clients}/${operator}/pin.json\"))[\"root_public_key\"])')
-      alerting-org contact set ${as_operator} --for '${person}' --name \"\$NAME\" \
-          --site '${site}' --role '${role}' --groups ${groups} --wake-key-out /tmp/wake.hex
-      alerting-executor enroll --person '${person}' --home '${clients}/${person}' \
-          --passphrase \"\$PASS\" --org \"\$org\" --root-key \"\$root\" --role '${role}' \
-          --wake-key \"\$(cat /tmp/wake.hex)\" | tee /tmp/enroll.txt
-      public=\$(sed -n 's/^ *public key : //p' /tmp/enroll.txt)
+      if [ -n \"\$PUBLIC_KEY\" ]; then
+        # Ключ создан на устройстве человека (экран регистрации панели) и его не покидает.
+        alerting-org contact set ${as_operator} --for '${person}' --name \"\$NAME\" \
+            --site '${site}' --role '${role}' --groups ${groups}
+        public=\"\$PUBLIC_KEY\"
+      else
+        alerting-org contact set ${as_operator} --for '${person}' --name \"\$NAME\" \
+            --site '${site}' --role '${role}' --groups ${groups} --wake-key-out /tmp/wake.hex
+        alerting-executor enroll --person '${person}' --home '${clients}/${person}' \
+            --passphrase \"\$PASS\" --org \"\$org\" --root-key \"\$root\" --role '${role}' \
+            --wake-key \"\$(cat /tmp/wake.hex)\" | tee /tmp/enroll.txt
+        public=\$(sed -n 's/^ *public key : //p' /tmp/enroll.txt)
+      fi
       alerting-org fetch --kind directory --out /tmp/current.json ${as_operator}
       alerting-org directory add --from /tmp/current.json --root-key ${keys}/root-key.SECRET \
           --out /tmp/next.json --person '${person}' --name \"\$NAME\" --role '${role}' \
@@ -99,6 +107,6 @@ show)
 esac
 
 docker compose --env-file docker/.env --profile cli run --rm -T \
-    -e NAME="${name:-}" -e PASS="$pass" -e REASON="${reason:-}" \
+    -e NAME="${name:-}" -e PASS="$pass" -e REASON="${reason:-}" -e PUBLIC_KEY="${PUBLIC_KEY:-}" \
     -v alerting_demo-keys:${keys} \
     --entrypoint sh cli -c "$script"
