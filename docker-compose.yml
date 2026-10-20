@@ -1,6 +1,8 @@
 # Один узел alerting + PostgreSQL в Docker. Порядок запуска и смысл каждого шага —
 # docs/12-docker.md. Коротко:
 #
+#   ./docker/up.sh     — всё ниже одной командой
+#
 #   cp docker/.env.example docker/.env
 #   docker compose --env-file docker/.env --profile init run --rm org-init   # ТОЛЬКО демо
 #   # вписать ALERTING_ROOT_PUBKEY из вывода в docker/.env

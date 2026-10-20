@@ -16,6 +16,35 @@
 - nginx на хосте с TLS — порт 8080 слушает только `127.0.0.1`
   (`deploy/nginx/alerting.conf`).
 
+## Одной командой
+
+```bash
+git clone https://github.com/pavel-yamal/alerting.git && cd alerting
+./docker/up.sh
+```
+
+Собирает образ, поднимает базу, при первом запуске создаёт демо-организацию,
+вписывает её корневой ключ в `docker/.env`, запускает сервер и проверяет `readyz`.
+Повторный запуск ничего не стирает: он пересобирает образ и перезапускает то, что
+изменилось. Начать с нуля — `./docker/up.sh --reset` (стирает базу, ключи и журнал).
+
+Приказы — через `./docker/cli.sh`, он сам подставляет сервер, каталог ключей по
+`--person` и демо-пароль:
+
+```bash
+./docker/cli.sh alerting-approver propose TEST.PING --drill --severity info \
+    --groups fire-wardens --text "проверка" --person p-001
+./docker/cli.sh alerting-approver sign <id> --yes --person p-001
+./docker/cli.sh alerting-executor sync --person x-102
+./docker/cli.sh alerting-executor verify <id> --person x-102
+./docker/cli.sh alerting-auditor verify --person a-001
+```
+
+За корпоративным TLS-прокси:
+`ALERTING_BUILD_FLAGS="--secret id=ca,src=/path/corp-ca.crt" ./docker/up.sh`.
+
+Ниже — те же шаги по отдельности и что за ними стоит.
+
 ## 1. Сборка
 
 ```bash
