@@ -80,7 +80,7 @@ services:
       - serve
       - --host=0.0.0.0
       - --port=8080
-      - --workers=${ALERTING_WORKERS:-2}
+      - --workers=${ALERTING_WORKERS:-1}
       - --forwarded-allow-ips=${ALERTING_FORWARDED_ALLOW_IPS:-}
     environment:
       <<: *app-env
@@ -124,6 +124,33 @@ services:
     ports:
       # Только localhost: панель держит расшифрованные ключи.
       - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PANEL_PORT:-7071}:8090"
+
+  # Клиент исполнителя с веб-страницей для телефона. Тоже КЛИЕНТ: держит ключ
+  # устройства исполнителя, слушает поток приказов и проверяет каждый по корневому
+  # ключу организации. Демонстрация потока, а не замена нативному приложению:
+  # проверка идёт здесь, а не в телефоне (docs/12-docker.md §9).
+  mobile:
+    <<: *app
+    depends_on:
+      server: {condition: service_healthy}
+    entrypoint: ["alerting-mobile"]
+    command: ["--host=0.0.0.0", "--port=8091"]
+    environment:
+      ALERTING_MOBILE_SERVER: http://server:8080
+      ALERTING_MOBILE_HOMES: /var/lib/alerting/clients
+      ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
+    volumes:
+      - clients:/var/lib/alerting/clients
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    ports:
+      # Отдельный адрес привязки: чтобы открыть страницу с телефона в той же сети,
+      # ставят ALERTING_MOBILE_BIND=0.0.0.0 — осознанно и только на стенде.
+      - "${ALERTING_MOBILE_BIND:-127.0.0.1}:${ALERTING_MOBILE_PORT:-7072}:8091"
 
   # ДЕМО-организация. Стирает схему и пишет корневой закрытый ключ на диск —
   # на боевом сервере не запускать никогда (docs/02-trust-and-approval.md).

@@ -13,8 +13,11 @@ the state it is most likely to be in during the incident that matters.
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 import pathlib
+import tempfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,6 +27,31 @@ from alerting.core.directory import Directory
 from alerting.core.policy import Policy
 from alerting.core.replay import ReplayWindow
 from alerting.core.signing import public_key_from_b64u
+
+
+def write_atomically(path: pathlib.Path, text: str) -> None:
+    """Replace ``path`` with ``text`` so that no reader ever sees half of it.
+
+    ``write_text`` truncates and then writes. Two processes holding the same key
+    home -- the CLI and the phone client, say, both mounted on one volume -- interleave
+    that and leave a shorter JSON written over a longer one with the old tail still
+    attached. That file then fails to parse, and the device refuses to verify
+    anything: a corrupted replay window looks like tampering, as it should. Writing a
+    sibling file and renaming it over the original is atomic on POSIX.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp)
+        raise
 
 
 @dataclass
@@ -43,13 +71,12 @@ class PinnedOrg:
         return self.home / "pin.json"
 
     def save(self) -> None:
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.pin_path.write_text(
+        write_atomically(
+            self.pin_path,
             json.dumps(
                 {"org_id": self.org_id, "root_public_key": self.root_public_key_b64u},
                 indent=2,
             ),
-            encoding="utf-8",
         )
 
     @classmethod
@@ -82,8 +109,7 @@ class BundleCache:
     def _write_state(self, **updates: Any) -> None:
         state = self._state()
         state.update(updates)
-        self.home.mkdir(parents=True, exist_ok=True)
-        self._state_path().write_text(json.dumps(state, indent=2), encoding="utf-8")
+        write_atomically(self._state_path(), json.dumps(state, indent=2))
 
     def accept(self, kind: str, bundle: dict[str, Any]) -> Directory | Policy:
         """Verify a freshly fetched bundle and cache it if it is not a rollback."""
@@ -94,10 +120,7 @@ class BundleCache:
             org_id=self.pin.org_id,
             min_version=self.seen_version(kind),
         )
-        self.home.mkdir(parents=True, exist_ok=True)
-        self._path(kind).write_text(
-            json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        write_atomically(self._path(kind), json.dumps(bundle, ensure_ascii=False, indent=2))
         self._write_state(**{f"{kind}_version": loaded.version})
         return loaded
 

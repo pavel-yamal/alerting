@@ -24,7 +24,7 @@ from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import DEFAULT_DIR, StoredKey, save_key
 from alerting.clients.session import open_api, unlock
 from alerting.clients.transport import Api
-from alerting.core.clock import SystemClock
+from alerting.core.clock import Clock, SystemClock
 from alerting.core.envelope import AckStatus, OrderPayload, SignedEnvelope
 from alerting.core.errors import Reason
 from alerting.core.receipts import build_ack
@@ -123,6 +123,7 @@ def verify_one(
     cancel_target=None,
     *,
     reinspect: bool = False,
+    clock: Clock | None = None,
 ) -> Decision:
     """Verify an envelope; record it as seen unless this is a re-inspection.
 
@@ -138,7 +139,9 @@ def verify_one(
         SignedEnvelope.model_validate(envelope),
         directory=cache.directory(),
         policy=cache.policy(),
-        clock=CLOCK,
+        # Resolved here, not as the parameter default: a default would freeze the
+        # module clock at import time and stop anything that swaps it.
+        clock=clock or CLOCK,
         replay=ReplayWindow() if reinspect else window,
         org_id=cache.pin.org_id,
         seen_order_ids=() if reinspect else cache.seen_order_ids(),

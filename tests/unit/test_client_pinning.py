@@ -185,3 +185,45 @@ def test_reinspection_leaves_replay_state_untouched(cache, org):
     verify_one(cache, envelope, reinspect=True)
     assert cache.replay_window().state() == before
     assert order.order_id not in cache.seen_order_ids()
+
+
+def test_concurrent_writers_never_leave_a_torn_state_file(tmp_path, org):
+    """Two processes on one key home (the CLI and the phone client on a shared
+    volume) used to interleave truncate-and-write and leave a shorter JSON over a
+    longer one, tail attached -- after which the device refused to verify anything.
+    Found on the Docker stand. Readers must only ever see a whole file."""
+    import threading
+
+    pin = PinnedOrg("acme", public_key_to_b64u(org.root_public_key), tmp_path)
+    pin.save()
+    writers = [BundleCache(pin), BundleCache(pin)]
+    stop = threading.Event()
+    torn: list[str] = []
+
+    def write(cache: BundleCache, size: int) -> None:
+        for i in range(300):
+            cache._write_state(seen_order_ids=[f"order-{i}"] * size)
+
+    def read() -> None:
+        path = tmp_path / "state.json"
+        while not stop.is_set():
+            if path.exists():
+                text = path.read_text(encoding="utf-8")
+                try:
+                    json.loads(text)
+                except ValueError:
+                    torn.append(text)
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    threads = [
+        threading.Thread(target=write, args=(w, n)) for w, n in zip(writers, (1, 40), strict=True)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    stop.set()
+    reader.join()
+    assert torn == []
+    json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
