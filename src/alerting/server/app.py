@@ -26,6 +26,7 @@ from alerting.server.services.audit_service import AuditService
 from alerting.server.services.canary import CanaryService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
+from alerting.server.services.fanout import Fanout, new_process_id
 from alerting.server.services.heartbeat import HeartbeatService
 from alerting.server.services.registry import OrgState
 from alerting.wordlist import load_wordlist
@@ -75,8 +76,20 @@ class AppServices:
             wordlist=load_wordlist(pathlib.Path(settings.wordlist_path)),
             drill_enabled_sites=settings.drill_enabled_sites,
         )
-        self.connections = ConnectionRegistry()
-        self.channels = default_registry(self.connections, self.repo, settings.org_label)
+        # Sockets live in this process; orders are dispatched by whichever process
+        # took the last signature. The fan-out hands an order to the process holding
+        # the socket and records `sent` only on its confirmation.
+        self.fanout = Fanout(
+            self.repo,
+            self.clock,
+            dsn=settings.load_dsn(),
+            process_id=new_process_id(settings.node_id or "node"),
+        )
+        self.connections = ConnectionRegistry(on_change=self.fanout.presence_changed)
+        self.fanout.attach_registry(self.connections)
+        self.channels = default_registry(
+            self.connections, self.repo, settings.org_label, fanout=self.fanout
+        )
         self.escalation_plan = _load_plan(settings)
         _require_deliverable_channels(
             self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
@@ -174,6 +187,11 @@ class AppServices:
                 closed = await self.connections.close_all()
                 if closed:
                     log.info("closed %d executor socket(s) for restart", closed)
+
+            # After the sockets: nothing is left here to deliver to, so stop
+            # listening for hand-offs and withdraw this process's presence.
+            with contextlib.suppress(Exception):
+                await self.fanout.stop()
 
             with contextlib.suppress(Exception):
                 await self.canary.stop()
@@ -281,6 +299,9 @@ def create_app(
 
     @contextlib.asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Always, unlike the background workers below: receiving a hand-off is part
+        # of delivering to the sockets this process holds, not a periodic job.
+        services.fanout.start()
         if start_escalation:
             services.escalation.start(resolved.escalation_interval_s)
             services.heartbeat.start()

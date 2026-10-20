@@ -9,6 +9,7 @@ from alerting.server.channels.sms import SmsChannel
 from alerting.server.channels.voice import VoiceChannel
 from alerting.server.channels.websocket import ConnectionRegistry, WebSocketChannel
 from alerting.server.db.repo import Repo
+from alerting.server.services.fanout import Fanout
 
 
 class ChannelRegistry:
@@ -26,12 +27,15 @@ class ChannelRegistry:
 
 
 def default_registry(
-    connections: ConnectionRegistry, repo: Repo, org_label: str = "ACME"
+    connections: ConnectionRegistry,
+    repo: Repo,
+    org_label: str = "ACME",
+    fanout: Fanout | None = None,
 ) -> ChannelRegistry:
     """WebSocket is real; the rest are stubs with a clear seam for a provider."""
     return ChannelRegistry(
         {
-            "ws": WebSocketChannel(connections),
+            "ws": WebSocketChannel(connections, fanout),
             "push": PushChannel(),
             "sms": SmsChannel(org_label),
             "voice": VoiceChannel(org_label),
