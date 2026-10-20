@@ -31,6 +31,7 @@ who may open a connection and ask.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -40,15 +41,18 @@ from fastapi import HTTPException, Request
 
 from alerting.core.clock import TRANSPORT_AUTH_WINDOW_S
 from alerting.core.http_auth import (
+    DELEGATION_HEADER,
     HEADERS,
     KEY_ID_HEADER,
     NONCE_HEADER,
     PERSON_HEADER,
     SIGNATURE_HEADER,
     TIMESTAMP_HEADER,
+    DelegationRefused,
+    check_delegation,
     request_payload,
 )
-from alerting.core.signing import DOMAIN_HTTP_REQUEST, verify_signature
+from alerting.core.signing import DOMAIN_HTTP_REQUEST, b64u_decode, verify_signature
 
 log = logging.getLogger("alerting.auth")
 
@@ -203,7 +207,32 @@ async def require_signed_request(request: Request) -> Principal:
         nonce=nonce,
         at=at,
     )
-    if not verify_signature(DOMAIN_HTTP_REQUEST, payload, signature, entry.public()):
+    # A web panel whose device key lives in the browser signs requests with a session
+    # key that the device key delegated to. The delegation is re-verified on every
+    # request against the directory as it is *now*, so revoking the device key ends
+    # every session it started, at once.
+    signer = entry.public()
+    delegation = request.headers.get(DELEGATION_HEADER)
+    if delegation:
+        try:
+            try:
+                blob = json.loads(b64u_decode(delegation))
+                raw, delegation_sig = blob["payload"], blob["sig"]
+            except Exception:
+                raise DelegationRefused("malformed delegation") from None
+            signer = check_delegation(
+                raw,
+                delegation_sig,
+                org_id=app.state.org_id,
+                key_id=key_id,
+                person_id=person_id,
+                device_key=entry.public(),
+                now=now,
+            )
+        except DelegationRefused as exc:
+            log.warning("refused %s: %s from %s", request.url.path, exc, key_id)
+            raise _refuse(403, "bad delegation", reason=str(exc)) from None
+    if not verify_signature(DOMAIN_HTTP_REQUEST, payload, signature, signer):
         log.warning("refused %s: bad signature from %s", request.url.path, key_id)
         raise _refuse(403, "bad request signature")
 

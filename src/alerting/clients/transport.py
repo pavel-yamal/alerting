@@ -30,6 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from alerting.core.canonical import canonicalize
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.http_auth import (
+    DELEGATION_HEADER,
     KEY_ID_HEADER,
     NONCE_HEADER,
     PERSON_HEADER,
@@ -58,7 +59,11 @@ class SignedRequests(httpx.Auth):
         person_id: str,
         private_key: Ed25519PrivateKey,
         clock: Clock | None = None,
+        delegation: str | None = None,
     ) -> None:
+        """``delegation``: with it, ``private_key`` is a session key the device key
+        ``key_id`` delegated to (``encode_delegation``), not the device key itself."""
+        self.delegation = delegation
         self.org_id = org_id
         self.key_id = key_id
         self.person_id = person_id
@@ -86,6 +91,8 @@ class SignedRequests(httpx.Auth):
         request.headers[PERSON_HEADER] = self.person_id
         request.headers[NONCE_HEADER] = nonce
         request.headers[TIMESTAMP_HEADER] = str(at)
+        if self.delegation:
+            request.headers[DELEGATION_HEADER] = self.delegation
         request.headers[SIGNATURE_HEADER] = sign_payload(
             DOMAIN_HTTP_REQUEST, payload, self.private_key
         )
