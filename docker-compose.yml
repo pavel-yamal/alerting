@@ -4,7 +4,7 @@
 #   cp docker/.env.example docker/.env
 #   docker compose --env-file docker/.env --profile init run --rm org-init   # ТОЛЬКО демо
 #   # вписать ALERTING_ROOT_PUBKEY из вывода в docker/.env
-#   docker compose --env-file docker/.env up -d
+#   docker compose --env-file docker/.env up -d --wait
 #
 # Секреты не ходят через окружение: они генерируются в томах, каждый файл 0400 и
 # принадлежит тому процессу, который его читает.

@@ -8,7 +8,12 @@ FROM python:3.11-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir --prefix=/install .
+# За корпоративным TLS-прокси pip не доверяет его сертификату. CA передаётся
+# секретом сборки и в образ не попадает:
+#   docker build --secret id=ca,src=/path/corp-ca.crt .
+RUN --mount=type=secret,id=ca,required=false \
+    if [ -s /run/secrets/ca ]; then export PIP_CERT=/run/secrets/ca; fi; \
+    pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.11-slim-bookworm
 COPY --from=build /install /usr/local
@@ -20,7 +25,8 @@ COPY src ./src
 RUN useradd --system --uid 10001 --home-dir /var/lib/alerting --shell /usr/sbin/nologin alerting \
     && install -d -o alerting -g alerting -m 0700 \
         /var/lib/alerting /var/lib/alerting/heads /var/lib/alerting/spool \
-        /var/lib/alerting/clients /run/alerting-app /run/alerting-owner
+        /var/lib/alerting/clients /var/lib/alerting/demo-keys \
+        /run/alerting-app /run/alerting-owner
 
 # Все пути абсолютные: относительные отказывают молча (docs/09-deployment.md §4).
 ENV PYTHONUNBUFFERED=1 \
