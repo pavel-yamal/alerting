@@ -275,6 +275,8 @@ def test_a_stand_down_marks_the_original_order(mobile_app, server, org, clock):
     by_id = {o["order_id"]: o for o in orders}
     assert by_id[cancel["order_id"]]["accepted"] is True
     assert by_id[order_id]["cancelled_by"] == cancel["order_id"]
+    # And the stand-down names what it ends.
+    assert by_id[cancel["order_id"]]["cancels_scenario"] == "TEST.PING"
 
 
 def test_only_executors_log_in(mobile_app):
@@ -356,3 +358,75 @@ def test_a_closed_page_does_not_keep_the_listener_past_the_shift(mobile_app, mon
     assert session.stop.is_set()
     session.thread.join(5)
     assert not session.thread.is_alive()
+
+
+def test_an_event_in_force_reaches_a_phone_that_logs_in_later(mobile_app, server, org, clock):
+    """Someone coming on shift sees the evacuation that is still running -- verified on
+    the client, marked as lasting until stand-down, with the signed instruction, and
+    without the "expired, confirm by voice" warning that would tell them it is over."""
+    order_id = dispatch(server, org, clock, ttl_s=120)  # EVAC.BUILDING: until stand-down
+    clock.advance(3600)
+
+    executor = phone(mobile_app, "x-101")
+    orders = wait_for(lambda: executor.get("/api/inbox").json()["orders"])
+    shown = orders[0]
+    assert shown["order_id"] == order_id
+    assert shown["accepted"] is True and shown["reasons"] == []
+    assert shown["restated"] is True
+    assert shown["until_cancelled"] is True
+    assert shown["card"].startswith("Выйти по ближайшему маршруту")
+    assert shown["warnings"] == []
+
+    # And it can still be answered: the duty officer is waiting for exactly this.
+    response = executor.post(
+        f"/api/orders/{order_id}/ack", json={"status": "acknowledged"}, headers=MOBILE
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_a_stand_down_missed_while_offline_closes_the_event_on_reconnect(
+    mobile_app, server, org, clock
+):
+    """The phone keeps its inbox across reconnects. A stand-down that went out while it
+    was offline arrives restated on reconnect, signed, and closes the event; one for an
+    event the phone never held is not shown at all."""
+    executor = phone(mobile_app, "x-101")
+    order_id = dispatch(server, org, clock)
+    wait_for(lambda: executor.get("/api/inbox").json()["orders"])
+    mobile = mobile_app.state.mobile
+    session = next(iter(mobile.sessions.values()))
+
+    server.auth = signer_for(org, "p-003", clock)
+    original = server.get(f"/v1/orders/{order_id}").json()["payload"]
+    cancel = server.post(
+        "/v1/proposals",
+        json={
+            "scenario": original["scenario"],
+            "severity": original["severity"],
+            "drill": original["drill"],
+            "action": "STOP",
+            "audience": original["audience"],
+            "text": "Отбой",
+            "cancels": order_id,
+        },
+    ).json()
+    envelope = {
+        "payload": cancel["payload"],
+        "signatures": [
+            {
+                "key_id": org.person("p-003").key_id,
+                "alg": "Ed25519",
+                "sig": sign_payload(
+                    DOMAIN_ORDER, cancel["payload"], org.person("p-003").private_key
+                ),
+            }
+        ],
+    }
+
+    stray = dict(envelope, payload={**envelope["payload"], "cancels": "never-seen"})
+    mobile.receive(session, stray, restated=True)
+    assert "never-seen" not in str(executor.get("/api/inbox").json())
+
+    mobile.receive(session, envelope, restated=True)
+    by_id = {o["order_id"]: o for o in executor.get("/api/inbox").json()["orders"]}
+    assert by_id[order_id]["cancelled_by"] == cancel["order_id"]

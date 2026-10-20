@@ -87,14 +87,34 @@ _APPROVER_ROLES = frozenset(APPROVER_ROLES)
 #: The codebook. The scenario code is the actionable unit; free text is advisory.
 DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     "EVAC.BUILDING": ScenarioRule(
-        min_severity=Severity.CRITICAL, description="Полная эвакуация здания"
+        min_severity=Severity.CRITICAL,
+        description="Полная эвакуация здания",
+        card="Выйти по ближайшему маршруту, пункт сбора по схеме на карточке. "
+        "Вернуться только по отбою.",
+        until_cancelled=True,
     ),
     "SHELTER.IN.PLACE": ScenarioRule(
-        min_severity=Severity.CRITICAL, description="Укрытие на месте, не выходить"
+        min_severity=Severity.CRITICAL,
+        description="Укрытие на месте, не выходить",
+        card="Закрыть окна, остаться внутри, ждать отбоя.",
+        until_cancelled=True,
     ),
-    "MUSTER": ScenarioRule(min_severity=Severity.WARNING, description="Сбор на пункте сбора"),
-    "STAND.BY": ScenarioRule(max_severity=Severity.WARNING, description="Повышенная готовность"),
-    "TEST.PING": ScenarioRule(max_severity=Severity.INFO, description="Технический тест канала"),
+    "MUSTER": ScenarioRule(
+        min_severity=Severity.WARNING,
+        description="Сбор на пункте сбора",
+        card="Прибыть на пункт сбора, доложить старшему.",
+    ),
+    "STAND.BY": ScenarioRule(
+        max_severity=Severity.WARNING,
+        description="Повышенная готовность",
+        card="Быть на связи, не покидать площадку.",
+        until_cancelled=True,
+    ),
+    "TEST.PING": ScenarioRule(
+        max_severity=Severity.INFO,
+        description="Технический тест канала",
+        card="Действий не требуется. Подтвердить получение.",
+    ),
 }
 
 #: Cancel quorum is deliberately one below launch: the safe direction is stopping.

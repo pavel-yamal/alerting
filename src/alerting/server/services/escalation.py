@@ -139,7 +139,10 @@ class EscalationWorker:
                 continue
             if order.is_cancel or not order.requires_ack:
                 continue
-            if now > order.not_valid_after:
+            # An event that lasts until a stand-down keeps escalating to the people
+            # who have not answered, however long ago its delivery window closed;
+            # the ladder itself is finite, so this ends when the last rung has fired.
+            if now > order.not_valid_after and not row["until_cancelled"]:
                 continue
 
             acknowledged = self.repo.acknowledged_person_ids(order_id)

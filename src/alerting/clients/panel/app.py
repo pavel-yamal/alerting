@@ -383,6 +383,14 @@ def create_panel(
 
     @app.get("/api/meta")
     def meta(session: Session = Depends(current)) -> dict[str, Any]:
+        # Re-synced here rather than trusted from login: a newly published policy --
+        # a new event in the codebook, a changed quorum -- shows up without anyone
+        # logging out. Verified and version-checked like at login.
+        try:
+            session.cache.accept("directory", session.api.get("/v1/directory"))
+            session.cache.accept("policy", session.api.get("/v1/policy"))
+        except Exception as exc:
+            log.warning("bundle refresh failed for %s: %s", session.stored.person_id, exc)
         policy = session.policy.payload
         roster = _server(session.api.get, "/v1/roster")["people"]
         return {
@@ -393,6 +401,8 @@ def create_panel(
                     "description": rule.description,
                     "min_severity": rule.min_severity,
                     "max_severity": rule.max_severity,
+                    "card": rule.card or "",
+                    "until_cancelled": bool(rule.until_cancelled),
                 }
                 for code, rule in sorted(policy.scenarios.items())
                 if code != "CANARY"
@@ -529,6 +539,14 @@ def create_panel(
         listed = _server(session.api.get, "/v1/orders", limit=20)
         return {
             "orders": [o for o in listed["orders"] if o["scenario"] != "CANARY"],
+            "now": session_now(panel),
+        }
+
+    @app.get("/api/events/active")
+    def active(session: Session = Depends(current)) -> dict[str, Any]:
+        listed = _server(session.api.get, "/v1/events/active")
+        return {
+            "events": [e for e in listed["events"] if e["scenario"] != "CANARY"],
             "now": session_now(panel),
         }
 

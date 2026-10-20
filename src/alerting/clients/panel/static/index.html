@@ -140,7 +140,9 @@
     </section>
 
     <section>
-      <h2>Ожидают подписи</h2>
+      <h2>Действующие события</h2>
+      <div id="events" class="list"></div>
+      <h2 style="margin-top:20px">Ожидают подписи</h2>
       <div id="proposals" class="list"></div>
       <div class="row">
         <input id="open-id" type="text" placeholder="ID приказа">
@@ -265,8 +267,11 @@ function fillSeverity() {
   const hi = s && s.max_severity ? ORDER.indexOf(s.max_severity) : ORDER.length - 1;
   const allowed = ORDER.filter((level, i) => i >= lo && i <= hi && meta.severities[level]);
   $("severity").replaceChildren(...allowed.map((level) => el("option", { value: level }, SEVERITY[level])));
-  $("scenario-hint").textContent = s && (s.min_severity || s.max_severity)
-    ? `Для этого сценария: ${allowed.map((l) => SEVERITY[l]).join(", ")}.` : "";
+  const parts = [];
+  if (s && (s.min_severity || s.max_severity)) parts.push(`Уровни: ${allowed.map((l) => SEVERITY[l]).join(", ")}.`);
+  if (s && s.until_cancelled) parts.push("Действует до отбоя: эскалация не останавливается по сроку.");
+  if (s && s.card) parts.push(`Исполнитель увидит: «${s.card}»`);
+  $("scenario-hint").textContent = parts.join(" ");
   quorumHint();
 }
 
@@ -306,8 +311,15 @@ $("new-form").addEventListener("submit", async (event) => {
 
 // ---- lists -----------------------------------------------------------------
 async function refreshLists(poll = false) {
-  const [proposals, orders] = await Promise.all([api("/api/proposals", { poll }), api("/api/orders", { poll })]);
+  const [proposals, orders, events] = await Promise.all([
+    api("/api/proposals", { poll }), api("/api/orders", { poll }), api("/api/events/active", { poll })]);
   now = proposals.now;
+  $("events").replaceChildren(...(events.events.length ? events.events.map((e) =>
+    el("div", { class: "item" + (current && current.id === e.order_id ? " active" : ""), onclick: () => openOrder(e.order_id) },
+      el("div", { class: "top" }, modeTag(e.drill), e.scenario),
+      el("div", { class: "sub" }, `${SEVERITY[e.severity]} · с ${time(e.dispatched_at)} · `
+        + (e.until_cancelled ? "до отбоя" : `до ${time(e.not_valid_after)}`))))
+    : [el("div", { class: "empty" }, "Действующих событий нет.")]));
   const open = proposals.proposals.filter((p) => p.status === "open");
   $("proposals").replaceChildren(...(open.length ? open.map((p) =>
     el("div", { class: "item" + (current && current.id === p.order_id ? " active" : ""), onclick: () => openProposal(p.order_id) },
@@ -316,7 +328,8 @@ async function refreshLists(poll = false) {
     : [el("div", { class: "empty" }, "Нет приказов, ожидающих подписи.")]));
   $("orders").replaceChildren(...(orders.orders.length ? orders.orders.map((o) =>
     el("div", { class: "item" + (current && current.id === o.order_id ? " active" : ""), onclick: () => openOrder(o.order_id) },
-      el("div", { class: "top" }, modeTag(o.drill), o.cancels ? "ОТБОЙ " : "", o.scenario),
+      el("div", { class: "top" }, modeTag(o.drill), o.cancels ? "ОТБОЙ " : "", o.scenario,
+        o.cancelled_by ? el("span", { class: "tag ok" }, "отменён") : null),
       el("div", { class: "sub" }, `${SEVERITY[o.severity]} · разослан ${time(o.dispatched_at)}`)))
     : [el("div", { class: "empty" }, "Ещё ничего не разослано.")]));
 }
@@ -438,8 +451,14 @@ function renderOrder(s) {
         el("td", {}, p.name ? `${p.name} ` : "", el("code", {}, p.person_id)),
         el("td", {}, ackTag(p), p.ack_at ? el("div", { class: "hint" }, time(p.ack_at)) : null),
         el("td", {}, el("code", {}, p.channels_attempted.join(", ")))))),
-    el("h3", {}, "Отбой"),
-    el("div", { class: "row" }, cancelText, cancelBtn),
+    // The event and its stand-down are linked both ways.
+    s.cancels ? el("div", { class: "row" }, "Это отбой события ",
+      el("button", { type: "button", onclick: () => openOrder(s.cancels) }, "открыть событие")) : null,
+    s.cancelled_by ? msg("ok", "Событие отменено отбоем.") : null,
+    s.cancelled_by ? el("div", { class: "row" },
+      el("button", { type: "button", onclick: () => openOrder(s.cancelled_by) }, "открыть отбой")) : null,
+    !s.cancels && !s.cancelled_by ? el("h3", {}, s.until_cancelled ? "Действует до отбоя" : `Действует до ${time(s.not_valid_after)}`) : null,
+    !s.cancels && !s.cancelled_by ? el("div", { class: "row" }, cancelText, cancelBtn) : null,
     el("div", { class: "hint" }, "ID: ", el("code", {}, s.order_id)),
     out,
   );

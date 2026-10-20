@@ -216,11 +216,12 @@ class Repo:
         cancels: str | None,
         digest: str,
         canary: bool = False,
+        until_cancelled: bool = False,
     ) -> None:
         self._execute(
             "INSERT INTO orders (order_id, envelope_json, dispatched_at, drill,"
-            " severity, scenario, cancels, order_digest, canary)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " severity, scenario, cancels, order_digest, canary, until_cancelled)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 json.dumps(envelope, ensure_ascii=False),
@@ -231,6 +232,7 @@ class Repo:
                 cancels,
                 digest,
                 bool(canary),
+                bool(until_cancelled),
             ),
         )
 
@@ -250,6 +252,39 @@ class Repo:
             " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
             (limit,),
         )
+
+    def active_candidates(self, finite_since: int) -> list[Row]:
+        """Orders that may still be in force, with no row limit.
+
+        Filtered in SQL before anything is limited: an event that lasts until a
+        stand-down stays in force however many orders came after it, so "the newest
+        200, then filter" would drop exactly the long-running ones. Finite orders
+        dispatched before ``finite_since`` are past any possible delivery window.
+        """
+        return self._all(
+            "SELECT * FROM orders o WHERE NOT o.canary AND o.cancels IS NULL"
+            " AND NOT EXISTS (SELECT 1 FROM orders c WHERE c.cancels = o.order_id)"
+            " AND (o.until_cancelled OR o.dispatched_at >= %s)"
+            " ORDER BY o.dispatched_at DESC, o.order_id DESC",
+            (finite_since,),
+        )
+
+    def recent_standdowns(self, since: int) -> list[Row]:
+        return self._all(
+            "SELECT * FROM orders WHERE cancels IS NOT NULL AND NOT canary"
+            " AND dispatched_at >= %s ORDER BY dispatched_at, order_id",
+            (since,),
+        )
+
+    def cancellations(self) -> dict[str, str]:
+        """Cancelled order id -> the stand-down that cancelled it (the first one)."""
+        result: dict[str, str] = {}
+        for row in self._all(
+            "SELECT order_id, cancels FROM orders WHERE cancels IS NOT NULL"
+            " ORDER BY dispatched_at, order_id"
+        ):
+            result.setdefault(row["cancels"], row["order_id"])
+        return result
 
     def cancelled_order_ids(self) -> set[str]:
         return {

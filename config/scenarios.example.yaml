@@ -1,22 +1,41 @@
-# The codebook. THE SCENARIO CODE IS THE ACTIONABLE UNIT — the free text in an order
-# is advisory and is rendered as secondary.
+# Кодовая книга: какие события бывают и что по каждому делать.
 #
-# Executors are trained that instructions come from the code plus their own training
-# card, never from prose inside the order. That is what stops social engineering
-# carried inside an otherwise perfectly valid, correctly signed order.
+# КОД СЦЕНАРИЯ — единственное действенное поле приказа. Свободный текст в приказе
+# справочный и показывается вторым. Исполнителей учат: указание — это код плюс
+# карточка, а не проза внутри приказа. Это и останавливает социальную инженерию,
+# пришедшую внутри полностью валидного, правильно подписанного приказа.
 #
-# min_severity stops a building evacuation being slipped through as an "info" notice
-# with a 1-of-N quorum. max_severity stops a channel test being escalated.
+# Поля сценария:
+#   description      — название события, видно в панели и на телефоне;
+#   card             — что делать исполнителю; показывается рядом с приказом;
+#   min_severity     — не ниже этого уровня: эвакуацию нельзя провести как «info»
+#                      с кворумом 1;
+#   max_severity     — не выше: технический тест нельзя эскалировать;
+#   until_cancelled  — событие действует до отбоя, а не до истечения срока
+#                      доставки: эскалация продолжается, исполнитель, вошедший позже,
+#                      видит его как действующее (ADR 0010).
+#
+# Это НЕ настройка сервера. Список входит в политику, а политику подписывает корневой
+# ключ организации, и телефон исполнителя проверяет её по ключу, закреплённому при
+# регистрации. Поэтому изменить список, не имея корневого ключа, нельзя — ни
+# правкой .env, ни взломом сервера. Как менять: docs/02-trust-and-approval.md §5.
+#
+#   alerting-org sign-policy --policy config/policy.yaml --scenarios config/scenarios.yaml \
+#       --root-key /media/custodian/root-key.SECRET --version 2 --out policy-v2.json
+#   alerting-org publish --file policy-v2.json --person p-001 --home ~/.alerting/p-001 \
+#       --server https://alerting.example.internal
 
 EVAC.BUILDING:
   min_severity: critical
   description: "Полная эвакуация здания"
-  card: "Выйти по ближайшему маршруту, пункт сбора по схеме на карточке."
+  card: "Выйти по ближайшему маршруту, пункт сбора по схеме на карточке. Вернуться только по отбою."
+  until_cancelled: true
 
 SHELTER.IN.PLACE:
   min_severity: critical
   description: "Укрытие на месте, не выходить"
   card: "Закрыть окна, остаться внутри, ждать отбоя."
+  until_cancelled: true
 
 MUSTER:
   min_severity: warning
@@ -27,6 +46,7 @@ STAND.BY:
   max_severity: warning
   description: "Повышенная готовность"
   card: "Быть на связи, не покидать площадку."
+  until_cancelled: true
 
 TEST.PING:
   max_severity: info

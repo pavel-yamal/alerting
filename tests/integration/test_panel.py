@@ -295,3 +295,28 @@ def test_an_operator_outside_the_quorum_roles_may_propose_but_not_sign(
 
         director = browser(app, "p-001")
         assert sign(director, order_id)["dispatched"]
+
+
+def test_active_events_and_their_stand_down_are_linked(panel_app):
+    officer = browser(panel_app, "p-003")
+    director = browser(panel_app, "p-001")
+    meta = officer.get("/api/meta").json()
+    evac = next(s for s in meta["scenarios"] if s["code"] == "EVAC.BUILDING")
+    assert evac["until_cancelled"] is True and evac["card"]
+
+    order_id = propose(officer)
+    sign(officer, order_id)
+    assert sign(director, order_id)["dispatched"]
+    active = officer.get("/api/events/active").json()["events"]
+    assert [e["order_id"] for e in active] == [order_id]
+    assert active[0]["until_cancelled"] is True
+
+    cancel_id = officer.post(
+        f"/api/orders/{order_id}/cancel", json={"text": "Отбой"}, headers=PANEL
+    ).json()["order_id"]
+    assert sign(officer, cancel_id)["dispatched"]
+
+    assert officer.get("/api/events/active").json()["events"] == []
+    status = officer.get(f"/api/orders/{order_id}").json()
+    assert status["cancelled_by"] == cancel_id
+    assert officer.get(f"/api/orders/{cancel_id}").json()["cancels"] == order_id

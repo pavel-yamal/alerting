@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import secrets
 from typing import Any
 
@@ -20,9 +21,11 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alerting.core.audit_chain import Event
 from alerting.core.clock import TRANSPORT_AUTH_WINDOW_S
-from alerting.core.envelope import Signature, SignedAck
+from alerting.core.envelope import OrderPayload, Signature, SignedAck
 from alerting.core.receipts import verify_ack
 from alerting.core.signing import DOMAIN_DEVICE_AUTH, verify_signature
+
+log = logging.getLogger("alerting.api.ws")
 
 router = APIRouter(tags=["stream"])
 
@@ -75,6 +78,7 @@ async def stream(websocket: WebSocket) -> None:
         await websocket.close(code=4429, reason="too many devices")
         return
     await websocket.send_json({"kind": "ready", "person_id": person_id, "org_id": app.state.org_id})
+    await _send_active_events(app, websocket, person_id)
 
     try:
         while True:
@@ -86,6 +90,33 @@ async def stream(websocket: WebSocket) -> None:
         pass
     finally:
         await app.connections.detach(person_id, sink)
+
+
+async def _send_active_events(app: Any, websocket: WebSocket, person_id: str) -> None:
+    """Tell a device that has just connected which events addressed to it are in force.
+
+    Someone coming on shift, or a phone that was off, would otherwise see nothing
+    until the next order. Sent as ``active``, not ``order``: it is a re-statement of
+    something already dispatched, and the client verifies it fully but does not
+    treat it as a new delivery (no replay rejection for an order it already saw,
+    no new alarm for one it already holds).
+    """
+    try:
+        events = app.dispatcher.active_events(app.clock.now())
+    except Exception:
+        log.warning("could not list active events for %s", person_id, exc_info=True)
+        return
+    for event in reversed(events):  # oldest first, the order they happened in
+        order = OrderPayload.model_validate(event["payload"])
+        if any(r.person_id == person_id for r in app.state.recipients_for(order)):
+            await websocket.send_json({"kind": "active", "envelope": event["envelope"]})
+    # Then the day's signed stand-downs, so a device that missed one while offline
+    # can close the event it already holds. A client applies a stand-down only to an
+    # event it has; one for an event it never saw is ignored.
+    for standdown in app.dispatcher.recent_standdowns(app.clock.now()):
+        order = OrderPayload.model_validate(standdown["envelope"]["payload"])
+        if any(r.person_id == person_id for r in app.state.recipients_for(order)):
+            await websocket.send_json({"kind": "active", "envelope": standdown["envelope"]})
 
 
 async def _authenticate(

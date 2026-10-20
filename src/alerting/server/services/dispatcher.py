@@ -11,6 +11,7 @@ timing evidence is when the server observed each signature arrive.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections import Counter
 from dataclasses import dataclass
@@ -130,7 +131,6 @@ class Dispatcher:
         row = self.repo.order(target_id)
         if row is None:
             return None
-        import json
 
         stored = json.loads(row["envelope_json"])
         try:
@@ -213,6 +213,12 @@ class Dispatcher:
                 order.scenario,
                 order.cancels,
                 payload_digest(envelope.payload),
+                # Fixed now, by the policy this order was dispatched under: a later
+                # policy must not revive an event that has long since ended.
+                until_cancelled=(
+                    not order.is_cancel
+                    and self.state.policy().lasts_until_cancelled(order.scenario)
+                ),
             )
             self.audit.append(
                 Event.QUORUM_MET,
@@ -304,6 +310,50 @@ class Dispatcher:
                 )
         return receipts
 
+    #: The longest delivery window a proposal may ask for (ProposalRequest.ttl_s).
+    MAX_WINDOW_S = 86400
+
+    def active_events(self, now: int) -> list[dict[str, Any]]:
+        """Orders still in force: not cancelled, and either inside their delivery
+        window or dispatched as lasting until a stand-down (ADR 0010).
+
+        Newest first. Stand-downs themselves are not events and are not listed.
+        """
+        active: list[dict[str, Any]] = []
+        for row in self.repo.active_candidates(now - self.MAX_WINDOW_S):
+            envelope = json.loads(row["envelope_json"])
+            payload = envelope["payload"]
+            until_cancelled = bool(row["until_cancelled"])
+            if not until_cancelled and now > payload["not_valid_after"]:
+                continue
+            active.append(
+                {
+                    "order_id": row["order_id"],
+                    "scenario": payload["scenario"],
+                    "severity": payload["severity"],
+                    "drill": payload["drill"],
+                    "dispatched_at": row["dispatched_at"],
+                    "not_valid_after": payload["not_valid_after"],
+                    "until_cancelled": until_cancelled,
+                    "envelope": envelope,
+                    "payload": payload,
+                }
+            )
+        return active
+
+    def recent_standdowns(self, now: int) -> list[dict[str, Any]]:
+        """Stand-downs from the last day, oldest first, for devices that reconnect.
+
+        A phone that was offline when a stand-down went out would otherwise keep
+        showing the event as live. What it is sent is the signed stand-down itself,
+        never a server-made "this one ended": a list the server could edit would let
+        a compromised server close a genuine event with no signature at all.
+        """
+        return [
+            {"envelope": json.loads(row["envelope_json"])}
+            for row in self.repo.recent_standdowns(now - self.MAX_WINDOW_S)
+        ]
+
     def status(self, order_id: str) -> dict[str, Any]:
         """The dashboard the decision-makers watch: did the order actually land?"""
         row = self.repo.order(order_id)
@@ -336,12 +386,18 @@ class Dispatcher:
             )
         valid = self.repo.acknowledged_person_ids(order_id)
         by_status = Counter(row["status"] for row in self.repo.dispatches(order_id))
+        payload = json.loads(row["envelope_json"])["payload"]
         return {
             "order_id": order_id,
             "drill": bool(row["drill"]),
             "severity": row["severity"],
             "scenario": row["scenario"],
             "dispatched_at": row["dispatched_at"],
+            # The event and its stand-down, linked both ways (ADR 0010).
+            "cancels": row["cancels"],
+            "cancelled_by": self.repo.cancellations().get(order_id),
+            "until_cancelled": bool(row["until_cancelled"]),
+            "not_valid_after": payload["not_valid_after"],
             "people": people,
             "acknowledged": len(valid),
             "outstanding": [p["person_id"] for p in people if p["person_id"] not in valid],

@@ -61,6 +61,7 @@
   .tag.real { background: var(--real-bg); color: var(--real); }
   .tag.bad { background: var(--real-bg); color: var(--real); }
   .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.warn { background: var(--warn-bg); color: var(--warn); }
   .hidden { display: none !important; }
   .waiting { text-align: center; padding: 40px 10px; color: var(--muted); }
   .waiting .big { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
@@ -201,10 +202,18 @@ function card(o, fresh) {
     o.reasons.length ? el("div", { class: "note bad" }, el("b", {}, "Почему: "), o.reasons.join("; ")) : null,
     o.warnings.map((w) => el("div", { class: "note warn" }, "! ", w)),
     o.cancelled_by ? el("div", { class: "note ok" }, "Этот приказ отменён — получен отбой.") : null,
+    // The stand-down names the event it ends, so nobody has to guess which one.
+    isCancel && o.accepted ? el("div", { class: "note ok" },
+      o.cancels_scenario ? `Отменяет: ${o.cancels_scenario} от ${time(o.cancels_issued_at)}.` : "Отменяет ранее объявленное событие.") : null,
     el("div", { class: "scenario" }, o.scenario || "—"),
     o.description ? el("div", { class: "desc" }, o.description) : null,
+    // What to do comes from the signed codebook, not from the order's free text.
+    o.card && o.accepted && !isCancel ? el("div", { class: "note ok" }, el("b", {}, "Что делать: "), o.card) : null,
     o.text ? el("div", { class: "text" }, o.text) : null,
-    el("div", { class: "muted" }, `${SEVERITY[o.severity] || o.severity || ""} · получено в ${time(o.received_at)}`),
+    o.until_cancelled && o.accepted && !isCancel && !o.cancelled_by
+      ? el("div", { class: "note warn" }, `Действует до отбоя — объявлено в ${time(o.issued_at)}.`) : null,
+    el("div", { class: "muted" }, `${SEVERITY[o.severity] || o.severity || ""} · `
+      + (o.restated ? `уже действовало, когда вы вошли (${time(o.received_at)})` : `получено в ${time(o.received_at)}`)),
     o.wake_words ? el("div", { class: "note warn" }, "Код в SMS по этому приказу:",
       el("div", { class: "code" }, o.wake_words.join(" · ").toUpperCase()),
       el("div", {}, "Другие слова в SMS — это не мы. Ссылок мы не присылаем.")) : null,
@@ -218,7 +227,8 @@ function row(o) {
     el("div", { class: "row" },
       el("span", {}, el("span", { class: "tag " + (o.drill ? "drill" : "real") }, o.drill ? "УЧЕНИЕ" : "БОЕВОЕ"), " ",
         o.cancels ? "ОТБОЙ " : "", o.scenario),
-      el("span", { class: "tag " + (o.accepted ? "ok" : "bad") }, o.accepted ? "подлинный" : "отклонён")),
+      el("span", { class: "tag " + (!o.accepted ? "bad" : o.cancelled_by ? "warn" : "ok") },
+        !o.accepted ? "отклонён" : o.cancelled_by ? "отменён" : "подлинный")),
     el("div", { class: "muted" }, `${time(o.received_at)}${o.my_ack ? " · " + ACK_TEXT[o.my_ack] : ""}`));
 }
 

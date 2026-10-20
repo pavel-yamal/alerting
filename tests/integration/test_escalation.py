@@ -92,10 +92,20 @@ async def test_rungs_are_idempotent_across_repeated_ticks(services, org, clock):
 
 
 async def test_an_expired_order_stops_escalating(services, org, clock):
-    await dispatch(services, org, clock, ttl_s=120)
+    # MUSTER does not last until a stand-down: its delivery window is its life.
+    await dispatch(services, org, clock, scenario="MUSTER", ttl_s=120)
     clock.advance(600)
     await services.escalation.tick()
     assert channel(services, "sms").sent == []
+
+
+async def test_an_event_until_stand_down_keeps_escalating_past_its_window(services, org, clock):
+    """EVAC.BUILDING lasts until cancelled (signed into the policy): people who have
+    not answered keep being chased after the envelope's delivery window closes."""
+    await dispatch(services, org, clock, scenario="EVAC.BUILDING", ttl_s=120)
+    clock.advance(600)
+    await services.escalation.tick()
+    assert channel(services, "sms").sent, "the ladder must not stop at the window"
 
 
 async def test_a_cancelled_order_stops_escalating(services, org, clock):

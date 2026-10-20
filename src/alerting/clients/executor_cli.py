@@ -238,10 +238,16 @@ async def _listen(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
 
         async for raw in socket:
             frame = json.loads(raw)
-            if frame.get("kind") != "order":
+            kind = frame.get("kind")
+            if kind not in ("order", "active"):
                 continue
             envelope = frame["envelope"]
-            decision = verify_one(cache, envelope)
+            # "active": an event still in force when this device connected (ADR
+            # 0010). Verified in full, but as a re-inspection rather than a new
+            # delivery, so seeing it again after a reconnect is not a replay.
+            if kind == "active":
+                print("\n  (действующее событие — объявлено до вашего подключения)")
+            decision = verify_one(cache, envelope, reinspect=kind == "active")
             render(decision, envelope["payload"])
 
             if not decision.accepted or decision.payload is None:

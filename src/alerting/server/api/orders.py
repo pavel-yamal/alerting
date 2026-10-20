@@ -26,6 +26,7 @@ async def list_orders(
     request: Request, limit: int = Query(20, ge=1, le=MAX_PAGE)
 ) -> dict[str, Any]:
     app = request.app.state.alerting
+    cancellations = app.repo.cancellations()
     return {
         "orders": [
             {
@@ -35,8 +36,24 @@ async def list_orders(
                 "scenario": row["scenario"],
                 "dispatched_at": row["dispatched_at"],
                 "cancels": row["cancels"],
+                # The link the other way: an event shows which stand-down ended it.
+                "cancelled_by": cancellations.get(row["order_id"]),
             }
             for row in app.repo.orders(limit)
+        ]
+    }
+
+
+@router.get("/events/active")
+async def active_events(request: Request) -> dict[str, Any]:
+    """Events in force right now, newest first: what the duty officer is running."""
+    app = request.app.state.alerting
+    events = app.dispatcher.active_events(app.clock.now())
+    return {
+        "events": [
+            {key: value for key, value in event.items() if key not in ("envelope", "payload")}
+            | {"text": event["payload"].get("text", "")}
+            for event in events
         ]
     }
 

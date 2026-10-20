@@ -4,6 +4,10 @@
 #
 # A policy the server could rewrite would let a compromised server set m=1 and approve
 # its own orders, so it travels the same pinned-root path as the key directory.
+#
+# The codebook (which events exist) is the scenarios: key, kept in its own file:
+# config/scenarios.example.yaml. Sign both with `alerting-org sign-policy` and publish
+# with `alerting-org publish` -- docs/02-trust-and-approval.md §5.
 
 policy_id: "demo-policy-2026-01"
 org_id: "acme"
