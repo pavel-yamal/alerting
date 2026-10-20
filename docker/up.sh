@@ -39,7 +39,10 @@ if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local .
         | grep -v 'failed to solve' | sed 's/^#[0-9]* [0-9.]* *//' | awk '!seen[$0]++' | head -15
     rm -f "$build_log"
     fail "сборка не прошла (полный лог: docker build --progress=plain .)
-Частые причины: нет доступа к pypi.org с сервера; корпоративный прокси —
+Частые причины:
+обрыв соединения с pypi.org (Connection reset) — зеркало или внутренний Nexus:
+  ALERTING_BUILD_FLAGS=\"--build-arg PIP_INDEX_URL=https://<зеркало>/simple\" ./docker/up.sh
+корпоративный прокси —
   ALERTING_BUILD_FLAGS=\"--build-arg HTTPS_PROXY=\$HTTPS_PROXY\" ./docker/up.sh
 подмена TLS-сертификата прокси —
   ALERTING_BUILD_FLAGS=\"--secret id=ca,src=/path/ca.crt\" ./docker/up.sh"

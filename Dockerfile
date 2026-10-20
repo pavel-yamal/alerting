@@ -8,6 +8,11 @@ FROM python:3.11-slim-bookworm AS build
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY src ./src
+# Если pypi.org недоступен (обрыв соединения, фильтр) — зеркало или внутренний
+# Nexus/Artifactory. pip читает эти переменные сам; без --build-arg они не заданы.
+#   docker build --build-arg PIP_INDEX_URL=https://mirror/simple .
+ARG PIP_INDEX_URL
+ARG PIP_TRUSTED_HOST
 # За корпоративным TLS-прокси pip не доверяет его сертификату. CA передаётся
 # секретом сборки и в образ не попадает:
 #   docker build --secret id=ca,src=/path/corp-ca.crt .

@@ -42,8 +42,13 @@ git clone https://github.com/pavel-yamal/alerting.git && cd alerting
 ./docker/cli.sh alerting-auditor verify --person a-001
 ```
 
-За корпоративным TLS-прокси:
-`ALERTING_BUILD_FLAGS="--secret id=ca,src=/path/corp-ca.crt" ./docker/up.sh`.
+Если сборка не может скачать зависимости:
+
+| В выводе | Что делать |
+|---|---|
+| `Connection reset by peer`, `Could not find a version ... hatchling` | pypi.org недоступен с сервера. Зеркало или внутренний Nexus/Artifactory: `ALERTING_BUILD_FLAGS="--build-arg PIP_INDEX_URL=https://<зеркало>/simple" ./docker/up.sh` (для http-зеркала добавьте `--build-arg PIP_TRUSTED_HOST=<хост>`) |
+| `CERTIFICATE_VERIFY_FAILED` | прокси подменяет сертификат: `ALERTING_BUILD_FLAGS="--secret id=ca,src=/path/corp-ca.crt" ./docker/up.sh` |
+| `Name or service not known`, `Failed to establish` | у сборки нет сети; если на хосте прокси — `--build-arg HTTPS_PROXY=$HTTPS_PROXY --network host` |
 
 Ниже — те же шаги по отдельности и что за ними стоит.
 
