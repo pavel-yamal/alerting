@@ -200,6 +200,9 @@ const msg = (kind, text) => el("div", { class: "msg " + kind }, text);
 
 async function api(path, options = {}) {
   const init = { method: options.method || "GET", headers: {}, credentials: "same-origin" };
+  // Background polling must not count as activity, or an unattended tab would keep
+  // the session -- and the unlocked key -- alive forever.
+  if (!options.poll) init.headers["X-Alerting-Activity"] = "1";
   if (init.method !== "GET") {
     init.headers["X-Alerting-Panel"] = "1";
     init.headers["Content-Type"] = "application/json";
@@ -302,8 +305,8 @@ $("new-form").addEventListener("submit", async (event) => {
 });
 
 // ---- lists -----------------------------------------------------------------
-async function refreshLists() {
-  const [proposals, orders] = await Promise.all([api("/api/proposals"), api("/api/orders")]);
+async function refreshLists(poll = false) {
+  const [proposals, orders] = await Promise.all([api("/api/proposals", { poll }), api("/api/orders", { poll })]);
   now = proposals.now;
   const open = proposals.proposals.filter((p) => p.status === "open");
   $("proposals").replaceChildren(...(open.length ? open.map((p) =>
@@ -352,7 +355,7 @@ async function openProposal(id) {
   const check = el("input", { type: "checkbox", id: "reviewed" });
   const signBtn = el("button", { class: f.drill ? "primary" : "danger", type: "button", disabled: "" }, "Подписать");
   const out = el("div");
-  const blocked = f.unexpected_fields.length > 0 || view.signed_by_me;
+  const blocked = f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign;
   check.addEventListener("change", () => { signBtn.disabled = !check.checked || blocked; });
   signBtn.addEventListener("click", async () => {
     signBtn.disabled = true;
@@ -384,6 +387,7 @@ async function openProposal(id) {
     el("h3", {}, `Подписи: ${view.signed_by.length} из ${view.required ?? "?"}`),
     view.signed_by.length ? el("ul", {}, view.signed_by.map((s) => el("li", {}, s))) : el("div", { class: "empty" }, "Пока никто не подписал."),
     view.signed_by_me ? msg("warn", "Вы уже подписали этот приказ. Нужна подпись другого человека.") : null,
+    !view.can_sign ? msg("warn", "По политике ваша подпись не засчитывается в кворум. Подписать должны ЛПР.") : null,
     el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")),
     el("div", { class: "row" }, signBtn, el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить")),
     el("div", { class: "hint" }, "ID: ", el("code", {}, id)),
@@ -453,8 +457,8 @@ function highlight() {
 setInterval(async () => {
   if ($("app").classList.contains("hidden")) return;
   try {
-    await refreshLists();
-    if (current && current.kind === "order") renderOrder(await api(`/api/orders/${encodeURIComponent(current.id)}`));
+    await refreshLists(true);
+    if (current && current.kind === "order") renderOrder(await api(`/api/orders/${encodeURIComponent(current.id)}`, { poll: true }));
   } catch (_) { /* shown on the next action */ }
 }, 3000);
 

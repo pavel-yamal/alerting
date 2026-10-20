@@ -25,7 +25,8 @@ import re
 import secrets
 import threading
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -44,6 +45,7 @@ from alerting.core.directory import Directory
 from alerting.core.envelope import Severity
 from alerting.core.policy import Policy
 from alerting.core.signing import DOMAIN_ORDER, sign_payload
+from alerting.server.auth import OPERATORS
 
 log = logging.getLogger("alerting.panel")
 
@@ -57,6 +59,15 @@ CSRF_HEADER = "X-Alerting-Panel"
 #: An unattended panel with an unlocked key is a signing machine for whoever walks
 #: past. Fifteen minutes of inactivity ends the session; the key is dropped with it.
 IDLE_TIMEOUT_S = 15 * 60
+
+#: Sent by the page on requests a person caused (a click, a submit). Only those count
+#: as activity. The page also polls every few seconds, and if polling counted, a tab
+#: left open on an unattended desk would keep its key unlocked forever.
+ACTIVITY_HEADER = "X-Alerting-Activity"
+
+#: How often expired sessions are swept even if nobody calls the panel at all -- a
+#: closed tab never sends the request that would have noticed its session expired.
+SWEEP_INTERVAL_S = 30
 
 #: Person ids become path components of the key store. Anything else is refused
 #: before it gets near the filesystem.
@@ -73,7 +84,11 @@ class Session:
     api: Api
     name: str
     role: str
-    last_seen: float = field(default_factory=time.monotonic)
+    #: Whether this person's signature counts toward a quorum. Distinct from being
+    #: allowed in at all: the server lets every operator create and watch proposals,
+    #: and an organisation may keep duty officers out of ``approver_roles`` on purpose.
+    can_sign: bool
+    last_seen: float
 
     @property
     def directory(self) -> Directory:
@@ -158,17 +173,21 @@ class Panel:
         server_url: str,
         transport: httpx.BaseTransport | None = None,
         clock: Clock | None = None,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self.homes = homes
         self.server_url = server_url
         self.transport = transport
         self.clock = clock or SystemClock()
+        # Idle time is measured on a monotonic clock, injected so a test can advance it.
+        self.monotonic = monotonic
         self.sessions: dict[str, Session] = {}
         # The server has no "list open proposals" route, so the panel remembers the
         # ones created or opened through it. Every person using this panel sees them,
         # which is the point: the second signer finds the first one's proposal here.
         self.proposal_ids: list[str] = []
         self._lock = threading.Lock()
+        self._stop = threading.Event()
 
     def remember(self, order_id: str) -> None:
         with self._lock:
@@ -219,30 +238,58 @@ class Panel:
         if entry is None or directory.is_revoked(stored.key_id):
             api.close()
             raise HTTPException(403, "ключ отсутствует в справочнике или отозван")
-        if entry.role not in policy.approver_roles:
+        # The same gate the server applies to creating proposals, not the quorum
+        # roles: who may use the panel and whose signature counts are different
+        # questions, and the policy answers only the second.
+        if entry.role not in OPERATORS:
             api.close()
             raise HTTPException(
                 403, "панель — для дежурных и ЛПР; исполнители работают в своём приложении"
             )
 
         token = secrets.token_urlsafe(32)
-        session = Session(stored, pin, cache, api, entry.name, entry.role)
+        session = Session(
+            stored,
+            pin,
+            cache,
+            api,
+            entry.name,
+            entry.role,
+            can_sign=entry.role in policy.approver_roles,
+            last_seen=self.monotonic(),
+        )
         with self._lock:
             self.sessions[token] = session
         log.info("panel login: %s (%s)", person_id, entry.role)
         return token, session
 
-    def session(self, token: str | None) -> Session:
+    def session(self, token: str | None, *, activity: bool) -> Session:
+        """The live session for ``token``. Only ``activity`` extends it."""
+        self.sweep()
         with self._lock:
             session = self.sessions.get(token or "")
             if session is None:
-                raise HTTPException(401, "войдите в панель")
-            if time.monotonic() - session.last_seen > IDLE_TIMEOUT_S:
-                del self.sessions[token or ""]
-                session.api.close()
-                raise HTTPException(401, "сессия истекла, войдите снова")
-            session.last_seen = time.monotonic()
+                raise HTTPException(401, "сессия истекла или не начата — войдите")
+            if activity:
+                session.last_seen = self.monotonic()
             return session
+
+    def sweep(self) -> None:
+        """Drop every session idle past the timeout, and its unlocked key with it."""
+        now = self.monotonic()
+        with self._lock:
+            expired = [t for t, s in self.sessions.items() if now - s.last_seen > IDLE_TIMEOUT_S]
+            dropped = [self.sessions.pop(t) for t in expired]
+        for session in dropped:
+            session.api.close()
+            log.info("panel session expired: %s", session.stored.person_id)
+
+    def start_sweeper(self) -> None:
+        def run() -> None:
+            while not self._stop.wait(SWEEP_INTERVAL_S):
+                self.sweep()
+
+        threading.Thread(target=run, name="panel-session-sweeper", daemon=True).start()
 
     def logout(self, token: str | None) -> None:
         with self._lock:
@@ -267,18 +314,25 @@ def create_panel(
     server_url: str,
     transport: httpx.BaseTransport | None = None,
     clock: Clock | None = None,
+    monotonic: Callable[[], float] = time.monotonic,
 ) -> FastAPI:
-    panel = Panel(homes=homes, server_url=server_url, transport=transport, clock=clock)
+    panel = Panel(
+        homes=homes, server_url=server_url, transport=transport, clock=clock, monotonic=monotonic
+    )
+    panel.start_sweeper()
     app = FastAPI(title="alerting panel", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
 
     def current(request: Request) -> Session:
-        return panel.session(request.cookies.get(COOKIE))
+        return panel.session(
+            request.cookies.get(COOKIE), activity=request.headers.get(ACTIVITY_HEADER) == "1"
+        )
 
     def guarded(request: Request) -> Session:
         if request.headers.get(CSRF_HEADER) != "1":
             raise HTTPException(403, "запрос не из панели")
-        return current(request)
+        # A state-changing request is always a person acting.
+        return panel.session(request.cookies.get(COOKIE), activity=True)
 
     def names(session: Session) -> dict[str, str]:
         return {entry.person_id: entry.name for entry in session.directory.payload.keys}
@@ -305,7 +359,12 @@ def create_panel(
             raise HTTPException(403, "запрос не из панели")
         token, session = panel.login(body.person_id.strip(), body.passphrase)
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
-        return {"person_id": session.stored.person_id, "name": session.name, "role": session.role}
+        return {
+            "person_id": session.stored.person_id,
+            "name": session.name,
+            "role": session.role,
+            "can_sign": session.can_sign,
+        }
 
     @app.post("/api/logout")
     def logout(request: Request, response: Response) -> dict[str, bool]:
@@ -315,7 +374,12 @@ def create_panel(
 
     @app.get("/api/me")
     def me(session: Session = Depends(current)) -> dict[str, Any]:
-        return {"person_id": session.stored.person_id, "name": session.name, "role": session.role}
+        return {
+            "person_id": session.stored.person_id,
+            "name": session.name,
+            "role": session.role,
+            "can_sign": session.can_sign,
+        }
 
     @app.get("/api/meta")
     def meta(session: Session = Depends(current)) -> dict[str, Any]:
@@ -412,6 +476,7 @@ def create_panel(
             "digest": payload_digest(payload),
             "required": rule.m if rule else None,
             "signed_by": signer_names(session, proposal["signatures"]),
+            "can_sign": session.can_sign,
             "signed_by_me": any(
                 s["key_id"] == session.stored.key_id for s in proposal["signatures"]
             ),
@@ -429,6 +494,8 @@ def create_panel(
         compared with the digest the review screen displayed. If the server changed
         anything in between, nothing is signed and the person reviews again.
         """
+        if not session.can_sign:
+            raise HTTPException(403, "ваша подпись не засчитывается в кворум по политике")
         proposal = _server(session.api.get, f"/v1/proposals/{order_id}")
         payload = proposal["payload"]
         if payload_digest(payload) != body.digest:

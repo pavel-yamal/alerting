@@ -8,6 +8,7 @@ behind the transport -- so what is checked is the panel's behaviour, not a mock'
 
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 from collections.abc import Iterator
 from typing import Any
@@ -17,16 +18,32 @@ from fastapi.testclient import TestClient
 
 from alerting.clients.bundles import PinnedOrg
 from alerting.clients.keystore import save_key
-from alerting.clients.panel.app import CSRF_HEADER, create_panel
+from alerting.clients.panel.app import (
+    ACTIVITY_HEADER,
+    CSRF_HEADER,
+    IDLE_TIMEOUT_S,
+    create_panel,
+)
 from alerting.core.clock import FixedClock
 from alerting.core.signing import public_key_to_b64u
-from alerting.orgkit import Org
+from alerting.orgkit import Org, build_org
 from alerting.server.app import create_app
 from alerting.server.config import Settings
 from alerting.server.services.bootstrap import publish_org
 
 PASSPHRASE = "demo"
 PANEL = {CSRF_HEADER: "1"}
+ACTIVE = {ACTIVITY_HEADER: "1"}
+
+
+class Monotonic:
+    """A monotonic clock the test advances by hand."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 @pytest.fixture
@@ -48,10 +65,21 @@ def server(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClie
 
 
 @pytest.fixture
-def panel_app(homes: pathlib.Path, server: TestClient, clock: FixedClock) -> Any:
+def monotonic() -> Monotonic:
+    return Monotonic()
+
+
+@pytest.fixture
+def panel_app(
+    homes: pathlib.Path, server: TestClient, clock: FixedClock, monotonic: Monotonic
+) -> Any:
     # The server's in-process transport: requests go through its real auth gate.
     return create_panel(
-        homes=homes, server_url="http://testserver", transport=server._transport, clock=clock
+        homes=homes,
+        server_url="http://testserver",
+        transport=server._transport,
+        clock=clock,
+        monotonic=monotonic,
     )
 
 
@@ -199,3 +227,71 @@ def test_meta_comes_from_the_verified_policy(panel_app):
     assert "EVAC.BUILDING" in codes and "CANARY" not in codes
     assert meta["severities"]["critical"]["launch"] == 2
     assert "fire-wardens" in meta["groups"]
+
+
+def test_background_polling_does_not_keep_an_idle_session_alive(panel_app, monotonic):
+    """The page polls every few seconds. If that counted as activity, a tab left open
+    on an empty desk would keep the key unlocked forever."""
+    officer = browser(panel_app, "p-003")
+    for _ in range(IDLE_TIMEOUT_S // 60 + 1):
+        monotonic.now += 60
+        officer.get("/api/proposals")  # what the poller sends: no activity header
+    assert officer.get("/api/me").status_code == 401
+
+
+def test_a_person_acting_keeps_the_session(panel_app, monotonic):
+    officer = browser(panel_app, "p-003")
+    for _ in range(3):
+        monotonic.now += IDLE_TIMEOUT_S - 60
+        assert officer.get("/api/me", headers=ACTIVE).status_code == 200
+
+
+def test_an_abandoned_session_is_dropped_without_another_request(panel_app, monotonic):
+    """A closed tab never sends the request that would notice its session expired,
+    so expiry cannot wait for one."""
+    browser(panel_app, "p-003")
+    panel = panel_app.state.panel
+    assert len(panel.sessions) == 1
+    monotonic.now += IDLE_TIMEOUT_S + 1
+    panel.sweep()
+    assert panel.sessions == {}
+
+
+def test_an_operator_outside_the_quorum_roles_may_propose_but_not_sign(
+    tmp_path, settings, clock, monotonic
+):
+    """Who may use the panel follows the server's operator gate; whose signature
+    counts follows the policy. An organisation may keep duty officers out of the
+    quorum and still have them type the proposal."""
+    org = build_org(issued_at=clock.now() - 5, approver_roles=("director", "deputy"))
+    homes = tmp_path / "homes"
+    for person in org.people.values():
+        home = homes / person.person_id
+        save_key(person.person_id, person.private_key, PASSPHRASE, role=person.role, directory=home)
+        PinnedOrg(org.org_id, public_key_to_b64u(org.root_public_key), home).save()
+    own_root = dataclasses.replace(
+        settings, root_public_key=public_key_to_b64u(org.root_public_key)
+    )
+    server_app = create_app(own_root, clock, start_escalation=False)
+    publish_org(server_app.state.alerting.repo, org, audit=server_app.state.alerting.audit)
+    with TestClient(server_app) as server:
+        app = create_panel(
+            homes=homes,
+            server_url="http://testserver",
+            transport=server._transport,
+            clock=clock,
+            monotonic=monotonic,
+        )
+        officer = browser(app, "p-003")
+        assert officer.get("/api/me").json()["can_sign"] is False
+
+        order_id = propose(officer, scenario="TEST.PING", severity="info")
+        review = officer.get(f"/api/proposals/{order_id}").json()
+        assert review["can_sign"] is False
+        refused = officer.post(
+            f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
+        )
+        assert refused.status_code == 403
+
+        director = browser(app, "p-001")
+        assert sign(director, order_id)["dispatched"]
