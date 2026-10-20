@@ -97,7 +97,8 @@ def cmd_enroll(args: argparse.Namespace) -> int:
 def cmd_sync(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     """Fetch the directory and policy and verify them against the pinned root key."""
     cache = BundleCache(PinnedOrg.load(args.home))
-    directory = cache.accept("directory", api.get("/v1/directory"))
+    cache.accept("directory", api.get("/v1/directory"))
+    directory = cache.accept("revocations", api.get("/v1/revocations"))
     policy = cache.accept("policy", api.get("/v1/policy"))
     print(f"directory v{directory.version}  policy {policy.policy_id} v{policy.version}")
     return 0

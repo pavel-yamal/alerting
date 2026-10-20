@@ -430,3 +430,31 @@ def test_a_stand_down_missed_while_offline_closes_the_event_on_reconnect(
     mobile.receive(session, envelope, restated=True)
     by_id = {o["order_id"]: o for o in executor.get("/api/inbox").json()["orders"]}
     assert by_id[order_id]["cancelled_by"] == cancel["order_id"]
+
+
+def test_an_order_shown_as_genuine_is_withdrawn_once_its_signer_is_revoked(
+    mobile_app, server, org, clock, monotonic
+):
+    """Verified on arrival is not enough: a revocation published during the session
+    must reach the orders already on screen within one refresh interval."""
+    from alerting.core.signing import DOMAIN_DIRECTORY
+    from alerting.orgadmin import revoke_keys, verified_current
+    from alerting.orgkit import sign_bundle
+
+    executor = phone(mobile_app, "x-101")
+    dispatch(server, org, clock)
+    order = wait_for(lambda: executor.get("/api/inbox").json()["orders"])[0]
+    assert order["accepted"] is True
+
+    server.auth = signer_for(org, "p-003", clock)
+    current = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    payload, _ = revoke_keys(current, person_id="p-001", kid=None, at=clock.now(), reason="lost")
+    bundle = sign_bundle(payload, DOMAIN_DIRECTORY, org.root_private_key)
+    server.post("/v1/bundles", json={"bundle": bundle}).raise_for_status()
+
+    assert executor.get("/api/inbox").json()["orders"][0]["accepted"] is True, "not yet due"
+    monotonic.now += 20
+    withdrawn = executor.get("/api/inbox").json()["orders"][0]
+    assert withdrawn["accepted"] is False and withdrawn["reasons"]

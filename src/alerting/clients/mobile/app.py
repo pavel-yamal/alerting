@@ -66,6 +66,10 @@ SWEEP_INTERVAL_S = 30
 #: Reconnect delay bounds for the order stream.
 RECONNECT_MIN_S = 1.0
 RECONNECT_MAX_S = 30.0
+#: How often a session re-fetches the directory, revocation list and policy. Orders
+#: are verified on arrival; without this, one signed by a key revoked afterwards kept
+#: showing as genuine for the rest of a 12-hour session.
+TRUST_REFRESH_S = 15
 
 PERSON_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
@@ -132,6 +136,8 @@ class Session:
     #: in ``recv`` and would otherwise keep the key in use until the server hangs up.
     socket: Socket | None = None
     thread: threading.Thread | None = None
+    #: ``Mobile.monotonic`` of the last trust refresh.
+    trust_checked: float = 0.0
 
     @property
     def directory(self) -> Directory:
@@ -199,7 +205,8 @@ class Mobile:
         )
         cache = BundleCache(pin)
         try:
-            directory = cache.accept("directory", api.get("/v1/directory"))
+            cache.accept("directory", api.get("/v1/directory"))
+            directory = cache.accept("revocations", api.get("/v1/revocations"))
             cache.accept("policy", api.get("/v1/policy"))
         except ServerError as exc:
             api.close()
@@ -218,6 +225,7 @@ class Mobile:
             raise HTTPException(403, "это приложение исполнителя; дежурные и ЛПР — в панели")
 
         session = Session(stored, pin, cache, api, entry.name, home, started=self.monotonic())
+        session.trust_checked = self.monotonic()
         token = secrets.token_urlsafe(32)
         with self._lock:
             # One listener per person: a second login replaces the first rather
@@ -393,6 +401,40 @@ class Mobile:
                 target.cancelled_by = order_id
         return item
 
+    def refresh_trust(self, session: Session, *, force: bool = False) -> None:
+        """Re-fetch the bundles and re-check the orders this session already shows.
+
+        Only ever downgrades: an order that verified and no longer does -- a signer
+        revoked since, on either path -- is marked rejected with the reason. Nothing
+        rejected is promoted back. A failed fetch keeps what the device holds.
+        """
+        if not force and self.monotonic() - session.trust_checked < TRUST_REFRESH_S:
+            return
+        session.trust_checked = self.monotonic()
+        try:
+            session.cache.accept("directory", session.api.get("/v1/directory"))
+            session.cache.accept("revocations", session.api.get("/v1/revocations"))
+            session.cache.accept("policy", session.api.get("/v1/policy"))
+        except Exception as exc:
+            log.warning("trust refresh failed for %s: %s", session.stored.person_id, exc)
+            return
+        with session.lock:
+            for item in session.inbox.values():
+                if not item.accepted:
+                    continue
+                target_id = item.payload.cancels if item.payload else None
+                target = session.inbox.get(target_id) if target_id else None
+                decision = verify_one(
+                    session.cache,
+                    item.envelope,
+                    cancel_target=target.payload if target else None,
+                    reinspect=True,
+                    clock=self.clock,
+                )
+                if not decision.accepted:
+                    item.accepted = False
+                    item.reasons = [describe(r) for r in decision.reasons]
+
     def report_received(self, session: Session) -> None:
         """Send "received" for verified orders the page has now fetched.
 
@@ -564,6 +606,7 @@ def create_mobile(
 
     @app.get("/api/inbox")
     def inbox(session: Session = Depends(current)) -> dict[str, Any]:
+        mobile.refresh_trust(session)
         mobile.report_received(session)
         with session.lock:
             items = sorted(session.inbox.items(), key=lambda kv: kv[1].arrival, reverse=True)

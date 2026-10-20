@@ -103,6 +103,31 @@ class Repo:
             (kind, version, json.dumps(bundle, ensure_ascii=False), at),
         )
 
+    def put_bundle_if_latest(
+        self, kind: str, version: int, bundle: Mapping[str, Any], at: int, *, expected_latest: int
+    ) -> bool:
+        """Insert a new version only if the newest stored one is still ``expected_latest``.
+
+        Compare and insert under a transaction-scoped advisory lock per kind, so
+        concurrent publishers on different workers or nodes serialize here. A plain
+        version check before the write let two of them both pass it.
+        """
+        with self._conn() as connection, connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"bundles:{kind}",))
+            cursor.execute(
+                "SELECT COALESCE(MAX(version), 0) AS latest FROM bundles WHERE kind = %s",
+                (kind,),
+            )
+            row = cursor.fetchone()
+            if row is None or int(row["latest"]) != expected_latest:
+                return False
+            cursor.execute(
+                "INSERT INTO bundles (kind, version, bundle_json, published_at)"
+                " VALUES (%s, %s, %s, %s)",
+                (kind, version, json.dumps(bundle, ensure_ascii=False), at),
+            )
+            return True
+
     def latest_bundle(self, kind: str) -> dict[str, Any] | None:
         row = self._one(
             "SELECT bundle_json FROM bundles WHERE kind = %s ORDER BY version DESC LIMIT 1",

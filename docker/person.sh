@@ -4,7 +4,7 @@
 #   ./docker/person.sh add x-104 "Новиков П. С." fire-wardens      # исполнитель
 #   ROLE=duty_officer SITE=HQ ./docker/person.sh add p-004 "Орлова Е. В."
 #   ./docker/person.sh retire x-104                 # уволился: прежние подписи в силе
-#   ./docker/person.sh revoke x-104 "утерян телефон" # все подписи ключа недействительны
+#   ./docker/person.sh revoke x-104 "утерян телефон" # ключом отзыва смены, за секунды
 #   ./docker/person.sh show
 #
 # В боевом контуре это три места (docs/02-trust-and-approval.md §4): ключ создаётся на
@@ -53,19 +53,38 @@ add)
       alerting-org publish --file /tmp/next.json ${as_operator}
     "
     ;;
-retire | revoke)
+retire)
     [[ $# -ge 1 ]] || usage
     person=$1
-    reason=${2:-}
-    [[ "$action" == retire || -n "$reason" ]] || { echo "укажите причину отзыва" >&2; exit 2; }
-    extra=""
-    [[ "$action" == revoke ]] && extra="--reason \"\$REASON\""
     script="
       set -e
       alerting-org fetch --kind directory --out /tmp/current.json ${as_operator}
-      alerting-org directory ${action} --from /tmp/current.json \
-          --root-key ${keys}/root-key.SECRET --out /tmp/next.json --person '${person}' ${extra}
+      alerting-org directory retire --from /tmp/current.json \
+          --root-key ${keys}/root-key.SECRET --out /tmp/next.json --person '${person}'
       alerting-org publish --file /tmp/next.json ${as_operator}
+      alerting-org contact remove ${as_operator} --for '${person}'
+    "
+    ;;
+revoke)
+    # Быстрый путь: ключ отзыва дежурной смены, без корневого ключа. При первом вызове
+    # ключ отзыва создаётся и вносится в справочник корневым ключом — один раз.
+    [[ $# -ge 2 ]] || { echo "укажите причину отзыва" >&2; exit 2; }
+    person=$1
+    reason=$2
+    script="
+      set -e
+      if [ ! -f ${keys}/revoker/keys/revoker.json ]; then
+        echo '==> первый отзыв: создаю ключ отзыва и вношу его в справочник (корневой ключ)'
+        alerting-org revoker-keygen --home ${keys}/revoker --passphrase demo | tee /tmp/rk.txt
+        public=\$(sed -n 's/^ *public key : //p' /tmp/rk.txt)
+        alerting-org fetch --kind directory --out /tmp/current.json ${as_operator}
+        alerting-org directory revoker --add \"\$public\" --label 'дежурная смена (стенд)' \
+            --from /tmp/current.json --root-key ${keys}/root-key.SECRET --out /tmp/next.json
+        alerting-org publish --file /tmp/next.json ${as_operator}
+        echo '==> отзыв ключом дежурной смены'
+      fi
+      alerting-org revoke-now ${as_operator} --for '${person}' --reason \"\$REASON\" \
+          --revoker-home ${keys}/revoker --revoker-passphrase demo
       alerting-org contact remove ${as_operator} --for '${person}'
     "
     ;;
@@ -81,5 +100,5 @@ esac
 
 docker compose --env-file docker/.env --profile cli run --rm -T \
     -e NAME="${name:-}" -e PASS="$pass" -e REASON="${reason:-}" \
-    -v alerting_demo-keys:${keys}:ro \
+    -v alerting_demo-keys:${keys} \
     --entrypoint sh cli -c "$script"
