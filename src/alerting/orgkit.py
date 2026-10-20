@@ -141,6 +141,7 @@ def build_org(
     policy_ttl_s: int = 365 * 24 * 3600,
     directory_version: int = 1,
     policy_version: int = 1,
+    approver_roles: tuple[str, ...] = APPROVER_ROLES,
 ) -> Org:
     """Create an organisation with a fresh root key and a signed directory and policy."""
     root_private, _ = generate_keypair()
@@ -185,7 +186,7 @@ def build_org(
         version=policy_version,
         issued_at=issued_at,
         not_valid_after=issued_at + policy_ttl_s,
-        approver_roles=APPROVER_ROLES,
+        approver_roles=approver_roles,
         severities=dict(DEFAULT_SEVERITIES),
         scenarios=dict(DEFAULT_SCENARIOS),
     )

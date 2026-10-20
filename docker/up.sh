@@ -73,6 +73,7 @@ log "запускаю"
 "${compose[@]}" up -d --wait
 
 port=$(sed -n 's/^ALERTING_PORT=//p' "$env_file"); port=${port:-7070}
+panel_port=$(sed -n 's/^ALERTING_PANEL_PORT=//p' "$env_file"); panel_port=${panel_port:-7071}
 ready=$(curl -fsS "http://127.0.0.1:${port}/v1/readyz" 2>/dev/null || true)
 [[ "$ready" == *'"ready":true'* ]] || fail "сервер не готов: ${ready:-нет ответа}. Журнал: docker compose --env-file $env_file logs server"
 
@@ -81,6 +82,10 @@ cat <<EOF
 ГОТОВО: http://127.0.0.1:${port}   (readyz: ready)
   корневой ключ организации : ${root_key}
   пароль ключей демо-людей  : demo
+
+Панель дежурного: http://127.0.0.1:${panel_port}
+  вход: p-003 (дежурный), p-001 (директор), p-002 (заместитель); пароль demo
+  с другой машины: ssh -L ${panel_port}:127.0.0.1:${panel_port} <сервер>
 
 Учебный приказ:
   ./docker/cli.sh alerting-approver propose TEST.PING --drill --severity info \\

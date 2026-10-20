@@ -31,6 +31,7 @@ alerting-server = "alerting.server.cli:main"
 alerting-approver = "alerting.clients.approver_cli:main"
 alerting-executor = "alerting.clients.executor_cli:main"
 alerting-auditor = "alerting.clients.auditor_cli:main"
+alerting-panel = "alerting.clients.panel.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/alerting"]
