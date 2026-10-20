@@ -140,3 +140,61 @@ async def test_a_new_policy_does_not_revive_an_event_that_already_ended(client, 
     assert client.get("/v1/events/active").json()["events"] == [], (
         f"{muster.order_id} ended under the policy it was dispatched with"
     )
+
+
+async def test_a_policy_that_would_invalidate_a_running_event_is_refused(client, org, clock):
+    """Devices verify with the newest policy and never with an older one offered
+    alongside (that would be a downgrade), so a policy that drops a running event's
+    scenario would leave everyone joining later unable to verify it."""
+    evac = await dispatch(client, org, clock, scenario="EVAC.BUILDING")
+    rules = {code: rule.to_payload() for code, rule in DEFAULT_SCENARIOS.items()}
+
+    without = dict(rules)
+    del without["EVAC.BUILDING"]
+    raw = dict(org.policy_bundle["payload"], version=2, scenarios=without)
+    dropping = sign_bundle(PolicyPayload.model_validate(raw), DOMAIN_POLICY, org.root_private_key)
+    refused = client.post("/v1/bundles", json={"bundle": dropping})
+    assert refused.status_code == 409
+    assert evac.order_id in refused.json()["detail"]
+    assert client.get("/v1/policy").json()["payload"]["version"] == 1
+
+    keeping = next_policy(org, 2, FLOOD={"description": "Подтопление"})
+    assert client.post("/v1/bundles", json={"bundle": keeping}).status_code == 200
+
+
+async def test_an_event_in_force_is_found_however_many_orders_came_after(client, org, clock):
+    """The newest-200 window used to be applied before filtering, so a long-running
+    event dropped out once enough later orders accumulated."""
+    evac = await dispatch(client, org, clock, scenario="EVAC.BUILDING", ttl_s=120)
+    repo = client.app.state.alerting.repo
+    stored = repo.order(evac.order_id)
+    for i in range(205):
+        repo.create_order(
+            f"later-{i:03d}",
+            {"payload": {"scenario": "MUSTER", "not_valid_after": 0}},
+            stored["dispatched_at"] + 1 + i,
+            True,
+            "warning",
+            "MUSTER",
+            None,
+            "d",
+        )
+    clock.advance(3600)
+    active = client.get("/v1/events/active").json()["events"]
+    assert [e["order_id"] for e in active] == [evac.order_id]
+
+
+async def test_a_reconnecting_device_is_sent_the_stand_down_it_missed(client, org, clock):
+    evac = await dispatch(client, org, clock, scenario="EVAC.BUILDING", seq=1)
+    cancel = await dispatch(
+        client, org, clock, scenario="EVAC.BUILDING", seq=2, order_type="cancel",
+        cancels=evac.order_id, action="STOP",
+    )  # fmt: skip
+    socket = connect_executor(client, org, "x-101", clock.now())
+    try:
+        frame = socket.receive_json()
+        assert frame["kind"] == "active"
+        assert frame["envelope"]["payload"]["order_id"] == cancel.order_id
+        assert frame["envelope"]["payload"]["cancels"] == evac.order_id
+    finally:
+        socket.__exit__(None, None, None)

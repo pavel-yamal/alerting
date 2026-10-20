@@ -110,6 +110,13 @@ async def _send_active_events(app: Any, websocket: WebSocket, person_id: str) ->
         order = OrderPayload.model_validate(event["payload"])
         if any(r.person_id == person_id for r in app.state.recipients_for(order)):
             await websocket.send_json({"kind": "active", "envelope": event["envelope"]})
+    # Then the day's signed stand-downs, so a device that missed one while offline
+    # can close the event it already holds. A client applies a stand-down only to an
+    # event it has; one for an event it never saw is ignored.
+    for standdown in app.dispatcher.recent_standdowns(app.clock.now()):
+        order = OrderPayload.model_validate(standdown["envelope"]["payload"])
+        if any(r.person_id == person_id for r in app.state.recipients_for(order)):
+            await websocket.send_json({"kind": "active", "envelope": standdown["envelope"]})
 
 
 async def _authenticate(

@@ -356,6 +356,10 @@ class Mobile:
                 return session.inbox[order_id]
             target_id = raw.get("cancels")
             target = session.inbox.get(target_id) if target_id else None
+            # A restated stand-down closes an event this device holds -- one it
+            # missed while offline. For an event it never saw there is nothing to
+            # close, and showing a stray stand-down would only confuse.
+            skip = restated and target_id is not None and target is None
             decision = verify_one(
                 session.cache,
                 envelope,
@@ -383,7 +387,7 @@ class Mobile:
                 payload=decision.payload,
                 restated=restated,
             )
-            if order_id and order_id not in session.inbox:
+            if order_id and order_id not in session.inbox and not skip:
                 session.inbox[order_id] = item
             if decision.accepted and target is not None:
                 target.cancelled_by = order_id

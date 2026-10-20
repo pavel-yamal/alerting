@@ -310,17 +310,17 @@ class Dispatcher:
                 )
         return receipts
 
-    def active_events(self, now: int, limit: int = 200) -> list[dict[str, Any]]:
+    #: The longest delivery window a proposal may ask for (ProposalRequest.ttl_s).
+    MAX_WINDOW_S = 86400
+
+    def active_events(self, now: int) -> list[dict[str, Any]]:
         """Orders still in force: not cancelled, and either inside their delivery
-        window or of a scenario that lasts until a stand-down (ADR 0010).
+        window or dispatched as lasting until a stand-down (ADR 0010).
 
         Newest first. Stand-downs themselves are not events and are not listed.
         """
-        cancelled = self.repo.cancelled_order_ids()
         active: list[dict[str, Any]] = []
-        for row in self.repo.orders(limit):
-            if row["order_id"] in cancelled or row["cancels"]:
-                continue
+        for row in self.repo.active_candidates(now - self.MAX_WINDOW_S):
             envelope = json.loads(row["envelope_json"])
             payload = envelope["payload"]
             until_cancelled = bool(row["until_cancelled"])
@@ -340,6 +340,19 @@ class Dispatcher:
                 }
             )
         return active
+
+    def recent_standdowns(self, now: int) -> list[dict[str, Any]]:
+        """Stand-downs from the last day, oldest first, for devices that reconnect.
+
+        A phone that was offline when a stand-down went out would otherwise keep
+        showing the event as live. What it is sent is the signed stand-down itself,
+        never a server-made "this one ended": a list the server could edit would let
+        a compromised server close a genuine event with no signature at all.
+        """
+        return [
+            {"envelope": json.loads(row["envelope_json"])}
+            for row in self.repo.recent_standdowns(now - self.MAX_WINDOW_S)
+        ]
 
     def status(self, order_id: str) -> dict[str, Any]:
         """The dashboard the decision-makers watch: did the order actually land?"""

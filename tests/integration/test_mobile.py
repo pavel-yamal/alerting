@@ -382,3 +382,51 @@ def test_an_event_in_force_reaches_a_phone_that_logs_in_later(mobile_app, server
         f"/api/orders/{order_id}/ack", json={"status": "acknowledged"}, headers=MOBILE
     )
     assert response.status_code == 200, response.text
+
+
+def test_a_stand_down_missed_while_offline_closes_the_event_on_reconnect(
+    mobile_app, server, org, clock
+):
+    """The phone keeps its inbox across reconnects. A stand-down that went out while it
+    was offline arrives restated on reconnect, signed, and closes the event; one for an
+    event the phone never held is not shown at all."""
+    executor = phone(mobile_app, "x-101")
+    order_id = dispatch(server, org, clock)
+    wait_for(lambda: executor.get("/api/inbox").json()["orders"])
+    mobile = mobile_app.state.mobile
+    session = next(iter(mobile.sessions.values()))
+
+    server.auth = signer_for(org, "p-003", clock)
+    original = server.get(f"/v1/orders/{order_id}").json()["payload"]
+    cancel = server.post(
+        "/v1/proposals",
+        json={
+            "scenario": original["scenario"],
+            "severity": original["severity"],
+            "drill": original["drill"],
+            "action": "STOP",
+            "audience": original["audience"],
+            "text": "Отбой",
+            "cancels": order_id,
+        },
+    ).json()
+    envelope = {
+        "payload": cancel["payload"],
+        "signatures": [
+            {
+                "key_id": org.person("p-003").key_id,
+                "alg": "Ed25519",
+                "sig": sign_payload(
+                    DOMAIN_ORDER, cancel["payload"], org.person("p-003").private_key
+                ),
+            }
+        ],
+    }
+
+    stray = dict(envelope, payload={**envelope["payload"], "cancels": "never-seen"})
+    mobile.receive(session, stray, restated=True)
+    assert "never-seen" not in str(executor.get("/api/inbox").json())
+
+    mobile.receive(session, envelope, restated=True)
+    by_id = {o["order_id"]: o for o in executor.get("/api/inbox").json()["orders"]}
+    assert by_id[order_id]["cancelled_by"] == cancel["order_id"]
