@@ -342,3 +342,17 @@ def test_an_older_unanswered_order_stays_answerable(mobile_app, server, org, clo
     )
     assert response.status_code == 200, response.text
     assert "x-101" not in status_of(server, org, clock, first)["outstanding"]
+
+
+def test_a_closed_page_does_not_keep_the_listener_past_the_shift(mobile_app, monotonic):
+    """The deadline cannot wait for a request: a closed page sends none, and its
+    listener would keep the key, reconnect and receive orders indefinitely."""
+    phone(mobile_app, "x-101")
+    mobile = mobile_app.state.mobile
+    session = next(iter(mobile.sessions.values()))
+    monotonic.now += SESSION_LIFETIME_S + 1
+    mobile.sweep()  # what the background sweeper does every 30 s
+    assert mobile.sessions == {}
+    assert session.stop.is_set()
+    session.thread.join(5)
+    assert not session.thread.is_alive()

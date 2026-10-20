@@ -58,6 +58,10 @@ CSRF_HEADER = "X-Alerting-Mobile"
 #: One shift. After that the person logs in again and the key is unlocked afresh.
 SESSION_LIFETIME_S = 12 * 3600
 
+#: How often expired sessions are swept without waiting for a request: a closed page
+#: sends none, and its listener would otherwise keep the key unlocked past the shift.
+SWEEP_INTERVAL_S = 30
+
 #: Reconnect delay bounds for the order stream.
 RECONNECT_MIN_S = 1.0
 RECONNECT_MAX_S = 30.0
@@ -166,6 +170,7 @@ class Mobile:
         self.wordlist = load_wordlist(wordlist, required=False) if wordlist else []
         self.sessions: dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._stop = threading.Event()
 
     # --- sessions -------------------------------------------------------------
     def login(self, person_id: str, passphrase: str) -> tuple[str, Session]:
@@ -226,14 +231,28 @@ class Mobile:
         return token, session
 
     def session(self, token: str | None) -> Session:
+        self.sweep()
         with self._lock:
             session = self.sessions.get(token or "")
             if session is None:
-                raise HTTPException(401, "войдите")
-            if self.monotonic() - session.started > SESSION_LIFETIME_S:
-                self._drop(token or "")
-                raise HTTPException(401, "смена закончилась, войдите снова")
+                raise HTTPException(401, "смена закончилась или вход не выполнен — войдите")
             return session
+
+    def sweep(self) -> None:
+        """End every session past its shift: its listener stops and the key goes."""
+        now = self.monotonic()
+        with self._lock:
+            for token, session in list(self.sessions.items()):
+                if now - session.started > SESSION_LIFETIME_S:
+                    log.info("mobile session ended (shift over): %s", session.stored.person_id)
+                    self._drop(token)
+
+    def start_sweeper(self) -> None:
+        def run() -> None:
+            while not self._stop.wait(SWEEP_INTERVAL_S):
+                self.sweep()
+
+        threading.Thread(target=run, name="mobile-session-sweeper", daemon=True).start()
 
     def _drop(self, token: str) -> None:
         session = self.sessions.pop(token, None)
@@ -456,6 +475,7 @@ def create_mobile(
         monotonic=monotonic,
     )
     app = FastAPI(title="alerting mobile", docs_url=None, redoc_url=None, openapi_url=None)
+    mobile.start_sweeper()
     app.state.mobile = mobile
 
     def current(request: Request) -> Session:
