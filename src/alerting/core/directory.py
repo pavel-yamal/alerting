@@ -153,7 +153,13 @@ class Directory:
     def revokers(self) -> dict[str, Revoker]:
         return {r.key_id: r for r in self.payload.revokers or ()}
 
-    def with_revocations(self, bundle: dict[str, Any] | None, *, min_version: int = 0) -> Directory:
+    def with_revocations(
+        self,
+        bundle: dict[str, Any] | None,
+        *,
+        min_version: int = 0,
+        previous: dict[str, Any] | None = None,
+    ) -> Directory:
         """This directory, plus the revocation list if a current revocation key signed it.
 
         A list whose signer this directory no longer names is ignored, not refused: the
@@ -161,6 +167,11 @@ class Directory:
         what they want to keep into ``revoked`` when they drop it (``alerting-org
         directory revoker --remove``). Anything else wrong with the list -- forged,
         another org, lower than a version already seen -- raises.
+
+        ``previous`` is the list this one replaces. While its signer is still named,
+        every entry it had must still be here: the lists are cumulative, and a list
+        that drops one would un-revoke a key -- something a revocation key, even a
+        stolen one paired with a hostile server, must never be able to do.
         """
         if not bundle:
             return self
@@ -180,6 +191,11 @@ class Directory:
             return Directory(self.payload)
         if not verify_signature(DOMAIN_REVOCATIONS, payload_raw, signature, revoker.public()):
             raise DirectoryRejected(Reason.REVOCATIONS_UNSIGNED)
+        before = (previous or {}).get("payload") or {}
+        if before.get("signer") in self.revokers:
+            kept = {r.key_id for r in payload.entries}
+            if any(r.get("key_id") not in kept for r in before.get("entries", [])):
+                raise DirectoryRejected(Reason.REVOCATIONS_DROPPED)
         return Directory(self.payload, payload)
 
     def signer_status(self, key_id: str, when: int) -> Reason | None:

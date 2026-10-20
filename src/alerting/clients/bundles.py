@@ -140,7 +140,11 @@ class BundleCache:
         if not bundle:
             # Withheld or none yet: keep what we hold. Dropping it would un-revoke.
             return base.with_revocations(self._cached_revocations())
-        applied = base.with_revocations(bundle, min_version=self.seen_version("revocations"))
+        applied = base.with_revocations(
+            bundle,
+            min_version=self.seen_version("revocations"),
+            previous=self._cached_revocations(),
+        )
         if applied.revocations is None:
             # Signed by a key this directory no longer names; the root's word is newer.
             return applied

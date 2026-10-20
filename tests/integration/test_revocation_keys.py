@@ -117,7 +117,7 @@ async def test_the_server_checks_the_list_like_a_device(client, org, clock, revo
     dropped = dict(listed["payload"], version=2, entries=[])
     shrunk = {"payload": dropped, "signature": sign_payload(DOMAIN_REVOCATIONS, dropped, revoker)}
     response = client.post("/v1/bundles", json={"bundle": shrunk})
-    assert response.status_code == 409 and "drops earlier entries" in response.text
+    assert response.status_code == 409 and "revocations_dropped_entries" in response.text
 
 
 async def test_executors_cannot_publish_a_list(client, executor_client, org, clock, revoker):
@@ -203,3 +203,19 @@ async def test_only_the_root_can_name_a_revocation_key(client, org, clock):
     )
     forged = sign_bundle(payload, DOMAIN_DIRECTORY, private)
     assert client.post("/v1/bundles", json={"bundle": forged}).status_code == 409
+
+
+async def test_concurrent_publications_cannot_overwrite_each_other(client, org, clock, revoker):
+    """Both built on version N; only the first may land, the second is told to retry."""
+    first = signed_list(client, org, revoker, person="x-101", at=clock.now())
+    second = signed_list(client, org, revoker, person="x-102", at=clock.now())
+    assert first["payload"]["version"] == second["payload"]["version"] == 1
+
+    repo = client.app.state.alerting.repo
+    assert repo.put_bundle_if_latest("revocations", 1, first, clock.now(), expected_latest=0)
+    assert not repo.put_bundle_if_latest("revocations", 1, second, clock.now(), expected_latest=0)
+    stale = dict(second["payload"], version=2)
+    assert not repo.put_bundle_if_latest(
+        "revocations", 2, {"payload": stale}, clock.now(), expected_latest=0
+    ), "built on N=0 while N is now 1: refused even with a fresh version number"
+    assert client.get("/v1/revocations").json() == first

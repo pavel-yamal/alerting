@@ -204,3 +204,19 @@ def test_a_device_refuses_an_older_list(cache, org):
     cache.accept("revocations", second)
     with pytest.raises(DirectoryRejected):
         cache.accept("revocations", first)
+
+
+def test_a_device_refuses_a_newer_list_that_drops_an_entry(cache, org):
+    """A stolen revocation key and a hostile server together still cannot un-revoke."""
+    bundle, private = with_revoker(org)
+    cache.accept("directory", bundle)
+    directory = load(org, bundle)
+    first = revocation_list(directory, private)
+    cache.accept("revocations", first)
+
+    emptied = dict(first["payload"], version=2, entries=[])
+    shrunk = {"payload": emptied, "signature": sign_payload(DOMAIN_REVOCATIONS, emptied, private)}
+    with pytest.raises(DirectoryRejected) as refused:
+        cache.accept("revocations", shrunk)
+    assert refused.value.reason == Reason.REVOCATIONS_DROPPED
+    assert cache.directory().is_revoked(org.person("x-101").key_id)

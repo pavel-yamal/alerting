@@ -23,6 +23,7 @@ class Reason(StrEnum):
     DIRECTORY_ROLLBACK = "directory_rollback"
     REVOCATIONS_UNSIGNED = "revocations_unsigned"
     REVOCATIONS_ROLLBACK = "revocations_rollback"
+    REVOCATIONS_DROPPED = "revocations_dropped_entries"
     POLICY_UNSIGNED = "policy_unsigned"
     POLICY_ROLLBACK = "policy_rollback"
     POLICY_ID_MISMATCH = "policy_id_mismatch"

@@ -220,7 +220,7 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
     else:
         effective = loaded.with_revocations(app.state.revocations_bundle)
         invalidated = _broken_active_events(app, effective, app.state.policy(), now)
-    app.repo.put_bundle(kind, loaded.version, body.bundle, now)
+    _store_if_still_latest(app, kind, loaded.version, body.bundle, now, seen)
     principal = getattr(request.state, "principal", None)
     by = principal.person_id if principal else None
     app.audit.append(
@@ -245,6 +245,21 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
     return {"kind": kind, "version": loaded.version, "invalidated": invalidated}
 
 
+def _store_if_still_latest(
+    app: Any, kind: str, version: int, bundle: dict[str, Any], now: int, seen: int
+) -> None:
+    """Store the bundle only if nothing was published since ``seen`` was read.
+
+    Two operators revoking at once on two workers would otherwise both build on
+    version N, and the second write would replace the first list -- losing a
+    revocation while both were told it succeeded.
+    """
+    if not app.repo.put_bundle_if_latest(kind, version, bundle, now, expected_latest=seen):
+        raise HTTPException(
+            409, f"another {kind} was published meanwhile; fetch the current one and retry"
+        )
+
+
 def _publish_revocations(app: Any, bundle: dict[str, Any], request: Request) -> dict[str, Any]:
     """The fast path: a revocation list signed by a revocation key, not the root.
 
@@ -261,7 +276,7 @@ def _publish_revocations(app: Any, bundle: dict[str, Any], request: Request) -> 
         org_id=app.state.org_id,
     )
     try:
-        effective = base.with_revocations(bundle, min_version=seen + 1)
+        effective = base.with_revocations(bundle, min_version=seen + 1, previous=current)
     except DirectoryRejected as exc:
         raise HTTPException(409, f"revocation list refused: {exc}") from None
     except Exception as exc:
@@ -270,20 +285,10 @@ def _publish_revocations(app: Any, bundle: dict[str, Any], request: Request) -> 
     if listed is None:
         raise HTTPException(409, "revocation list refused: its signer is not a revocation key")
     previous = {r["key_id"] for r in (current or {}).get("payload", {}).get("entries", [])}
-    if current and current["payload"]["signer"] in base.revokers:
-        # Cumulative, across revocation keys too: an entry silently dropped would
-        # un-revoke a key on every device that joins after this list, while older
-        # devices still refuse it. Only the root un-names a revocation key, and with
-        # it the list it signed (``alerting-org directory revoker --remove``).
-        missing = previous - {r.key_id for r in listed.entries}
-        if missing:
-            raise HTTPException(
-                409, f"revocation list refused: drops earlier entries {sorted(missing)}"
-            )
 
     now = app.clock.now()
     invalidated = _broken_active_events(app, effective, app.state.policy(), now)
-    app.repo.put_bundle("revocations", listed.version, bundle, now)
+    _store_if_still_latest(app, "revocations", listed.version, bundle, now, seen)
     principal = getattr(request.state, "principal", None)
     by = principal.person_id if principal else None
     for revocation in listed.entries:
