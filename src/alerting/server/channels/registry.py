@@ -8,6 +8,7 @@ from alerting.server.channels.siren import SirenChannel
 from alerting.server.channels.sms import SmsChannel
 from alerting.server.channels.voice import VoiceChannel
 from alerting.server.channels.websocket import ConnectionRegistry, WebSocketChannel
+from alerting.server.db.repo import Repo
 
 
 class ChannelRegistry:
@@ -24,7 +25,9 @@ class ChannelRegistry:
         return self._channels[name]
 
 
-def default_registry(connections: ConnectionRegistry, org_label: str = "ACME") -> ChannelRegistry:
+def default_registry(
+    connections: ConnectionRegistry, repo: Repo, org_label: str = "ACME"
+) -> ChannelRegistry:
     """WebSocket is real; the rest are stubs with a clear seam for a provider."""
     return ChannelRegistry(
         {
@@ -32,6 +35,6 @@ def default_registry(connections: ConnectionRegistry, org_label: str = "ACME") -
             "push": PushChannel(),
             "sms": SmsChannel(org_label),
             "voice": VoiceChannel(org_label),
-            "siren": SirenChannel(),
+            "siren": SirenChannel(repo),
         }
     )

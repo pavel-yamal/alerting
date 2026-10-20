@@ -23,7 +23,23 @@ from typing import Any, Literal, Protocol
 
 from alerting.core.envelope import OrderPayload
 
-DeliveryStatus = Literal["sent", "failed", "queued", "refused"]
+#: ``stub`` is the load-bearing addition. An adapter with no provider behind it used
+#: to return ``sent``, so the ACK dashboard and the escalation ladder both believed
+#: delivery had succeeded — a lie at the exact moment the truth matters most. A stub
+#: now says so, and it never counts as delivered anywhere.
+DeliveryStatus = Literal["sent", "failed", "queued", "refused", "stub"]
+
+#: Statuses that mean something actually left the machine.
+DELIVERED_STATUSES: frozenset[str] = frozenset({"sent", "queued"})
+
+
+class NoWakeCode(RuntimeError):
+    """This recipient's wake code cannot be derived, so nothing may be sent.
+
+    Lives here rather than in one adapter because SMS and voice both depend on it and
+    both must refuse for the same reason: the training line is "a genuine message
+    always carries your code", and a codeless message makes that line false.
+    """
 
 
 @dataclass(frozen=True)
@@ -47,6 +63,29 @@ class DeliveryReceipt:
     rendered: str = ""  # what was actually put on the wire, for the audit trail
 
 
+#: What a heartbeat probe can conclude. ``stub`` exists for the same reason it does
+#: in ``DeliveryStatus``: an adapter with no provider behind it must never be able to
+#: report health it does not have. A stub is not ``ok`` and never satisfies a check.
+ProbeStatus = Literal["ok", "failed", "stub"]
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    """The answer to "is this channel still there?".
+
+    Deliberately separate from a delivery receipt. A probe is about the channel; a
+    receipt is about one person. Conflating them is how a system ends up reporting a
+    channel healthy because the last person it tried happened to be reachable.
+    """
+
+    status: ProbeStatus
+    detail: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
 @dataclass
 class DispatchContext:
     """Everything an adapter may need that is not the order itself."""
@@ -61,6 +100,16 @@ class Channel(Protocol):
     name: str
 
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt: ...
+
+    async def probe(self) -> ProbeResult:
+        """Is this channel still there, asked without an emergency to ask it for.
+
+        Every adapter implements it. The point is that a channel which has gone
+        quiet becomes visible *before* an incident rather than during one, which is
+        the only thing this system has against deliberate suppression short of the
+        printed fallback (threat model, attacks 4 and 5).
+        """
+        ...
 
 
 def mask_phone(phone: str) -> str:

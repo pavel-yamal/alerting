@@ -1,0 +1,13 @@
+[Unit]
+Description=Alerting — daily backup
+
+[Timer]
+OnCalendar=daily
+# Spread load and avoid every host in a fleet dumping at the same second.
+RandomizedDelaySec=30m
+# A host that was off at the scheduled time still gets its backup.
+Persistent=true
+Unit=alerting-backup.service
+
+[Install]
+WantedBy=timers.target

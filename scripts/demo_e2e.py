@@ -13,11 +13,17 @@ cannot stop.
 from __future__ import annotations
 
 import asyncio
+import os
 import pathlib
+import shutil
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
+import psycopg
+from psycopg.rows import dict_row
+
+from alerting.core.audit_chain import Event
 from alerting.core.clock import FixedClock
 from alerting.core.directory import Directory, DirectoryPayload, KeyEntry
 from alerting.core.envelope import AckStatus, Audience, Severity
@@ -38,7 +44,9 @@ from alerting.core.verify import verify_envelope
 from alerting.core.wordcode import bucket_for, wake_code
 from alerting.orgkit import build_org, make_order, sign_bundle, sign_order
 from alerting.server.app import AppServices
+from alerting.server.cli import redact_dsn
 from alerting.server.config import Settings
+from alerting.server.db import migrate
 from alerting.server.services.bootstrap import publish_org
 
 AT = 1_700_000_000
@@ -51,19 +59,40 @@ def step(number: str, title: str) -> None:
 
 async def main() -> int:
     tmp = pathlib.Path("var/demo")
+    # Снести целиком, а не просто создать. Демонстрация сбрасывает схему ниже, то есть
+    # каждый прогон — новая цепочка с нуля; а головы дописывались в тот же каталог и
+    # копились. Через три прогона там лежали головы от трёх разных цепочек, и проверка
+    # `verify --heads-dir var/demo/heads` сообщала расхождение — справедливо, но по
+    # поводу артефакта прошлого запуска, а не чего бы то ни было настоящего. Каталог
+    # опубликованных голов, смешивающий цепочки, не стоит ничего: он даёт ложную
+    # тревогу там, где механизм обязан давать только настоящую.
+    shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
-    db = tmp / "demo.db"
-    if db.exists():
-        db.unlink()
+
+    dsn = os.environ.get("ALERTING_DSN", "")
+    if not dsn:
+        print(
+            "set ALERTING_DSN to the owner role's connection string; "
+            "`make db-up` starts a local PostgreSQL.",
+            file=sys.stderr,
+        )
+        return 2
+    # The demo starts from an empty database every time, which on PostgreSQL means
+    # dropping the schema rather than deleting a file.
+    with psycopg.connect(dsn, row_factory=dict_row, autocommit=True) as connection:
+        migrate.reset(connection)
 
     clock = FixedClock(AT)
     org = build_org(issued_at=AT)
     settings = Settings(
         org_id=org.org_id,
-        db_path=str(db),
+        dsn=dsn,
         root_public_key=public_key_to_b64u(org.root_public_key),
         heads_dir=tmp / "heads",
         spool_dir=tmp / "spool",
+        # This is a demo: push, SMS, voice and the siren have no providers behind them.
+        # Saying so out loud is what the startup guard is for.
+        allow_stub_channels=True,
     )
     server_private, _ = generate_keypair()
     settings.server_private_key = private_key_to_b64u(server_private)
@@ -173,6 +202,22 @@ async def main() -> int:
         clock.now() + 20,
         ack.model_dump(mode="json"),
         True,
+    )
+    # The chain entry too, exactly as the API does it. Without this the demo produces
+    # a chain with no acknowledgements in it at all -- and the metric docs/06 §9 and
+    # docs/07 §2 call the main one is computed from the chain, so `make demo` would
+    # ship a chain that cannot answer the question it is most often asked.
+    # Advance the clock so the demo shows a real interval rather than 0s: the metric
+    # is a duration, and a demonstration of it that reads "0s" demonstrates nothing.
+    clock.advance(20)
+    services.audit.append(
+        Event.ACK_RECEIVED,
+        {
+            "order_id": order.order_id,
+            "person_id": ivanov.person_id,
+            "status": "en_route",
+            "valid": True,
+        },
     )
     status = services.dispatcher.status(order.order_id)
     print(f"  подтвердили: {status['acknowledged']} из {len(status['people'])}")
@@ -293,9 +338,17 @@ async def main() -> int:
     print("  а сопоставление с личностью — в отдельной удаляемой таблице.")
 
     print(f"\n{RULE}")
-    print(f" Готово. База: {db}")
+    print(f" Готово. База: {redact_dsn(dsn)}")
     print(" Проверить аудит независимо:")
-    print(f"   .venv/bin/python -m alerting.clients.auditor_cli report --db {db}")
+    print('   .venv/bin/python -m alerting.clients.auditor_cli report --dsn "$ALERTING_DSN"')
+    # Сказано вслух, потому что иначе следующий шаг молча не работает: демонстрация
+    # начинает с `migrate.reset` и публикует СВОЮ организацию с одноразовым корневым
+    # ключом, который существует только в этом процессе. После неё в базе лежит
+    # организация, к которой на диске нет ключа, и узел, запущенный по строке из
+    # `org-init`, откажется стартовать с `policy_unsigned` — верно, но непонятно.
+    print("\n ВНИМАНИЕ: база перезаписана демонстрационной организацией с одноразовым")
+    print(" корневым ключом. Перед запуском настоящего узла выполните `make org-init`")
+    print(" ещё раз — иначе узел откажется стартовать: ключа от этой организации нет.")
     print(RULE)
     services.close()
     return 0

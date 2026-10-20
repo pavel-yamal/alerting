@@ -5,12 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from alerting.core.audit_chain import Event
 from alerting.core.envelope import Signature, SignedAck
 from alerting.core.receipts import verify_ack
+from alerting.server.api.meta import MAX_PAGE
 
 router = APIRouter(prefix="/v1", tags=["orders"])
 
@@ -21,7 +22,9 @@ class AckRequest(BaseModel):
 
 
 @router.get("/orders")
-async def list_orders(request: Request, limit: int = 20) -> dict[str, Any]:
+async def list_orders(
+    request: Request, limit: int = Query(20, ge=1, le=MAX_PAGE)
+) -> dict[str, Any]:
     app = request.app.state.alerting
     return {
         "orders": [

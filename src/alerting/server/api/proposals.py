@@ -44,8 +44,12 @@ class ProposalRequest(BaseModel):
     stream_id: str = "primary"
     requires_ack: bool = True
     ack_deadline_s: int = Field(default=120, ge=0, le=86400)
-    created_by: str = "dispatcher"
     cancels: str | None = None
+
+    #: There is deliberately no ``created_by``. It used to be a string the client
+    #: asserted about itself, written straight into an undeletable audit chain --
+    #: so the one field naming who started an emergency order was the one field
+    #: nobody had checked. It now comes from the request signature.
 
 
 class SignatureRequest(BaseModel):
@@ -59,6 +63,10 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
     if body.audience.is_empty():
         raise HTTPException(422, "audience is empty: this order would reach nobody")
     now = app.clock.now()
+    # No transaction here any more: `next_seq` is now a single atomic upsert on the
+    # `streams` table, so the number is allocated the instant it is handed out. It
+    # used to be SELECT MAX(seq) followed, twenty-five lines later, by an insert --
+    # a read-modify-write two concurrent proposals on one stream both won.
     seq = app.repo.next_seq(body.stream_id)
     policy = app.state.policy()
 
@@ -84,7 +92,8 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         cancels=body.cancels,
     )
     raw = payload.to_payload()
-    app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, body.created_by)
+    created_by = request.state.principal.person_id
+    app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, created_by)
     app.audit.append(
         Event.PROPOSAL_CREATED,
         {
@@ -92,7 +101,7 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
             "scenario": payload.scenario,
             "severity": str(payload.severity),
             "drill": payload.drill,
-            "created_by": body.created_by,
+            "created_by": created_by,
         },
     )
     rule = policy.rule_for(payload.severity, is_cancel=payload.is_cancel)
@@ -140,7 +149,19 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
     payload = json.loads(row["payload_json"])
     now = app.clock.now()
     app.repo.add_signature(order_id, body.key_id, body.sig, now)
-    app.audit.append(Event.PROPOSAL_SIGNED, {"order_id": order_id, "key_id": body.key_id})
+    # Two identities, recorded separately on purpose. `key_id` is whose signature
+    # this is; `submitted_by` is who carried it to the server. They are the same
+    # person today, and requiring that would quietly forbid a signature taken offline
+    # and brought in by a dispatcher -- a workflow this system should be able to grow
+    # into. Recording both keeps the question answerable either way.
+    app.audit.append(
+        Event.PROPOSAL_SIGNED,
+        {
+            "order_id": order_id,
+            "key_id": body.key_id,
+            "submitted_by": request.state.principal.person_id,
+        },
+    )
 
     stored = app.repo.signatures(order_id)
     envelope = SignedEnvelope(

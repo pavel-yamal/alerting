@@ -1,0 +1,45 @@
+# Вторая половина бэкапа: спул аудита и опубликованные головы. Ставится на КАЖДЫЙ
+# узел приложения.
+#
+# Почему это отдельный юнит, а не часть ночного дампа: на пяти машинах эти данные
+# физически в разных местах. База — на узле базы; спул и головы пишет сервер, каждый
+# на своём узле, и у двух узлов они РАЗНЫЕ. Один бэкап, забирающий и то и другое,
+# существовал только потому, что раньше всё лежало на одном хосте.
+#
+# Что здесь ценного, если база и так копируется:
+#
+#   * спул — единственная копия записей аудита, которые НЕ попали в цепочку. Их в
+#     базе нет по определению: они там потому и оказались, что база была недоступна.
+#   * головы — то, обо что проверяется цепочка после переключения на резерв. Голова,
+#     лежащая только в базе, теряется вместе с хвостом, который она должна была
+#     обличить (docs/10-failover.md §2).
+#
+# Установить в /etc/systemd/system/alerting-artifacts-backup.service.
+
+[Unit]
+Description=Alerting — back up the audit spool and published heads
+Documentation=file:///opt/alerting/current/docs/09-deployment.md
+After=alerting.service
+
+[Service]
+Type=oneshot
+User=alerting
+Group=alerting
+
+# Никакого LoadCredential: базы на этой машине нет, и пустой ALERTING_DSN_FILE —
+# это способ сказать об этом скрипту вслух. Пустая строка означает «не здесь»,
+# незаданная переменная — ошибку: см. alerting-backup.sh.
+Environment=ALERTING_DSN_FILE=
+Environment=ALERTING_BACKUP_DIR=/var/backups/alerting
+Environment=ALERTING_SPOOL_DIR=/var/lib/alerting/spool
+Environment=ALERTING_HEADS_DIR=/var/lib/alerting/heads
+
+ExecStart=/opt/alerting/current/deploy/backup/alerting-backup.sh
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/backups/alerting
+ReadOnlyPaths=/var/lib/alerting
+UMask=0077

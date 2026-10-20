@@ -18,7 +18,7 @@ number only after deciding to act, so a rejected envelope cannot poison the wind
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Container
 from dataclasses import dataclass, field
 
 from pydantic import ValidationError
@@ -30,7 +30,7 @@ from alerting.core.envelope import ENVELOPE_VERSION, OrderPayload, SignedEnvelop
 from alerting.core.errors import CanonicalizationError, Reason
 from alerting.core.policy import Policy
 from alerting.core.quorum import QuorumResult, evaluate_quorum
-from alerting.core.replay import ReplayVerdict, ReplayWindow
+from alerting.core.replay import ReplayChecker, ReplayVerdict
 
 
 @dataclass(frozen=True)
@@ -63,9 +63,9 @@ def verify_envelope(
     directory: Directory,
     policy: Policy,
     clock: Clock,
-    replay: ReplayWindow,
+    replay: ReplayChecker,
     org_id: str,
-    seen_order_ids: Collection[str] = (),
+    seen_order_ids: Container[str] = (),
     cancel_target: OrderPayload | None = None,
 ) -> Decision:
     """Verify a signed order or cancel end to end.
@@ -77,7 +77,9 @@ def verify_envelope(
         clock: injected time source.
         replay: per-stream window; inspected, never mutated here.
         org_id: the organisation this client belongs to.
-        seen_order_ids: order ids already processed, for exact-duplicate suppression.
+        seen_order_ids: order ids already processed, for exact-duplicate
+            suppression. Only ``in`` is used, so the server passes an object that
+            answers it with one indexed query rather than a set of recent ids.
         cancel_target: the original order, when this is a cancel and we hold it.
             Needed to enforce that a drill envelope can never cancel a real order.
     """

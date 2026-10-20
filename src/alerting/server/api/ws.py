@@ -11,19 +11,29 @@ were the only check, a compromised server could fabricate orders freely.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import secrets
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from alerting.core.audit_chain import Event
+from alerting.core.clock import TRANSPORT_AUTH_WINDOW_S
 from alerting.core.envelope import Signature, SignedAck
 from alerting.core.receipts import verify_ack
 from alerting.core.signing import DOMAIN_DEVICE_AUTH, verify_signature
 
 router = APIRouter(tags=["stream"])
 
-AUTH_WINDOW_S = 60
+
+#: How long an unauthenticated socket may stay open. Without it, anyone could accept
+#: a socket and hold it indefinitely without ever proving who they are.
+AUTH_FRAME_TIMEOUT_S = 5
+
+#: A signed envelope is a couple of kilobytes; an ACK is smaller. Anything larger is
+#: not a client of this protocol.
+MAX_FRAME_BYTES = 64 * 1024
 
 
 class WebSocketSink:
@@ -34,6 +44,9 @@ class WebSocketSink:
 
     async def send_json(self, data: dict[str, Any]) -> None:
         await self.websocket.send_json(data)
+
+    async def close(self, code: int) -> None:
+        await self.websocket.close(code=code)
 
 
 @router.websocket("/v1/stream")
@@ -46,7 +59,10 @@ async def stream(websocket: WebSocket) -> None:
     await websocket.send_json({"kind": "challenge", "nonce": nonce, "at": now})
 
     try:
-        message = await websocket.receive_json()
+        message = await asyncio.wait_for(_receive_bounded(websocket), AUTH_FRAME_TIMEOUT_S)
+    except TimeoutError:
+        await websocket.close(code=4408, reason="auth timeout")
+        return
     except (WebSocketDisconnect, ValueError):
         return
 
@@ -55,13 +71,17 @@ async def stream(websocket: WebSocket) -> None:
         return
 
     sink = WebSocketSink(websocket)
-    await app.connections.attach(person_id, sink)
+    if not await app.connections.attach(person_id, sink):
+        await websocket.close(code=4429, reason="too many devices")
+        return
     await websocket.send_json({"kind": "ready", "person_id": person_id, "org_id": app.state.org_id})
 
     try:
         while True:
-            frame = await websocket.receive_json()
+            frame = await _receive_bounded(websocket)
             await _handle_frame(app, websocket, frame, person_id)
+    except FrameTooLarge:
+        await websocket.close(code=1009, reason="frame too large")
     except (WebSocketDisconnect, ValueError):
         pass
     finally:
@@ -82,7 +102,11 @@ async def _authenticate(
     if payload.get("nonce") != nonce or payload.get("org_id") != app.state.org_id:
         await websocket.close(code=4401, reason="bad auth payload")
         return None
-    if abs(int(payload.get("at", 0)) - now) > AUTH_WINDOW_S:
+    # `int()` on an attacker-supplied value: a string or a list here used to raise out
+    # of the handler rather than close the socket. Everything in this frame is
+    # attacker-controlled, so every step of it has to answer "refused", not "crash".
+    at = payload.get("at")
+    if not isinstance(at, int) or isinstance(at, bool) or abs(at - now) > TRANSPORT_AUTH_WINDOW_S:
         await websocket.close(code=4401, reason="stale auth")
         return None
 
@@ -154,3 +178,18 @@ async def _handle_frame(
         },
     )
     await websocket.send_json({"kind": "ack-result", "accepted": ok})
+
+
+class FrameTooLarge(ValueError):
+    """The peer sent more than this protocol ever needs."""
+
+
+async def _receive_bounded(websocket: WebSocket) -> dict[str, Any]:
+    """Read one JSON frame, refusing anything oversized before parsing it.
+
+    ``receive_json`` would happily parse a megabyte first and complain afterwards.
+    """
+    raw = await websocket.receive_text()
+    if len(raw) > MAX_FRAME_BYTES:
+        raise FrameTooLarge(f"{len(raw)} bytes")
+    return json.loads(raw)  # type: ignore[no-any-return]

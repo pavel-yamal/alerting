@@ -20,7 +20,8 @@ from __future__ import annotations
 
 import logging
 
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import DeliveryReceipt, DispatchContext, ProbeResult, Recipient
+from alerting.server.db.repo import Repo
 
 log = logging.getLogger("alerting.channel.siren")
 
@@ -32,21 +33,31 @@ MIN_INTERVAL_S = 30
 
 
 class SirenChannel:
-    """Site-scoped: one activation per site, not per person."""
+    """Site-scoped: one activation per site, not per person.
+
+    Only the actuation is stubbed. The drill guard, the per-order dedupe and the rate
+    limit below are real logic and run for every dispatch.
+    """
 
     name = "siren"
 
-    def __init__(self) -> None:
-        self.activations: list[tuple[str, str, str]] = []  # (site, pattern, order_id)
-        self._last_fired: dict[str, int] = {}
-        self._fired_for_order: set[tuple[str, str]] = set()
+    #: No relay or PA driver behind the activation yet.
+    delivers = False
+
+    def __init__(self, repo: Repo) -> None:
+        self.repo = repo
+
+    @property
+    def activations(self) -> list[tuple[str, str, str]]:
+        """Every activation recorded, for tests and the status view."""
+        return [
+            (row["site"], row["pattern"], row["order_id"])
+            for row in self.repo.all_siren_activations()
+        ]
 
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         order = context.order
         site = recipient.site or "unknown"
-
-        if (site, order.order_id) in self._fired_for_order:
-            return DeliveryReceipt(self.name, recipient.person_id, "sent", "already sounded")
 
         if order.drill:
             if site not in context.drill_enabled_sites:
@@ -62,14 +73,44 @@ class SirenChannel:
         else:
             pattern = PATTERN_REAL
 
-        last = self._last_fired.get(site)
-        if last is not None and order.issued_at - last < MIN_INTERVAL_S:
+        # Dedupe and rate limit both read the database rather than this object's
+        # memory. They used to be a set and a dict per process, which meant two
+        # workers sounded the same site twice for one order -- and nobody standing in
+        # the yard can tell a repeat from a second emergency.
+        #
+        # The rate limit ignores this order's own activation, so the two questions
+        # stay independent: "has another order sounded here recently?" and "have we
+        # already sounded for this one?" each get their own answer. Without the
+        # exclusion the second recipient at a site is told "rate limited" when the
+        # truthful answer is "already sounded for this order".
+        last = self.repo.siren_last_fired(site, exclude_order_id=order.order_id)
+        if last is not None and 0 <= order.issued_at - last < MIN_INTERVAL_S:
             return DeliveryReceipt(self.name, recipient.person_id, "refused", "rate limited")
 
-        self._last_fired[site] = order.issued_at
-        self._fired_for_order.add((site, order.order_id))
-        self.activations.append((site, pattern, order.order_id))
+        # The claim is atomic, so exactly one caller gets True however many race. It
+        # is also what makes this idempotent across a restart mid-incident.
+        if not self.repo.claim_siren(site, order.order_id, pattern, order.issued_at):
+            return DeliveryReceipt(
+                self.name,
+                recipient.person_id,
+                "sent" if self.delivers else "stub",
+                "already sounded for this order",
+            )
         log.info("SIREN %s at %s for %s", pattern, site, order.order_id)
         return DeliveryReceipt(
-            self.name, recipient.person_id, "sent", f"site={site}", rendered=pattern
+            self.name,
+            recipient.person_id,
+            "sent" if self.delivers else "stub",
+            f"site={site}" if self.delivers else f"site={site}, no relay configured",
+            rendered=pattern,
         )
+
+    async def probe(self) -> ProbeResult:
+        """No relay driver, so nothing to ping.
+
+        Worth saying explicitly: even with a relay, a probe here can only confirm the
+        controller answers, never that a siren in a yard made a sound. That gap is
+        why the manual panel in the security room is deliberately not interlocked
+        with this software.
+        """
+        return ProbeResult("stub", "no relay controller configured")

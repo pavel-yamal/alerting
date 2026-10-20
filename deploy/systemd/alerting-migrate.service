@@ -1,0 +1,63 @@
+# Database migrations, as a separate oneshot unit.
+#
+# This is deliberately NOT part of the server. An application that migrates at
+# startup runs two migrations at once the day two nodes restart together, and it has
+# to hold schema-changing privileges for its whole life to be able to do it. Here
+# only this unit connects as the owner role; the server connects as alerting_app,
+# which cannot alter a single table.
+#
+# The server unit requires this one, so `systemctl start alerting` migrates first and
+# refuses to start if the migration failed. `alerting-server` itself then verifies
+# the schema version and refuses to serve against a schema it was not built for.
+#
+# Install to /etc/systemd/system/alerting-migrate.service.
+
+[Unit]
+Description=Alerting — apply database migrations
+Documentation=file:///opt/alerting/current/docs/09-deployment.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+Before=alerting.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=alerting
+Group=alerting
+WorkingDirectory=/opt/alerting/current
+EnvironmentFile=/etc/alerting/alerting.env
+
+# The OWNER role's connection string, and only here. The server's own unit loads the
+# application role's DSN instead — the two must not be the same credential.
+LoadCredential=dsn:/etc/alerting/credentials/dsn-owner
+Environment=ALERTING_DSN_FILE=%d/dsn
+
+ExecStart=/opt/alerting/current/venv/bin/alerting-server migrate
+
+# --- sandbox -----------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

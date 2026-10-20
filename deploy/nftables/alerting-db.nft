@@ -1,0 +1,67 @@
+#!/usr/sbin/nft -f
+# Firewall для узла PostgreSQL — основного или резервного. Вход по умолчанию запрещён.
+#
+# Этого файла раньше не было, потому что базы не было как отдельной машины: она жила
+# на том же хосте и в правилах не нуждалась. На пяти ВМ у неё своя поверхность, и
+# поверхность эта — самая ценная в системе: в базе лежат контакты (персональные
+# данные) и цепочка аудита.
+#
+# Форма, которая здесь важна: до базы достают ровно два узла приложения и второй
+# сервер базы. Больше никто, включая прокси — nginx с базой не разговаривает.
+#
+# Установить в /etc/nftables.d/alerting-db.nft. Адреса подставляет
+# deploy/install/common.sh из deploy/inventory.env.
+
+define APP1_ADDR    = 10.0.10.11       # ALERTING_APP1_ADDR
+define APP2_ADDR    = 10.0.10.12       # ALERTING_APP2_ADDR
+define DB_PRIMARY   = 10.0.10.21       # ALERTING_DB_PRIMARY_ADDR
+define DB_STANDBY   = 10.0.10.22       # ALERTING_DB_STANDBY_ADDR
+define ADMIN_NET    = 10.0.99.0/24     # ALERTING_ADMIN_NET
+# Адреса сборщика метрик здесь нет намеренно: метрики отдают узлы приложения, а не
+# база. Открывать до неё ещё один путь ради чисел, которые уже есть в другом месте,
+# значит расширять поверхность впустую.
+
+table inet alerting_db {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        ip saddr $ADMIN_NET tcp dport 22 accept
+
+        # Узлы приложения. Роль alerting_app: SELECT и INSERT по audit_log, обычный
+        # DML по остальному.
+        ip saddr { $APP1_ADDR, $APP2_ADDR } tcp dport 5432 accept
+
+        # Второй сервер базы — в обе стороны, и это не избыточность. Сегодня резерв
+        # ходит к основной за потоком WAL; после переключения роли меняются местами, и
+        # правило, знающее только одно направление, пришлось бы править в тот момент,
+        # когда правит его человек в три часа ночи.
+        ip saddr { $DB_PRIMARY, $DB_STANDBY } tcp dport 5432 accept
+
+        icmp type echo-request limit rate 5/second accept
+        icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert } accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy drop;
+
+        ct state established,related accept
+        oif lo accept
+
+        # NTP по той же причине, что и на узле приложения: расхождение часов здесь
+        # портит отметки времени в цепочке аудита, то есть саму доказательную базу.
+        udp dport 123 accept
+        tcp dport 53 accept
+        udp dport 53 accept
+
+        # Поток репликации к соседу.
+        ip daddr { $DB_PRIMARY, $DB_STANDBY } tcp dport 5432 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}

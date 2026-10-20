@@ -1,0 +1,116 @@
+# Alerting server unit.
+#
+# Install to /etc/systemd/system/alerting.service and adjust the paths marked ADJUST.
+# See docs/09-deployment.md for the full procedure.
+
+[Unit]
+Description=Alerting — verifiable emergency order dispatch
+Documentation=file:///opt/alerting/current/docs/09-deployment.md
+# chronyd is a hard dependency, not a nicety: the device handshake window is 60s and
+# the order skew tolerance is ±120s, so a node with a wrong clock rejects valid
+# clients while looking perfectly healthy.
+After=network-online.target chronyd.service alerting-migrate.service
+Wants=network-online.target chronyd.service
+# Hard requirement, not Wants: a node whose migrations failed must not serve. The
+# server verifies the schema version itself as well, so this is the first of two
+# gates rather than the only one.
+Requires=alerting-migrate.service
+
+# DELIBERATE deviation from the usual "stop flapping services" advice: an alerting
+# server that systemd has given up on is precisely the failure this whole system
+# exists to prevent. It keeps retrying forever, and the monitoring tells a human.
+# (This belongs in [Unit]; in [Service] systemd ignores it silently.)
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=alerting
+Group=alerting
+
+# Every runtime path is absolute in the environment below. WorkingDirectory is set
+# anyway, but it is NOT the safeguard: a wrong working directory makes the database,
+# the wordlist, the audit spool and the published heads fail SILENTLY, each in its own
+# way. Absolute values are the safeguard; this is belt and braces.
+WorkingDirectory=/opt/alerting/current
+EnvironmentFile=/etc/alerting/alerting.env
+
+# Secrets arrive as credentials, never as environment variables. An Ed25519 private
+# key in the environment is readable via /proc/PID/environ and `systemctl show`; the
+# process sees these as files under $CREDENTIALS_DIRECTORY, mode 0400, and no other
+# user on the box can read them.
+# The DSN is a secret for the same reason: it carries the database password, and an
+# environment variable holding it is visible in /proc/PID/environ. This is the
+# APPLICATION role's DSN — alerting_app, which has SELECT and INSERT on audit_log and
+# nothing else. The owner's DSN lives only in alerting-migrate.service.
+LoadCredential=dsn:/etc/alerting/credentials/dsn-app
+LoadCredential=server-key:/etc/alerting/credentials/server-key
+# Пути к этим файлам задаются ЗДЕСЬ, а не в alerting.env, и это не перестановка ради
+# порядка. `%d` — спецификатор systemd, и раскрывается он в директивах юнита;
+# содержимое файла из EnvironmentFile= через раскрытие спецификаторов не проходит.
+# Пока строки `ALERTING_DSN_FILE=%d/dsn` и `ALERTING_SERVER_KEY_FILE=%d/server-key`
+# стояли в alerting.env, узел получал их буквально — путь `%d/dsn` не существует, и
+# ни DSN, ни ключ подписи голов не нашлись бы. Ни разу не проверялось, потому что ни
+# один из этих юнитов ни разу не запускался на настоящем systemd.
+#
+# alerting-migrate.service делал это правильно с самого начала: там `Environment=`
+# внутри юнита. Здесь теперь так же.
+Environment=ALERTING_DSN_FILE=%d/dsn
+Environment=ALERTING_SERVER_KEY_FILE=%d/server-key
+# There is no HTTP secret here any more. Callers sign each request with their own
+# key and the server checks it against the root-signed directory it already holds,
+# so there is nothing to deploy, nothing to rotate for everyone at once, and no way
+# to start this node with an open surface.
+
+# Refuse to start with a bad clock rather than rejecting clients later.
+ExecStartPre=/usr/bin/chronyc waitsync 30 0.1
+# Validate the configuration before serving: a missing wordlist or an escalation
+# ladder that is not where the operator thinks it is fails here, not mid-incident.
+ExecStartPre=/opt/alerting/current/venv/bin/alerting-server --check
+
+# --workers 2 is safe as of phase 3: the sequence counter, the replay window, the
+# siren's dedupe and the escalation ladder all live in the database, and only the
+# holder of a session advisory lock climbs a ladder. Before that it would have been
+# a quiet catastrophe — two replay windows means a replayed order is accepted by
+# whichever worker has not seen it.
+ExecStart=/opt/alerting/current/venv/bin/alerting-server \
+    --host 10.0.10.11 \
+    --port 8080 \
+    --workers 2 \
+    --forwarded-allow-ips 10.0.10.0/24
+
+Restart=always
+RestartSec=2
+
+KillSignal=SIGTERM
+# Must exceed the server's own graceful-shutdown budget (30s), which covers closing
+# executor sockets, draining the escalation tick and publishing a final audit head.
+TimeoutStopSec=45
+
+# --- sandbox -----------------------------------------------------------------
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectProc=invisible
+ReadWritePaths=/var/lib/alerting
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -101,13 +101,13 @@ def test_cmd_sign_actually_uses_the_renderer(payload, monkeypatch, capsys):
         passphrase = "x"
         home = None
 
-    monkeypatch.setattr(
-        "alerting.clients.approver_cli.load_key",
-        lambda *a, **k: type("K", (), {"key_id": "ed25519:k", "private_key": None})(),
-    )
     monkeypatch.setattr("alerting.clients.approver_cli.sign_payload", lambda *a, **k: "sig")
 
-    cmd_sign(Args(), FakeApi())
+    # The key is unlocked once in `main`, before the first request, and handed to the
+    # command -- so the command no longer loads it and this test no longer patches
+    # the loader.
+    stored = type("K", (), {"key_id": "ed25519:k", "private_key": None})()
+    cmd_sign(Args(), FakeApi(), stored)
     out = capsys.readouterr().out
     assert "ВЫ ПОДПИСЫВАЕТЕ" in out
     assert "аудитория" in out

@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+# Firewall для узла nginx. Вход по умолчанию запрещён.
+#
+# Единственная машина контура, до которой достают пользователи. Поэтому здесь —
+# и только здесь — открыт 443 из пользовательского VLAN.
+#
+# Установить в /etc/nftables.d/alerting-proxy.nft. Адреса подставляет
+# deploy/install/common.sh из deploy/inventory.env.
+
+define USER_NET     = 10.0.0.0/16      # ALERTING_USER_NET: откуда приходят люди
+define ADMIN_NET    = 10.0.99.0/24     # ALERTING_ADMIN_NET
+define APP1_ADDR    = 10.0.10.11       # ALERTING_APP1_ADDR
+define APP2_ADDR    = 10.0.10.12       # ALERTING_APP2_ADDR
+define SCRAPER_ADDR = 10.0.20.9        # ALERTING_SCRAPER_ADDR
+
+table inet alerting_proxy {
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        ct state established,related accept
+        ct state invalid drop
+        iif lo accept
+
+        ip saddr $ADMIN_NET tcp dport 22 accept
+
+        # Люди. Только 443, только TLS.
+        ip saddr $USER_NET tcp dport 443 accept
+        # 80 существует ровно для того, чтобы ответить редиректом на 443.
+        ip saddr $USER_NET tcp dport 80 accept
+
+        # Сборщик метрик. Через прокси, а не напрямую к узлам: allow-список на
+        # `/v1/metricsz` живёт в конфиге nginx, и второй путь в обход него сделал бы
+        # этот список украшением.
+        ip saddr $SCRAPER_ADDR tcp dport 443 accept
+
+        icmp type echo-request limit rate 5/second accept
+        icmpv6 type { echo-request, nd-neighbor-solicit, nd-neighbor-advert } accept
+    }
+
+    chain output {
+        type filter hook output priority filter; policy drop;
+
+        ct state established,related accept
+        oif lo accept
+
+        udp dport 123 accept
+        tcp dport 53 accept
+        udp dport 53 accept
+
+        # Узлы приложения. Больше прокси ни с кем не разговаривает: до базы он не
+        # ходит и ходить не должен.
+        ip daddr { $APP1_ADDR, $APP2_ADDR } tcp dport 8080 accept
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+    }
+}

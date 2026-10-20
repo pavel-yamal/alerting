@@ -21,11 +21,15 @@ from alerting.core.audit_chain import Event
 from alerting.core.clock import Clock
 from alerting.core.envelope import OrderPayload, SignedEnvelope
 from alerting.server.channels.base import Recipient
+from alerting.server.db.leader import LeaderLock
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.dispatcher import Dispatcher
 
 log = logging.getLogger("alerting.escalation")
+
+#: How long shutdown waits for an in-flight tick before cancelling it.
+DRAIN_TIMEOUT_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -93,17 +97,31 @@ class EscalationWorker:
         audit: AuditService,
         clock: Clock,
         plan: EscalationPlan = DEFAULT_PLAN,
+        leader: LeaderLock | None = None,
     ) -> None:
         self.repo = repo
         self.dispatcher = dispatcher
         self.audit = audit
         self.clock = clock
         self.plan = plan
+        #: When set, only the process holding this lock climbs ladders. Without it
+        #: every process climbs, which the claims below survive but which means every
+        #: rung is a race. None means "climb unconditionally" -- the single-process
+        #: case and what the tests drive.
+        self.leader = leader
         self._task: asyncio.Task[None] | None = None
+        self._stopping = asyncio.Event()
+        self._started = False
 
     async def tick(self) -> int:
         """One pass. Returns how many rungs fired, which makes it easy to test."""
         import json
+
+        # Asked every tick rather than once at startup: that is what makes failover
+        # automatic. When the holder dies its connection goes with it, PostgreSQL
+        # drops the session lock, and whichever process asks next takes over.
+        if self.leader is not None and not self.leader.acquire():
+            return 0
 
         now = self.clock.now()
         cancelled = self.repo.cancelled_order_ids()
@@ -158,10 +176,19 @@ class EscalationWorker:
         if rung.channels:
             await self.dispatcher.fan_out(order, envelope, targets, rung.channels)
 
+        # The role and group notifications hanging off a rung need a claim of their
+        # own. `mark_rung` latches per person, so two climbers claim different
+        # subsets of the outstanding people, both end up with a non-empty `targets`,
+        # and both then call the duty officer and page the alternates. Leader
+        # election makes that rare; this makes it impossible.
         extra: list[Recipient] = []
-        if rung.notify_role:
+        if rung.notify_role and self.repo.claim_escalation_extra(
+            order.order_id, index, f"role:{rung.notify_role}", now
+        ):
             extra += self._people_with_role(rung.notify_role)
-        if rung.reassign_to_group:
+        if rung.reassign_to_group and self.repo.claim_escalation_extra(
+            order.order_id, index, f"group:{rung.reassign_to_group}", now
+        ):
             extra += self._people_in_group(rung.reassign_to_group)
         if extra:
             await self.dispatcher.fan_out(order, envelope, extra, ("ws", "push", "sms"))
@@ -203,20 +230,84 @@ class EscalationWorker:
             wake_key=b64u_decode(row["wake_key"]) if row["wake_key"] else b"",
         )
 
+    def is_running(self) -> bool:
+        """True when the ladder is actually being climbed right now."""
+        return self._task is not None and not self._task.done()
+
+    def is_healthy(self) -> bool:
+        """False only when this worker was started and has since died.
+
+        A node whose worker died still serves HTTP and still records orders, but
+        nothing escalates — so nobody is notified when an order goes unacknowledged,
+        and readiness has to see that.
+
+        A worker that was never started is *not* unhealthy: a node can legitimately
+        not be the one climbing the ladder. That is the case for the test client, and
+        it is the case for every non-leader once escalation is leader-elected.
+        """
+        if not self._started:
+            return True
+        return self.is_running()
+
     async def run(self, interval: float = 1.0) -> None:
-        while True:
+        while not self._stopping.is_set():
             try:
                 await self.tick()
             except Exception:
                 log.exception("escalation tick failed")
-            await asyncio.sleep(interval)
+            # Sleep, but wake immediately on a stop request so shutdown does not wait
+            # out a full interval.
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), interval)
 
     def start(self, interval: float = 1.0) -> None:
+        self._started = True
+        self._stopping.clear()
         self._task = asyncio.create_task(self.run(interval))
 
-    async def stop(self) -> None:
-        if self._task is not None:
+    async def stop(self, drain_timeout: float = DRAIN_TIMEOUT_S) -> None:
+        """Ask the worker to stop and give the current tick time to finish.
+
+        A hard cancel would abandon a tick mid-fan-out: some recipients of a rung
+        notified, the rest not, and the rung already claimed in ``escalation_state``
+        so no later tick retries it. So the loop is asked to exit and awaited; cancel
+        is the fallback for a tick that has genuinely wedged.
+        """
+        if self._task is None:
+            return
+        self._stopping.set()
+        try:
+            if self._task.done():
+                # Already finished, or cancelled by something else. There is nothing
+                # to drain, and awaiting a cancelled task here would raise
+                # CancelledError out of the whole shutdown -- which is a BaseException
+                # and so passes straight through the caller's `suppress(Exception)`,
+                # skipping the final audit head and leaving the pool open. Collect the
+                # outcome instead, so it is not reported as never retrieved.
+                with contextlib.suppress(BaseException):
+                    self._task.result()
+                return
+            await asyncio.wait_for(self._task, drain_timeout)
+        except TimeoutError:
+            log.warning("escalation tick did not finish in %ss; cancelling", drain_timeout)
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+        except asyncio.CancelledError:
+            # The worker was cancelled while we waited. Re-raise only if *we* are the
+            # ones being cancelled -- swallowing that would break the caller's own
+            # cancellation. `cancelling()` is the sanctioned way to tell the two
+            # apart; the task's own `cancelled()` flag cannot, because `wait_for`
+            # cancels it in both cases.
+            current = asyncio.current_task()
+            if current is not None and current.cancelling() > 0:
+                raise
+            log.warning("escalation worker was cancelled during shutdown")
+        finally:
             self._task = None
+            self._started = False
+            # Give the lock up now rather than when the connection eventually times
+            # out: a restarting node that held it in the meantime leaves every other
+            # node idle, which is the whole ladder not being climbed.
+            if self.leader is not None:
+                self.leader.release()

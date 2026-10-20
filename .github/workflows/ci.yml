@@ -13,6 +13,27 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
 
+    # The tests run against a real PostgreSQL, not a stand-in. The properties this
+    # phase added — append-only by privilege, one unbroken chain under concurrent
+    # appenders, migrations refusing an edited file — only exist in a real one.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      PGPASSWORD: postgres
+      ALERTING_DSN: postgres://alerting_owner:devpass@127.0.0.1:5432/alerting
+      ALERTING_TEST_APP_DSN: postgres://alerting_app:devpass@127.0.0.1:5432/alerting
+
     steps:
       - uses: actions/checkout@v4
 
@@ -20,6 +41,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+
+      - name: Create the roles and the database
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+              -f deploy/postgres/dev-bootstrap.sql
 
       - name: Install
         run: |
@@ -34,16 +60,36 @@ jobs:
       - name: Type-check the trusted computing base
         run: mypy src/alerting/core
 
+      - name: Migrate
+        run: python -m alerting.server.cli migrate
+
       - name: Tests
         run: pytest -q --cov=alerting.core --cov-report=term --cov-fail-under=95
 
       - name: Demo runs from a clean checkout
         run: |
-          python scripts/org_init.py
+          python scripts/org_init.py --i-understand-this-is-a-demo
           python scripts/demo_e2e.py
 
       - name: Audit chain verifies independently
-        run: python -m alerting.clients.auditor_cli verify --db var/demo/demo.db
+        run: python -m alerting.clients.auditor_cli verify --dsn "$ALERTING_DSN"
+
+      # The backup is only worth having if it restores, and a restore that loses the
+      # append-only guards is worse than none: it looks like evidence and is not.
+      - name: Backup and restore drill
+        env:
+          ALERTING_PYTHON: python
+          ALERTING_AUDITOR: alerting-auditor
+          ALERTING_BACKUP_DIR: /tmp/alerting-backups
+          ALERTING_MAINTENANCE_DSN: postgres://alerting_owner:devpass@127.0.0.1:5432/postgres
+        run: |
+          # The runner's client packages are not always under a version directory we
+          # can name in advance, so take whichever pg_dump is on PATH.
+          export ALERTING_PG_BIN="$(dirname "$(command -v pg_dump)")"
+          install -m 0600 /dev/null /tmp/dsn-owner
+          printf '%s' "$ALERTING_DSN" > /tmp/dsn-owner
+          ALERTING_DSN_FILE=/tmp/dsn-owner deploy/backup/alerting-backup.sh
+          deploy/backup/alerting-restore-drill.sh "$(ls -d /tmp/alerting-backups/*/ | head -1)"
 
   audit-deps:
     runs-on: ubuntu-latest

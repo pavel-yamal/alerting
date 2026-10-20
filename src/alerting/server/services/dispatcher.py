@@ -12,6 +12,7 @@ timing evidence is when the server observed each signature arrive.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
@@ -20,14 +21,19 @@ from alerting.core.clock import Clock
 from alerting.core.envelope import OrderPayload, SignedEnvelope
 from alerting.core.errors import Reason
 from alerting.core.quorum import evaluate_quorum
-from alerting.core.replay import ReplayWindow
 from alerting.core.signing import payload_digest
 from alerting.core.verify import Decision, verify_envelope
-from alerting.server.channels.base import DeliveryReceipt, DispatchContext, Recipient
+from alerting.server.channels.base import (
+    DELIVERED_STATUSES,
+    DeliveryReceipt,
+    DispatchContext,
+    Recipient,
+)
 from alerting.server.channels.registry import ChannelRegistry
 from alerting.server.db.repo import Repo
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.registry import OrgState
+from alerting.server.services.replay_store import DatabaseReplayWindow, KnownOrders
 
 log = logging.getLogger("alerting.dispatcher")
 
@@ -66,7 +72,8 @@ class Dispatcher:
         self.channels = channels
         self.audit = audit
         self.clock = clock
-        self.replay = ReplayWindow()
+        self.replay = DatabaseReplayWindow(repo)
+        self.known_orders = KnownOrders(repo)
 
     def check(self, envelope: SignedEnvelope, observed_at: dict[str, int]) -> Decision:
         """Full verification plus the server-only signature-spread rule."""
@@ -78,7 +85,7 @@ class Dispatcher:
             clock=self.clock,
             replay=self.replay,
             org_id=self.state.org_id,
-            seen_order_ids={row["order_id"] for row in self.repo.orders(1000)},
+            seen_order_ids=self.known_orders,
             cancel_target=cancel_target,
         )
         if not decision.accepted or decision.payload is None:
@@ -152,40 +159,82 @@ class Dispatcher:
             return DispatchResult(decision, [], [])
 
         order = decision.payload
-        self.replay.commit(order.stream_id, order.seq)
         now = self.clock.now()
 
-        self.repo.create_order(
-            order.order_id,
-            envelope.model_dump(mode="json"),
-            now,
-            order.drill,
-            str(order.severity),
-            order.scenario,
-            order.cancels,
-            payload_digest(envelope.payload),
-        )
-        self.audit.append(
-            Event.QUORUM_MET,
-            {
-                "order_id": order.order_id,
-                "signers": list(decision.signer_persons),
-                "severity": str(order.severity),
-                "drill": order.drill,
-            },
-        )
-        self.audit.append(
-            Event.CANCEL_ISSUED if order.is_cancel else Event.ORDER_DISPATCHED,
-            {
-                "order_id": order.order_id,
-                "scenario": order.scenario,
-                "drill": order.drill,
-                "cancels": order.cancels,
-                "warnings": [str(w) for w in decision.warnings],
-            },
-        )
+        # THIS is the anti-replay decision; the check inside `verify_envelope` only
+        # reported what it saw. Between that check and this line another process can
+        # dispatch the same sequence number, and only an atomic claim can tell us we
+        # lost the race. A rejection here is rare and always worth a loud entry:
+        # it means two orders carried the same number on one stream.
+        if not self.replay.claim(order.stream_id, order.seq, order.order_id, now):
+            replayed = Decision(
+                accepted=False,
+                reasons=(*decision.reasons, Reason.REPLAYED),
+                warnings=decision.warnings,
+                valid_signers=decision.valid_signers,
+                signer_persons=decision.signer_persons,
+                is_drill=decision.is_drill,
+            )
+            self.audit.append(
+                Event.ORDER_DISPATCHED,
+                {
+                    "order_id": order.order_id,
+                    "accepted": False,
+                    "reasons": [str(r) for r in replayed.reasons],
+                },
+            )
+            return DispatchResult(replayed, [], [])
 
+        # The order row and the two entries that prove it was authorised go in as
+        # one unit, so a crash between them cannot leave a dispatched order with no
+        # record of the quorum that authorised it.
+        #
+        # This does not override the audit spool: `AuditService.append` still catches
+        # a failed write, rolls back to its own savepoint and lets the dispatch
+        # proceed. Alerting outranks the log, and the spooled entry is the record.
+        #
+        # The fan-out stays outside: it awaits SMS, voice and socket sends, and a
+        # transaction held across that would pin a pooled connection and the audit
+        # chain lock for the length of a phone call.
+        # Resolved before the entry is written, not after, because the entry has to
+        # carry how many people the order went to. That count is the denominator of
+        # the metric both docs/06 §9 and docs/07 §2 call the main one -- without it
+        # "90% of acknowledgements" has no meaning, and the chain could not answer
+        # the one question it is most often asked.
         recipients = self.state.recipients_for(order)
+
+        with self.repo.tx():
+            self.repo.create_order(
+                order.order_id,
+                envelope.model_dump(mode="json"),
+                now,
+                order.drill,
+                str(order.severity),
+                order.scenario,
+                order.cancels,
+                payload_digest(envelope.payload),
+            )
+            self.audit.append(
+                Event.QUORUM_MET,
+                {
+                    "order_id": order.order_id,
+                    "signers": list(decision.signer_persons),
+                    "severity": str(order.severity),
+                    "drill": order.drill,
+                },
+            )
+            self.audit.append(
+                Event.CANCEL_ISSUED if order.is_cancel else Event.ORDER_DISPATCHED,
+                {
+                    "order_id": order.order_id,
+                    "scenario": order.scenario,
+                    "drill": order.drill,
+                    "cancels": order.cancels,
+                    "recipients": len(recipients),
+                    "warnings": [str(w) for w in decision.warnings],
+                },
+            )
+
         if not recipients:
             # Degrading closed here would lose nothing (there is nobody to warn), but
             # returning a bare success would hide it. Record it loudly instead.
@@ -273,6 +322,11 @@ class Dispatcher:
                 {
                     "person_id": person_id,
                     "channels_attempted": channels,
+                    # True only if something actually left the machine for this person.
+                    # A "stub" attempt is not delivery, and must not read like one.
+                    "delivered": any(
+                        entry.split(":", 1)[1] in DELIVERED_STATUSES for entry in channels
+                    ),
                     "ack_status": ack["status"] if ack else None,
                     "ack_at": ack["at"] if ack else None,
                     # Shown prominently: an invalid ACK means somebody is
@@ -281,6 +335,7 @@ class Dispatcher:
                 }
             )
         valid = self.repo.acknowledged_person_ids(order_id)
+        by_status = Counter(row["status"] for row in self.repo.dispatches(order_id))
         return {
             "order_id": order_id,
             "drill": bool(row["drill"]),
@@ -290,7 +345,74 @@ class Dispatcher:
             "people": people,
             "acknowledged": len(valid),
             "outstanding": [p["person_id"] for p in people if p["person_id"] not in valid],
+            "delivery": dict(by_status),
+            # Counted and surfaced separately: these attempts sent nothing at all, and
+            # an operator reading a green dashboard has to be able to see that.
+            "stub_attempts": by_status.get("stub", 0),
+            "reached_nobody": not people,
         }
+
+    #: The only scenario code the canary may use. Checked, not trusted: it is what
+    #: makes a canary order recognisable in the chain forever.
+    CANARY_SCENARIO = "CANARY"
+
+    #: Channels the canary may use. The siren is absent structurally rather than by
+    #: convention -- there is no configuration that puts it back.
+    CANARY_CHANNELS: tuple[str, ...] = ("ws", "push")
+
+    async def dispatch_canary(
+        self, order: OrderPayload, recipient: Recipient
+    ) -> list[DeliveryReceipt]:
+        """Dispatch a canary order without a quorum.
+
+        **This is the only path in the system that dispatches without one.** It
+        exists because the server deliberately holds no approver keys (ADR 0004): a
+        canary that needed M-of-N human signatures would not be a canary. The price
+        is that the limits below are enforced here, in code, rather than agreed to --
+        any one of them failing open turns this into a way to send an unapproved
+        order.
+
+        What it therefore cannot test, said plainly so nobody assumes otherwise: the
+        approval path, and acknowledgement by a real person. It answers "could an
+        order be dispatched right now", which is the question readiness only
+        approximates.
+        """
+        if not order.drill:
+            raise ValueError("canary orders must be drills")
+        if order.scenario != self.CANARY_SCENARIO:
+            raise ValueError(f"canary scenario must be {self.CANARY_SCENARIO}")
+        if order.requires_ack:
+            # Also what keeps the escalation ladder away from it: `tick` skips orders
+            # needing no acknowledgement, so a canary can never page anybody.
+            raise ValueError("canary orders must not require acknowledgement")
+        audience = order.audience
+        if tuple(audience.persons) != (recipient.person_id,) or audience.sites or audience.groups:
+            raise ValueError("canary audience must be exactly the canary recipient")
+
+        now = self.clock.now()
+        envelope = SignedEnvelope(payload=order.to_payload(), signatures=())
+        self.repo.create_order(
+            order.order_id,
+            envelope.model_dump(mode="json"),
+            now,
+            order.drill,
+            str(order.severity),
+            order.scenario,
+            None,
+            payload_digest(envelope.payload),
+            canary=True,
+        )
+        self.audit.append(
+            Event.ORDER_DISPATCHED,
+            {
+                "order_id": order.order_id,
+                "scenario": order.scenario,
+                "drill": True,
+                "canary": True,
+                "recipients": 1,
+            },
+        )
+        return await self.fan_out(order, envelope, [recipient], self.CANARY_CHANNELS)
 
 
 REASON_LABELS: dict[Reason, str] = {

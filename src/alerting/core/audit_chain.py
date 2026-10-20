@@ -45,6 +45,16 @@ class Event(StrEnum):
     POLICY_PUBLISHED = "policy.published"
     KEY_ENROLLED = "key.enrolled"
     KEY_REVOKED = "key.revoked"
+    #: A channel that was answering has stopped. This is the anti-suppression
+    #: signal: only *transitions* are recorded, never the probes themselves, because
+    #: the chain is undeletable and a probe a minute would bury an incident.
+    CHANNEL_SILENT = "channel.silent"
+    CHANNEL_RECOVERED = "channel.recovered"
+    #: The delivery canary stopped or resumed delivering. Transitions only, for the
+    #: same reason as the channel events above: the canary order itself is already in
+    #: the chain, and a second entry per run would say nothing new.
+    CANARY_FAILED = "canary.failed"
+    CANARY_RECOVERED = "canary.recovered"
     DRILL_WINDOW_OPENED = "drill.window.opened"
     MANUAL_BACKFILL = "manual.backfill"
     AUDIT_HEAD_PUBLISHED = "audit.head_published"

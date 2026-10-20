@@ -7,7 +7,6 @@ means a misconfigured deployment fails at startup rather than during an incident
 
 from __future__ import annotations
 
-import pathlib
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -18,20 +17,6 @@ from alerting.core.policy import Policy
 from alerting.core.signing import b64u_decode
 from alerting.server.channels.base import Recipient
 from alerting.server.db.repo import Repo
-
-WORDLIST_PATH = pathlib.Path(__file__).resolve().parents[3].parent / "config" / "wordlist.ru.txt"
-
-
-def load_wordlist(path: pathlib.Path | None = None) -> list[str]:
-    """Load the wake-code wordlist, skipping comments."""
-    target = path or WORDLIST_PATH
-    if not target.exists():
-        return []
-    return [
-        line.strip()
-        for line in target.read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.startswith("#")
-    ]
 
 
 class OrgState:
@@ -47,7 +32,9 @@ class OrgState:
         self.repo = repo
         self.org_id = org_id
         self.root_public_key = root_public_key
-        self.wordlist = wordlist if wordlist is not None else load_wordlist()
+        # No implicit load: the caller owns the path, so a missing file is a startup
+        # failure at a place that can report it, not a quiet empty list in here.
+        self.wordlist = wordlist if wordlist is not None else []
         self.drill_enabled_sites = drill_enabled_sites
 
     @property
