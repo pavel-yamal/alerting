@@ -114,11 +114,14 @@ services:
       ALERTING_PANEL_HOMES: /var/lib/alerting/clients
       ALERTING_PANEL_ORG: ${ALERTING_ORG:-acme}
       ALERTING_PANEL_ROOT_PUBKEY: ${ALERTING_ROOT_PUBKEY:-}
-      ALERTING_PANEL_STATE: /tmp/alerting-panel
+      # Наибольшие виденные версии справочника, отзывов и политики. На томе, а не в
+      # контейнере: пересоздание контейнера не должно сбрасывать защиту от отката.
+      ALERTING_PANEL_STATE: /var/lib/alerting/panel
       ALERTING_PANEL_SERVER_KEYS: ${ALERTING_PANEL_DEMO_KEYS:-1}
       ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
     volumes:
       - clients:/var/lib/alerting/clients
+      - panel-state:/var/lib/alerting/panel
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=4)"]
       interval: 15s
@@ -201,3 +204,4 @@ volumes:
   spool:
   clients:
   demo-keys:
+  panel-state:

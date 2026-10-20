@@ -66,6 +66,8 @@ def main(argv: list[str] | None = None) -> int:
 
     from alerting.clients.panel.app import create_panel
 
+    if bool(args.org) != bool(args.root_key):
+        parser.error("device-key login needs both --org and --root-key")
     if not args.org and not args.server_keys:
         parser.error("nobody could sign in: give --org and --root-key, or --server-keys")
     app = create_panel(
