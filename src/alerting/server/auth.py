@@ -80,9 +80,13 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("POST", "/v1/proposals"): OPERATORS,
     ("POST", "/v1/proposals/{order_id}/signatures"): OPERATORS,
     ("POST", "/v1/audit/head"): OPERATORS,
+    # Root-signed and version-checked on the way in, so the role is a second gate,
+    # not the first: whoever uploads cannot change a byte of what the root signed.
+    ("POST", "/v1/bundles"): OPERATORS,
     # The operating picture, plus the auditor's read-only view of it.
     ("GET", "/v1/proposals/{order_id}"): OPERATORS | AUDITOR,
     ("GET", "/v1/orders"): OPERATORS | AUDITOR,
+    ("GET", "/v1/events/active"): OPERATORS | AUDITOR,
     ("GET", "/v1/orders/{order_id}/status"): OPERATORS | AUDITOR,
     ("GET", "/v1/audit"): OPERATORS | AUDITOR,
     ("GET", "/v1/audit/head"): OPERATORS | AUDITOR,

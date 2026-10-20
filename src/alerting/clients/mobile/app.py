@@ -44,6 +44,7 @@ from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
 from alerting.core.envelope import AckStatus, OrderPayload
+from alerting.core.errors import Reason
 from alerting.core.policy import Policy
 from alerting.core.receipts import build_ack
 from alerting.core.signing import DOMAIN_DEVICE_AUTH, sign_payload
@@ -109,6 +110,8 @@ class InboxItem:
     #: the order, not when the stream delivers it: with the page closed, nothing
     #: has shown, sounded or vibrated, and the operator must not be told otherwise.
     received_reported: bool = False
+    #: Shown because it is still in force at connect time, not delivered just now.
+    restated: bool = False
 
 
 @dataclass
@@ -294,8 +297,9 @@ class Mobile:
                 delay = RECONNECT_MIN_S
                 while not session.stop.is_set():
                     frame = json.loads(socket.recv())
-                    if frame.get("kind") == "order":
-                        self.receive(session, frame["envelope"])
+                    kind = frame.get("kind")
+                    if kind in ("order", "active"):
+                        self.receive(session, frame["envelope"], restated=kind == "active")
             except Exception as exc:
                 if session.stop.is_set():
                     break
@@ -335,30 +339,49 @@ class Mobile:
         if ready.get("kind") != "ready":
             raise RuntimeError(f"сервер не принял устройство: {ready}")
 
-    def receive(self, session: Session, envelope: dict[str, Any]) -> InboxItem:
-        """Verify one delivered order on this client and file it in the inbox."""
+    def receive(
+        self, session: Session, envelope: dict[str, Any], *, restated: bool = False
+    ) -> InboxItem:
+        """Verify one delivered order on this client and file it in the inbox.
+
+        ``restated`` is an event the server lists as still in force when this device
+        connects (ADR 0010). It is verified in full -- signatures, quorum, policy --
+        but as a re-inspection: it is not a new delivery, so seeing it again after a
+        reconnect is not a replay, and one the inbox already holds is left alone.
+        """
         raw = envelope.get("payload", {})
         order_id = str(raw.get("order_id", ""))
         with session.lock:
+            if restated and order_id in session.inbox:
+                return session.inbox[order_id]
             target_id = raw.get("cancels")
             target = session.inbox.get(target_id) if target_id else None
             decision = verify_one(
                 session.cache,
                 envelope,
                 cancel_target=target.payload if target else None,
+                reinspect=restated,
                 clock=self.clock,
             )
             directory = session.directory
             names = {e.person_id: e.name for e in directory.payload.keys}
+            warnings = list(decision.warnings)
+            if decision.payload is not None and session.policy.lasts_until_cancelled(
+                decision.payload.scenario
+            ):
+                # Its delivery window closing does not end it -- a stand-down does --
+                # so "expired, confirm by voice" would tell the person the wrong thing.
+                warnings = [w for w in warnings if w != Reason.W_EXPIRED]
             item = InboxItem(
                 arrival=len(session.inbox) + 1,
                 envelope=envelope,
                 accepted=decision.accepted,
                 reasons=[describe(r) for r in decision.reasons],
-                warnings=[describe(w) for w in decision.warnings],
+                warnings=[describe(w) for w in warnings],
                 signers=[names.get(p, p) for p in decision.signer_persons],
                 received_at=self.clock.now(),
                 payload=decision.payload,
+                restated=restated,
             )
             if order_id and order_id not in session.inbox:
                 session.inbox[order_id] = item
@@ -429,6 +452,15 @@ class Mobile:
             wordlist=self.wordlist,
         )
 
+    @staticmethod
+    def _cancelled_event(session: Session, target_id: Any) -> dict[str, Any]:
+        """For a stand-down: which event it ends, if this device holds it."""
+        target = session.inbox.get(target_id) if target_id else None
+        if target is None:
+            return {"cancels_scenario": None, "cancels_issued_at": None}
+        raw = target.envelope.get("payload", {})
+        return {"cancels_scenario": raw.get("scenario"), "cancels_issued_at": raw.get("issued_at")}
+
     def view(self, session: Session, order_id: str, item: InboxItem) -> dict[str, Any]:
         raw = item.envelope.get("payload", {})
         scenario = session.policy.scenario(str(raw.get("scenario", "")))
@@ -440,10 +472,14 @@ class Mobile:
             "drill": raw.get("drill"),
             "scenario": raw.get("scenario"),
             "description": scenario.description if scenario else "",
+            "card": (scenario.card or "") if scenario else "",
+            "until_cancelled": bool(scenario and scenario.until_cancelled),
+            "restated": item.restated,
             "severity": raw.get("severity"),
             "action": raw.get("action"),
             "text": raw.get("text", ""),
             "cancels": raw.get("cancels"),
+            **self._cancelled_event(session, raw.get("cancels")),
             "cancelled_by": item.cancelled_by,
             "signers": item.signers,
             "issued_at": raw.get("issued_at"),

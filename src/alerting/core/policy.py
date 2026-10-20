@@ -42,6 +42,22 @@ class ScenarioRule(CanonicalModel):
     max_severity: Severity | None = None
     description: StrictStr = Field(default="", max_length=500)
 
+    #: What the executor does, shown on their screen beside the order. Root-signed
+    #: with the rest of the policy, so the instruction a person acts on cannot be
+    #: rewritten by whoever controls the server.
+    #:
+    #: Both fields below default to ``None``, not ``""``/``False``: canonical form
+    #: omits ``None``, so every policy signed before these fields existed still
+    #: canonicalizes to the bytes it was signed over.
+    card: StrictStr | None = Field(default=None, max_length=1000)
+
+    #: The event stays in force until a stand-down order cancels it, rather than
+    #: lapsing when the envelope's delivery window closes. The window itself is
+    #: unchanged -- it still bounds when the envelope may first be accepted -- but
+    #: escalation keeps going for people who have not answered, and a device that
+    #: connects later is shown the event as active. See ADR 0010.
+    until_cancelled: StrictBool | None = None
+
 
 class PolicyPayload(CanonicalModel):
     v: Literal[1]
@@ -94,6 +110,11 @@ class Policy:
 
     def scenario(self, code: str) -> ScenarioRule | None:
         return self.payload.scenarios.get(code)
+
+    def lasts_until_cancelled(self, code: str) -> bool:
+        """Whether an event of this scenario stays in force until a stand-down."""
+        rule = self.payload.scenarios.get(code)
+        return bool(rule and rule.until_cancelled)
 
     def is_expired(self, now: int) -> bool:
         return now > self.payload.not_valid_after

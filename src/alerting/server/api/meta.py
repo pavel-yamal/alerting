@@ -7,7 +7,11 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel
 
+from alerting.core.audit_chain import Event
+from alerting.core.directory import Directory, DirectoryRejected
+from alerting.core.policy import Policy, PolicyRejected
 from alerting.server.metrics import collect, render
 from alerting.wordlist import MIN_WORDLIST_SIZE
 
@@ -75,6 +79,57 @@ async def audit_head(request: Request) -> dict[str, Any]:
     if row is None:
         raise HTTPException(404, "no head published yet")
     return {"idx": row["idx"], "head": row["head"], "ts": row["ts"], "signature": row["signature"]}
+
+
+class BundleUpload(BaseModel):
+    bundle: dict[str, Any]
+
+
+@router.post("/bundles")
+async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]:
+    """Publish a new root-signed directory or policy.
+
+    The server is not the authority here and cannot become one through this route:
+    the bundle is verified against the pinned root key exactly as every client will
+    verify it, and only a higher version is accepted. What a caller can do with it is
+    upload something the root custodians already signed -- a new codebook, a changed
+    quorum, a revoked key -- without shell access to the database. Signing happens
+    offline (``alerting-org sign-policy``); this only carries the result.
+    """
+    app = request.app.state.alerting
+    payload = body.bundle.get("payload")
+    kind = payload.get("type") if isinstance(payload, dict) else None
+    if kind not in ("directory", "policy"):
+        raise HTTPException(422, "bundle payload must have type directory or policy")
+
+    current = app.repo.latest_bundle(kind)
+    seen = int(current["payload"]["version"]) if current else 0
+    loader = Directory.load if kind == "directory" else Policy.load
+    try:
+        loaded = loader(
+            body.bundle,
+            root_public_key=app.state.root_public_key,
+            org_id=app.state.org_id,
+            min_version=seen + 1,
+        )
+    except (DirectoryRejected, PolicyRejected) as exc:
+        raise HTTPException(409, f"bundle refused: {exc}") from None
+    except Exception as exc:
+        raise HTTPException(422, f"malformed bundle: {exc}") from None
+
+    now = app.clock.now()
+    app.repo.put_bundle(kind, loaded.version, body.bundle, now)
+    principal = getattr(request.state, "principal", None)
+    app.audit.append(
+        Event.DIRECTORY_PUBLISHED if kind == "directory" else Event.POLICY_PUBLISHED,
+        {
+            "version": loaded.version,
+            "published_by": principal.person_id if principal else None,
+            **({"policy_id": loaded.policy_id} if kind == "policy" else {}),
+        },
+    )
+    log.info("published %s version %d", kind, loaded.version)
+    return {"kind": kind, "version": loaded.version}
 
 
 @router.post("/audit/head")

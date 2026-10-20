@@ -1,0 +1,12 @@
+-- Whether an event lasts until a stand-down, decided ONCE, at dispatch.
+--
+-- The policy says which scenarios last until cancelled (ADR 0010), and the policy can
+-- change. Read from the current policy, a new version that marked EVAC.BUILDING
+-- "until cancelled" would revive every evacuation ever dispatched and never stood
+-- down -- found on the stand, where four finished drills came back as active the
+-- moment the codebook was republished. The rule in force when the order went out is
+-- the one that governs its life, so it is recorded with the order.
+--
+-- Existing rows get false: they were dispatched when no scenario lasted until
+-- cancelled, which is exactly what false says.
+ALTER TABLE orders ADD COLUMN until_cancelled boolean NOT NULL DEFAULT false;

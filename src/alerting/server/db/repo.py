@@ -216,11 +216,12 @@ class Repo:
         cancels: str | None,
         digest: str,
         canary: bool = False,
+        until_cancelled: bool = False,
     ) -> None:
         self._execute(
             "INSERT INTO orders (order_id, envelope_json, dispatched_at, drill,"
-            " severity, scenario, cancels, order_digest, canary)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            " severity, scenario, cancels, order_digest, canary, until_cancelled)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
             (
                 order_id,
                 json.dumps(envelope, ensure_ascii=False),
@@ -231,6 +232,7 @@ class Repo:
                 cancels,
                 digest,
                 bool(canary),
+                bool(until_cancelled),
             ),
         )
 
@@ -250,6 +252,16 @@ class Repo:
             " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
             (limit,),
         )
+
+    def cancellations(self) -> dict[str, str]:
+        """Cancelled order id -> the stand-down that cancelled it (the first one)."""
+        result: dict[str, str] = {}
+        for row in self._all(
+            "SELECT order_id, cancels FROM orders WHERE cancels IS NOT NULL"
+            " ORDER BY dispatched_at, order_id"
+        ):
+            result.setdefault(row["cancels"], row["order_id"])
+        return result
 
     def cancelled_order_ids(self) -> set[str]:
         return {
