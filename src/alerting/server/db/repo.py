@@ -656,3 +656,92 @@ class Repo:
             ") - 1",
             (keep,),
         )
+
+    # --- WebSocket delivery across processes ----------------------------------
+    def set_presence(self, process_id: str, person_id: str, devices: int, at: int) -> None:
+        """Record how many devices of ``person_id`` this process holds; 0 removes it."""
+        if devices <= 0:
+            self._execute(
+                "DELETE FROM ws_presence WHERE process_id = %s AND person_id = %s",
+                (process_id, person_id),
+            )
+            return
+        self._execute(
+            "INSERT INTO ws_presence (process_id, person_id, devices, updated_at)"
+            " VALUES (%s, %s, %s, %s)"
+            " ON CONFLICT (process_id, person_id) DO UPDATE SET"
+            " devices = EXCLUDED.devices, updated_at = EXCLUDED.updated_at",
+            (process_id, person_id, devices, at),
+        )
+
+    def replace_presence(self, process_id: str, counts: Mapping[str, int], at: int) -> None:
+        """Make this process's presence exactly ``counts``, in one transaction."""
+        with self.tx():
+            self._execute("DELETE FROM ws_presence WHERE process_id = %s", (process_id,))
+            for person_id, devices in counts.items():
+                if devices > 0:
+                    self._execute(
+                        "INSERT INTO ws_presence (process_id, person_id, devices, updated_at)"
+                        " VALUES (%s, %s, %s, %s)",
+                        (process_id, person_id, devices, at),
+                    )
+
+    def clear_presence(self, process_id: str) -> None:
+        self._execute("DELETE FROM ws_presence WHERE process_id = %s", (process_id,))
+
+    def present_elsewhere(self, person_id: str, process_id: str, fresh_after: int) -> list[str]:
+        """Other processes that recently said they hold a socket for this person."""
+        rows = self._all(
+            "SELECT process_id FROM ws_presence"
+            " WHERE person_id = %s AND process_id <> %s AND updated_at >= %s",
+            (person_id, process_id, fresh_after),
+        )
+        return [row["process_id"] for row in rows]
+
+    def presence_summary(self, fresh_after: int) -> Row | None:
+        return self._one(
+            "SELECT COUNT(DISTINCT person_id) AS people, COUNT(DISTINCT process_id) AS processes"
+            " FROM ws_presence WHERE updated_at >= %s",
+            (fresh_after,),
+        )
+
+    def create_relay(self, order_id: str, person_id: str, origin: str, at: int) -> int:
+        row = self._one(
+            "INSERT INTO ws_relay (order_id, person_id, origin, created_at)"
+            " VALUES (%s, %s, %s, %s) RETURNING relay_id",
+            (order_id, person_id, origin, at),
+        )
+        assert row is not None
+        relay_id: int = row["relay_id"]
+        return relay_id
+
+    def notify(self, channel: str, payload: str) -> None:
+        self._execute("SELECT pg_notify(%s, %s)", (channel, payload))
+
+    def relay(self, relay_id: int) -> Row | None:
+        return self._one(
+            "SELECT r.relay_id, r.order_id, r.person_id, r.origin, o.envelope_json"
+            " FROM ws_relay r JOIN orders o ON o.order_id = r.order_id"
+            " WHERE r.relay_id = %s",
+            (relay_id,),
+        )
+
+    def record_relay_result(self, relay_id: int, process_id: str, delivered: int, at: int) -> None:
+        self._execute(
+            "INSERT INTO ws_relay_result (relay_id, process_id, delivered, at)"
+            " VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+            (relay_id, process_id, delivered, at),
+        )
+
+    def relay_results(self, relay_id: int) -> list[Row]:
+        return self._all(
+            "SELECT process_id, delivered FROM ws_relay_result WHERE relay_id = %s", (relay_id,)
+        )
+
+    def prune_relays(self, before: int) -> int:
+        """Hand-offs are only interesting for the seconds they take."""
+        return self._execute("DELETE FROM ws_relay WHERE created_at < %s", (before,))
+
+    def prune_presence(self, before: int) -> int:
+        """Rows a crashed process left behind."""
+        return self._execute("DELETE FROM ws_presence WHERE updated_at < %s", (before,))

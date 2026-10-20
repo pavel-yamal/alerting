@@ -11,9 +11,13 @@ import asyncio
 import json
 import logging
 from collections import defaultdict
-from typing import Any, Protocol
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol
 
 from alerting.server.channels.base import DeliveryReceipt, DispatchContext, ProbeResult, Recipient
+
+if TYPE_CHECKING:
+    from alerting.server.services.fanout import Fanout
 
 log = logging.getLogger("alerting.channel.ws")
 
@@ -42,10 +46,18 @@ class ConnectionRegistry:
     registry is not an error, it is the normal case that escalation exists for.
     """
 
-    def __init__(self, max_devices_per_person: int = MAX_DEVICES_PER_PERSON) -> None:
+    def __init__(
+        self,
+        max_devices_per_person: int = MAX_DEVICES_PER_PERSON,
+        *,
+        on_change: Callable[[str, int], None] | None = None,
+    ) -> None:
         self._sinks: dict[str, list[Sink]] = defaultdict(list)
         self._lock = asyncio.Lock()
         self._max_devices = max_devices_per_person
+        #: Told the device count for a person after every attach and detach, so other
+        #: processes can learn where a person's sockets are (see services/fanout.py).
+        self._on_change = on_change
 
     async def attach(self, person_id: str, sink: Sink) -> bool:
         """Register a device. False when this person already has too many open."""
@@ -53,20 +65,29 @@ class ConnectionRegistry:
             if len(self._sinks[person_id]) >= self._max_devices:
                 return False
             self._sinks[person_id].append(sink)
-            return True
+            count = len(self._sinks[person_id])
+        if self._on_change is not None:
+            self._on_change(person_id, count)
+        return True
 
     async def detach(self, person_id: str, sink: Sink) -> None:
         async with self._lock:
             if sink in self._sinks.get(person_id, []):
                 self._sinks[person_id].remove(sink)
-            if not self._sinks.get(person_id):
+            count = len(self._sinks.get(person_id, []))
+            if not count:
                 self._sinks.pop(person_id, None)
+        if self._on_change is not None:
+            self._on_change(person_id, count)
 
     def online(self, person_id: str) -> bool:
         return bool(self._sinks.get(person_id))
 
     def connected_people(self) -> list[str]:
         return sorted(self._sinks)
+
+    def device_counts(self) -> dict[str, int]:
+        return {person_id: len(sinks) for person_id, sinks in self._sinks.items() if sinks}
 
     async def deliver(self, person_id: str, frame: dict[str, Any]) -> int:
         """Send to every device of this person; returns how many accepted it."""
@@ -119,21 +140,38 @@ class WebSocketChannel:
     name = "ws"
     delivers = True
 
-    def __init__(self, registry: ConnectionRegistry) -> None:
+    def __init__(self, registry: ConnectionRegistry, fanout: Fanout | None = None) -> None:
         self.registry = registry
+        self.fanout = fanout
 
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         frame = {"kind": "order", "envelope": context.envelope}
-        delivered = await self.registry.deliver(recipient.person_id, frame)
-        if delivered:
-            return DeliveryReceipt(
-                self.name,
-                recipient.person_id,
-                "sent",
-                f"{delivered} device(s)",
-                rendered=json.dumps(frame, ensure_ascii=False)[:200],
+        rendered = json.dumps(frame, ensure_ascii=False)[:200]
+        local = await self.registry.deliver(recipient.person_id, frame)
+        if self.fanout is None:
+            if local:
+                return DeliveryReceipt(
+                    self.name, recipient.person_id, "sent", f"{local} device(s)", rendered=rendered
+                )
+            return DeliveryReceipt(self.name, recipient.person_id, "failed", "offline")
+        # Relayed even when a local device took it: a person's phone and tablet may
+        # be connected to different processes, and every device gets the order.
+        # Only the other processes' confirmations count as delivery there.
+        remote, detail = await self.fanout.relay(recipient.person_id, context.order.order_id)
+        if local and remote:
+            detail = f"{local} device(s) here, {detail}"
+        elif local:
+            detail = f"{local} device(s)" + (
+                "" if detail == "offline" else f"; elsewhere: {detail}"
             )
-        return DeliveryReceipt(self.name, recipient.person_id, "failed", "offline")
+        status = "sent" if local or remote else "failed"
+        return DeliveryReceipt(
+            self.name,
+            recipient.person_id,
+            status,
+            detail,
+            rendered=rendered if status == "sent" else "",
+        )
 
     async def probe(self) -> ProbeResult:
         """The one probe that measures something real.
@@ -145,7 +183,18 @@ class WebSocketChannel:
         heartbeat exists to surface. It is not the node being broken; it is the
         channel being empty, and the duty officer needs to know which.
         """
-        connected = self.registry.connected_people()
-        if not connected:
+        local = len(self.registry.connected_people())
+        if self.fanout is not None:
+            # Any process can deliver to a socket held by any other, so the question
+            # "would an order reach anybody" is answered cluster-wide; this node's own
+            # share is reported alongside.
+            people, processes = self.fanout.connected_anywhere()
+            if not people:
+                return ProbeResult("failed", "no executor devices connected anywhere")
+            return ProbeResult(
+                "ok",
+                f"{people} device owner(s) connected across {processes} process(es), {local} here",
+            )
+        if not local:
             return ProbeResult("failed", "no executor devices connected")
-        return ProbeResult("ok", f"{len(connected)} device owner(s) connected")
+        return ProbeResult("ok", f"{local} device owner(s) connected")
