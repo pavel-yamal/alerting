@@ -7,13 +7,14 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from alerting.core.audit_chain import Event
 from alerting.core.directory import Directory, DirectoryRejected
 from alerting.core.envelope import SignedEnvelope
 from alerting.core.policy import Policy, PolicyRejected
 from alerting.core.replay import ReplayWindow
+from alerting.core.signing import b64u_decode
 from alerting.core.verify import verify_envelope
 from alerting.server.metrics import collect, render
 from alerting.wordlist import MIN_WORDLIST_SIZE
@@ -84,18 +85,12 @@ async def audit_head(request: Request) -> dict[str, Any]:
     return {"idx": row["idx"], "head": row["head"], "ts": row["ts"], "signature": row["signature"]}
 
 
-def _refuse_if_it_breaks_active_events(app: Any, policy: Policy, now: int) -> None:
-    """Refuse a policy under which an event still in force would no longer verify.
+def _broken_active_events(app: Any, directory: Directory, policy: Policy, now: int) -> list[str]:
+    """Events still in force that would not verify under this directory and policy.
 
-    A device verifies with the newest policy it has -- never with an older one the
-    server offers alongside, because that is a downgrade: a compromised server pairing
-    a forged order with an old, weaker quorum. So a policy that drops a running
-    event's scenario, renames the policy line or raises its quorum would make that
-    event unverifiable on every device that joins later. Checked here with the same
-    verification the devices run, so the custodians learn it before publication
-    rather than an executor learning it during the event.
+    Checked with the same verification the devices run, so whoever publishes learns
+    it before publication rather than an executor learning it during the event.
     """
-    directory = app.state.directory()
     broken = []
     for event in app.dispatcher.active_events(now):
         decision = verify_envelope(
@@ -109,12 +104,62 @@ def _refuse_if_it_breaks_active_events(app: Any, policy: Policy, now: int) -> No
         if decision.rejected:
             reasons = ", ".join(str(r) for r in decision.reasons)
             broken.append(f"{event['scenario']} {event['order_id']} ({reasons})")
+    return broken
+
+
+def _refuse_if_it_breaks_active_events(app: Any, policy: Policy, now: int) -> None:
+    """Refuse a policy under which an event still in force would no longer verify.
+
+    A device verifies with the newest policy it has -- never with an older one the
+    server offers alongside, because that is a downgrade: a compromised server pairing
+    a forged order with an old, weaker quorum. So a policy that drops a running
+    event's scenario, renames the policy line or raises its quorum would make that
+    event unverifiable on every device that joins later.
+
+    A directory is different and is not refused: revoking a key that co-signed a
+    running event is exactly what has to be possible at once when a phone is stolen.
+    Those events are reported back instead (``invalidated``), to be re-issued.
+    """
+    broken = _broken_active_events(app, app.state.directory(), policy, now)
     if broken:
         raise HTTPException(
             409,
             "the policy would invalidate events still in force: "
             + "; ".join(broken)
             + ". Stand them down first, or keep their scenario, policy_id and quorum.",
+        )
+
+
+def _audit_key_changes(app: Any, old: dict[str, Any] | None, new: Directory, by: Any) -> None:
+    """One chain entry per key that came, ended or was revoked. Pseudonym and role
+    only: the chain is undeletable and names are personal data."""
+    before = {k["key_id"]: k for k in (old or {}).get("keys", [])}
+    revoked_before = {r["key_id"] for r in (old or {}).get("revoked", [])}
+    for entry in new.payload.keys:
+        common = {"person_id": entry.person_id, "key_id": entry.key_id, "role": entry.role}
+        if entry.key_id not in before:
+            app.audit.append(Event.KEY_ENROLLED, {**common, "published_by": by})
+        elif entry.valid_until is not None and before[entry.key_id].get("valid_until") != (
+            entry.valid_until
+        ):
+            app.audit.append(
+                Event.KEY_RETIRED, {**common, "valid_until": entry.valid_until, "published_by": by}
+            )
+    by_id = {e.key_id: e for e in new.payload.keys}
+    for revocation in new.payload.revoked:
+        if revocation.key_id in revoked_before:
+            continue
+        owner = by_id.get(revocation.key_id)
+        app.audit.append(
+            Event.KEY_REVOKED,
+            {
+                "key_id": revocation.key_id,
+                "person_id": owner.person_id if owner else None,
+                "role": owner.role if owner else None,
+                "revoked_at": revocation.revoked_at,
+                "reason": revocation.reason,
+                "published_by": by,
+            },
         )
 
 
@@ -155,20 +200,107 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
         raise HTTPException(422, f"malformed bundle: {exc}") from None
 
     now = app.clock.now()
+    invalidated: list[str] = []
     if kind == "policy":
         _refuse_if_it_breaks_active_events(app, loaded, now)
+    else:
+        invalidated = _broken_active_events(app, loaded, app.state.policy(), now)
     app.repo.put_bundle(kind, loaded.version, body.bundle, now)
     principal = getattr(request.state, "principal", None)
+    by = principal.person_id if principal else None
     app.audit.append(
         Event.DIRECTORY_PUBLISHED if kind == "directory" else Event.POLICY_PUBLISHED,
         {
             "version": loaded.version,
-            "published_by": principal.person_id if principal else None,
+            "published_by": by,
             **({"policy_id": loaded.policy_id} if kind == "policy" else {}),
+            **({"invalidated": invalidated} if invalidated else {}),
         },
     )
+    if kind == "directory":
+        _audit_key_changes(app, current["payload"] if current else None, loaded, by)
     log.info("published %s version %d", kind, loaded.version)
-    return {"kind": kind, "version": loaded.version}
+    if invalidated:
+        log.warning("directory %d invalidates active events: %s", loaded.version, invalidated)
+    return {"kind": kind, "version": loaded.version, "invalidated": invalidated}
+
+
+#: Roles a contact may carry. The directory decides what a key may *sign*; this only
+#: says how the person is addressed, so it is checked for typos, not for authority.
+CONTACT_ROLES = frozenset({"executor", "duty_officer", "deputy", "director", "auditor"})
+
+
+class ContactUpload(BaseModel):
+    person_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,64}$")
+    name: str = Field(min_length=1, max_length=200)
+    phone: str = Field(default="", max_length=32)
+    site: str = Field(default="", max_length=64)
+    groups: list[str] = Field(default_factory=list, max_length=32)
+    role: str = "executor"
+    wake_key: str = Field(default="", max_length=64)
+
+
+@router.post("/contacts")
+async def set_contact(body: ContactUpload, request: Request) -> dict[str, Any]:
+    """Add or update where to reach a person.
+
+    Personal data, held by the server and deliberately not root-signed: a contact
+    decides who an order is *sent* to, never whether an order is genuine -- a device
+    still verifies every order against the directory. A compromised operator account
+    can misroute, which the audit entry here makes visible; it cannot forge.
+    """
+    app = request.app.state.alerting
+    if body.role not in CONTACT_ROLES:
+        raise HTTPException(422, f"unknown role {body.role!r}")
+    if any("," in g or not g for g in body.groups):
+        raise HTTPException(422, "group names must be non-empty and contain no commas")
+    if body.wake_key:
+        try:
+            if len(b64u_decode(body.wake_key)) != 32:
+                raise ValueError
+        except Exception:
+            raise HTTPException(422, "wake_key must be 32 bytes, base64url") from None
+    # No wake key in the request keeps the one on file: the device holds a copy, and
+    # replacing it here alone would make every SMS word disagree with the device.
+    existing = app.repo.contact(body.person_id)
+    wake_key = body.wake_key or (existing["wake_key"] if existing else "")
+    app.repo.upsert_contact(
+        body.person_id,
+        name=body.name,
+        phone=body.phone,
+        site=body.site,
+        groups=body.groups,
+        wake_key=wake_key,
+        role=body.role,
+    )
+    principal = getattr(request.state, "principal", None)
+    # Site and groups are personal data (docs/08) and live only in the erasable
+    # contacts table; the chain is undeletable, so it records that a change happened.
+    app.audit.append(
+        Event.CONTACT_SET,
+        {
+            "person_id": body.person_id,
+            "role": body.role,
+            "wake_key_issued": bool(body.wake_key),
+            "by": principal.person_id if principal else None,
+        },
+    )
+    return {"person_id": body.person_id, "active": True}
+
+
+@router.post("/contacts/{person_id}/deactivate")
+async def deactivate_contact(person_id: str, request: Request) -> dict[str, Any]:
+    """Stop sending orders to a person. Their key is untouched: revoke it in the
+    directory if the device itself is no longer trusted."""
+    app = request.app.state.alerting
+    if not app.repo.deactivate_contact(person_id):
+        raise HTTPException(404, f"no contact {person_id!r}")
+    principal = getattr(request.state, "principal", None)
+    app.audit.append(
+        Event.CONTACT_DEACTIVATED,
+        {"person_id": person_id, "by": principal.person_id if principal else None},
+    )
+    return {"person_id": person_id, "active": False}
 
 
 @router.post("/audit/head")

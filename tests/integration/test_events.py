@@ -102,7 +102,7 @@ async def test_a_new_signed_policy_is_published_and_takes_effect(client, org):
     )
     response = client.post("/v1/bundles", json={"bundle": bundle})
     assert response.status_code == 200, response.text
-    assert response.json() == {"kind": "policy", "version": 2}
+    assert response.json() == {"kind": "policy", "version": 2, "invalidated": []}
     served = client.get("/v1/policy").json()
     assert served["payload"]["version"] == 2 and "FLOOD" in served["payload"]["scenarios"]
 

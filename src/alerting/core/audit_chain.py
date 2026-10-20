@@ -45,6 +45,11 @@ class Event(StrEnum):
     POLICY_PUBLISHED = "policy.published"
     KEY_ENROLLED = "key.enrolled"
     KEY_REVOKED = "key.revoked"
+    #: Validity ended on purpose (rotation, leaving): earlier signatures still count.
+    KEY_RETIRED = "key.retired"
+    #: Where orders go changed. Pseudonym only: the contact itself is personal data.
+    CONTACT_SET = "contact.set"
+    CONTACT_DEACTIVATED = "contact.deactivated"
     #: A channel that was answering has stopped. This is the anti-suppression
     #: signal: only *transitions* are recorded, never the probes themselves, because
     #: the chain is undeletable and a probe a minute would bury an incident.

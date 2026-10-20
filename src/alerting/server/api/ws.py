@@ -12,6 +12,7 @@ were the only check, a compromised server could fabricate orders freely.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import secrets
@@ -37,6 +38,11 @@ AUTH_FRAME_TIMEOUT_S = 5
 #: A signed envelope is a couple of kilobytes; an ACK is smaller. Anything larger is
 #: not a client of this protocol.
 MAX_FRAME_BYTES = 64 * 1024
+
+#: How often an open socket re-checks its key against the directory. The handshake
+#: alone let a phone revoked after connecting keep receiving orders until it hung up,
+#: which no 60-second revocation target survives.
+KEY_RECHECK_S = 15
 
 
 class WebSocketSink:
@@ -69,9 +75,10 @@ async def stream(websocket: WebSocket) -> None:
     except (WebSocketDisconnect, ValueError):
         return
 
-    person_id = await _authenticate(app, websocket, message, nonce, now)
-    if person_id is None:
+    identity = await _authenticate(app, websocket, message, nonce, now)
+    if identity is None:
         return
+    person_id, key_id = identity
 
     sink = WebSocketSink(websocket)
     if not await app.connections.attach(person_id, sink):
@@ -80,16 +87,36 @@ async def stream(websocket: WebSocket) -> None:
     await websocket.send_json({"kind": "ready", "person_id": person_id, "org_id": app.state.org_id})
     await _send_active_events(app, websocket, person_id)
 
+    watcher = asyncio.create_task(_close_when_revoked(app, websocket, key_id))
     try:
         while True:
             frame = await _receive_bounded(websocket)
             await _handle_frame(app, websocket, frame, person_id)
     except FrameTooLarge:
         await websocket.close(code=1009, reason="frame too large")
-    except (WebSocketDisconnect, ValueError):
+    except (WebSocketDisconnect, ValueError, RuntimeError):
+        # RuntimeError: the watcher closed the socket under a pending receive.
         pass
     finally:
+        watcher.cancel()
         await app.connections.detach(person_id, sink)
+
+
+async def _close_when_revoked(app: Any, websocket: WebSocket, key_id: str) -> None:
+    """Hang up on a device whose key was revoked or retired after it connected."""
+    while True:
+        await asyncio.sleep(KEY_RECHECK_S)
+        try:
+            refused = app.state.directory().signer_status(key_id, app.clock.now())
+        except Exception:
+            # A database hiccup is not a revocation; the next round asks again.
+            log.warning("could not re-check key %s", key_id, exc_info=True)
+            continue
+        if refused is not None:
+            log.info("closing socket of %s: %s", key_id, refused)
+            with contextlib.suppress(Exception):
+                await websocket.close(code=4403, reason="unknown or revoked device")
+            return
 
 
 async def _send_active_events(app: Any, websocket: WebSocket, person_id: str) -> None:
@@ -121,7 +148,8 @@ async def _send_active_events(app: Any, websocket: WebSocket, person_id: str) ->
 
 async def _authenticate(
     app: Any, websocket: WebSocket, message: dict[str, Any], nonce: str, now: int
-) -> str | None:
+) -> tuple[str, str] | None:
+    """``(person_id, key_id)`` of the device, or ``None`` with the socket closed."""
     payload = message.get("payload")
     signature = message.get("sig")
     if message.get("kind") != "auth" or not isinstance(payload, dict) or not signature:
@@ -156,7 +184,7 @@ async def _authenticate(
     if entry.person_id != payload.get("person_id"):
         await websocket.close(code=4403, reason="person mismatch")
         return None
-    return entry.person_id
+    return entry.person_id, key_id
 
 
 async def _handle_frame(
