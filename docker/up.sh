@@ -30,8 +30,26 @@ fi
 [[ -f "$env_file" ]] || { cp docker/.env.example "$env_file"; log "создан $env_file"; }
 
 log "собираю образ"
+build_log=$(mktemp)
 # shellcheck disable=SC2086  # флаги сборки намеренно разбиваются на слова
-docker build -q ${ALERTING_BUILD_FLAGS:-} -t alerting:local . >/dev/null
+if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . >"$build_log" 2>&1; then
+    # Без этого видно только «exit code: 1», а причина — в выводе pip выше.
+    # Сводка docker в конце одинакова при любой причине; причина — в строках pip.
+    # `|| true`: под set -e и pipefail пустой grep иначе молча завершил бы скрипт.
+    cause=$(grep -E 'ERROR|[Ee]rror:|Could not|Retrying|Failed|denied|resolve host' "$build_log" \
+        | grep -v 'failed to solve' | sed 's/^#[0-9]* [0-9.]* *//' | awk '!seen[$0]++' | head -15 || true)
+    if [[ -n "$cause" ]]; then printf '%s\n' "$cause"; else tail -20 "$build_log"; fi
+    rm -f "$build_log"
+    fail "сборка не прошла (полный лог: docker build --progress=plain .)
+Частые причины:
+обрыв соединения с pypi.org (Connection reset) — зеркало или внутренний Nexus:
+  ALERTING_BUILD_FLAGS=\"--build-arg PIP_INDEX_URL=https://<зеркало>/simple\" ./docker/up.sh
+корпоративный прокси —
+  ALERTING_BUILD_FLAGS=\"--build-arg HTTPS_PROXY=\$HTTPS_PROXY\" ./docker/up.sh
+подмена TLS-сертификата прокси —
+  ALERTING_BUILD_FLAGS=\"--secret id=ca,src=/path/ca.crt\" ./docker/up.sh"
+fi
+rm -f "$build_log"
 
 root_key=$(sed -n 's/^ALERTING_ROOT_PUBKEY=//p' "$env_file")
 have_db=$(docker volume ls -q --filter name='^alerting_pgdata$')
