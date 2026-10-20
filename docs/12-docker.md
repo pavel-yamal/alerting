@@ -13,7 +13,9 @@
 - **синхронизированные часы** (chrony на хосте): контейнер берёт время хоста, а
   при расхождении больше ±120 с узел начинает отвергать валидные приказы и при этом
   выглядит здоровым;
-- nginx на хосте с TLS — порт 8080 слушает только `127.0.0.1`
+- nginx на хосте с TLS — сервер слушает только `127.0.0.1:7070` (порт меняется
+  в `docker/.env`, `ALERTING_PORT`); в `deploy/nginx/alerting.conf` укажите upstream
+  `127.0.0.1:7070`
   (`deploy/nginx/alerting.conf`).
 
 ## Одной командой
@@ -84,7 +86,7 @@ ALERTING_ROOT_PUBKEY=<ключ из вывода>
 
 ```bash
 docker compose --env-file docker/.env up -d --wait
-curl -s http://127.0.0.1:8080/v1/readyz        # {"ready":true, ...}
+curl -s http://127.0.0.1:7070/v1/readyz        # {"ready":true, ...}
 docker compose --env-file docker/.env logs server | head
 ```
 

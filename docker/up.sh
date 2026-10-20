@@ -54,7 +54,7 @@ fi
 log "запускаю"
 "${compose[@]}" up -d --wait
 
-port=$(sed -n 's/^ALERTING_PORT=//p' "$env_file"); port=${port:-8080}
+port=$(sed -n 's/^ALERTING_PORT=//p' "$env_file"); port=${port:-7070}
 ready=$(curl -fsS "http://127.0.0.1:${port}/v1/readyz" 2>/dev/null || true)
 [[ "$ready" == *'"ready":true'* ]] || fail "сервер не готов: ${ready:-нет ответа}. Журнал: docker compose --env-file $env_file logs server"
 

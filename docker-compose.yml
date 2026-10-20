@@ -92,8 +92,10 @@ services:
       - spool:/var/lib/alerting/spool
     ports:
       # По умолчанию только localhost: TLS терминирует nginx на хосте
-      # (deploy/nginx/alerting.conf). Открывать 8080 в сеть напрямую нельзя.
-      - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PORT:-8080}:8080"
+      # (deploy/nginx/alerting.conf). Открывать этот порт в сеть напрямую нельзя.
+      # Снаружи 7070, чтобы не пересекаться с другими сервисами на 8080; внутри
+      # контейнера и в сети compose сервер по-прежнему на 8080.
+      - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PORT:-7070}:8080"
     stop_grace_period: 45s
 
   # ДЕМО-организация. Стирает схему и пишет корневой закрытый ключ на диск —
