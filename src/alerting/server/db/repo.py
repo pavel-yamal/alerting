@@ -139,6 +139,13 @@ class Repo:
     def contacts(self) -> list[Row]:
         return self._all("SELECT * FROM contacts WHERE active ORDER BY person_id")
 
+    def deactivate_contact(self, person_id: str) -> bool:
+        """Stop sending orders to a person, keeping the row for the record."""
+        return (
+            self._execute("UPDATE contacts SET active = false WHERE person_id = %s", (person_id,))
+            > 0
+        )
+
     def forget_contact(self, person_id: str) -> None:
         """Erasure of personal data. The audit chain, holding only the pseudonym,
         is untouched and stays verifiable."""

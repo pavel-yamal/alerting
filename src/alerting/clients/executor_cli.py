@@ -33,6 +33,7 @@ from alerting.core.signing import (
     DOMAIN_DEVICE_AUTH,
     generate_keypair,
     key_id,
+    public_key_to_b64u,
     sign_payload,
 )
 from alerting.core.verify import Decision, verify_envelope
@@ -70,17 +71,26 @@ def cmd_enroll(args: argparse.Namespace) -> int:
     """
     private, public = generate_keypair()
     passphrase = args.passphrase or getpass.getpass("New passphrase: ")
-    save_key(args.person, private, passphrase, role="executor", directory=args.home)
+    save_key(args.person, private, passphrase, role=args.role, directory=args.home)
 
     root = args.root_key
     if not root:
         root = input("Org root public key (from your enrollment card): ").strip()
     PinnedOrg(args.org, root, args.home).save()
+    if args.wake_key:
+        # The registrar's `alerting-org contact set` generated it; the server holds
+        # the same key to derive this person's SMS words.
+        bytes.fromhex(args.wake_key)
+        path = args.home / "wake_key.hex"
+        path.write_text(args.wake_key, encoding="utf-8")
+        path.chmod(0o600)
 
     print(f"enrolled {args.person}")
-    print(f"  key id : {key_id(public)}")
-    print(f"  pinned : org={args.org} root={root[:16]}…")
-    print("\nRead your key id back to the enrolling officer before you leave.")
+    print(f"  public key : {public_key_to_b64u(public)}")
+    print(f"  key id     : {key_id(public)}")
+    print(f"  pinned     : org={args.org} root={root[:16]}…")
+    print("\nGive the public key to the enrolling officer (QR or read aloud), then check")
+    print("that the key id above appears in the published directory before you leave.")
     return 0
 
 
@@ -326,6 +336,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enroll.add_argument("--org", default="acme")
     enroll.add_argument("--root-key", default="")
+    enroll.add_argument(
+        "--role", default="executor", help="recorded with the key; the directory decides"
+    )
+    enroll.add_argument("--wake-key", default="", help="hex, from the enrolling officer")
     enroll.set_defaults(func=cmd_enroll, needs_key=False)
 
     sync = sub.add_parser(
