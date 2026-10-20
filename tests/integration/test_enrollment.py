@@ -125,7 +125,13 @@ async def test_contacts_are_set_and_deactivated_by_operators_only(client, execut
     stored = client.app.state.alerting.repo.contact("x-104")
     assert stored["wake_key"] == wake_key and stored["phone"] == "+79000000999"
     set_entry = chain(client, Event.CONTACT_SET)[-1]
-    assert "phone" not in set_entry and "name" not in set_entry, "personal data stays out"
+    assert set_entry["wake_key_issued"] is True
+    assert not {"phone", "name", "site", "groups"} & set(set_entry), "personal data stays out"
+
+    moved = {k: v for k, v in body.items() if k != "wake_key"} | {"site": "Склад"}
+    assert client.post("/v1/contacts", json=moved).status_code == 200
+    stored = client.app.state.alerting.repo.contact("x-104")
+    assert stored["site"] == "Склад" and stored["wake_key"] == wake_key, "the device's key stays"
 
     for bad in ({"role": "admin"}, {"wake_key": "short"}, {"groups": ["a,b"]}):
         assert client.post("/v1/contacts", json={**body, **bad}).status_code == 422, bad

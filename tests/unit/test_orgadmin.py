@@ -207,3 +207,25 @@ def test_directory_commands_chain_from_file_to_file(tmp_path, capsys):
               str(tmp_path / "other.key"), "--out", str(tmp_path / "x.json"),
               "--person", "x-101"]  # fmt: skip
     assert main(retire) == 2, "another org's root must not sign over this one"
+
+
+def test_revoking_a_person_leaves_their_retired_keys_and_what_those_signed():
+    org, current = _org_and_current()
+    old = org.person("x-101").key_id
+    retired, _ = retire_keys(current, person_id="x-101", kid=None, at=NOW)
+    _, public = generate_keypair()
+    with_new, new = add_key(
+        retired, person_id="x-101", name="Иванов И. И.", role="executor",
+        public_key=public_key_to_b64u(public), issued_at=NOW + 10,
+    )  # fmt: skip
+    payload, revoked = revoke_keys(
+        with_new, person_id="x-101", kid=None, at=NOW + 20, reason="stolen"
+    )
+    assert [e.key_id for e in revoked] == [new.key_id]
+    directory = Directory.load(
+        sign_bundle(payload, DOMAIN_DIRECTORY, org.root_private_key),
+        root_public_key=org.root_public_key, org_id=org.org_id,
+    )  # fmt: skip
+    assert directory.signer_status(old, NOW - 10) is None, "signed before retirement: still good"
+    explicit, _ = revoke_keys(with_new, person_id=None, kid=old, at=NOW + 20, reason="leaked")
+    assert explicit.revoked[-1].key_id == old, "a retired key can still be revoked by id"

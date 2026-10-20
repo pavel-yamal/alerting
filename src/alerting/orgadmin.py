@@ -179,14 +179,26 @@ def add_key(
     )
 
 
-def _select(current: DirectoryPayload, person_id: str | None, kid: str | None) -> list[KeyEntry]:
+def _select(
+    current: DirectoryPayload, person_id: str | None, kid: str | None, at: int
+) -> list[KeyEntry]:
+    """The keys a command acts on.
+
+    By person, only keys still valid at ``at``: a key retired at an earlier device
+    change is not revoked along with the current one, or the orders it signed
+    before retirement would stop verifying. A key named by id is taken as named.
+    """
     if bool(person_id) == bool(kid):
         raise ValueError("name exactly one of --person or --key-id")
     revoked = {r.key_id for r in current.revoked}
     chosen = [
         e
         for e in current.keys
-        if (e.person_id == person_id or e.key_id == kid) and e.key_id not in revoked
+        if e.key_id not in revoked
+        and (
+            e.key_id == kid
+            or (e.person_id == person_id and (e.valid_until is None or e.valid_until > at))
+        )
     ]
     if not chosen:
         raise ValueError(f"no live key for {person_id or kid}")
@@ -202,7 +214,7 @@ def retire_keys(
     signed this morning is still a genuine order -- but nothing signed after counts,
     and the key no longer authenticates to the server.
     """
-    chosen = {e.key_id for e in _select(current, person_id, kid)}
+    chosen = {e.key_id for e in _select(current, person_id, kid, at)}
     keys = [
         e.model_copy(update={"valid_until": at})
         if e.key_id in chosen and (e.valid_until is None or e.valid_until > at)
@@ -222,7 +234,7 @@ def revoke_keys(
     could have backdated an order. Events it co-signed that are still in force will
     no longer verify on devices; the publish step lists them.
     """
-    chosen = _select(current, person_id, kid)
+    chosen = _select(current, person_id, kid, at)
     revoked = (
         *current.revoked,
         *(Revocation(key_id=e.key_id, revoked_at=at, reason=reason) for e in chosen),
@@ -362,12 +374,14 @@ def cmd_contact_set(args: argparse.Namespace) -> int:
     order is genuine. A new wake key is generated each time and written to
     ``--wake-key-out`` for the person's device (``alerting-executor enroll
     --wake-key``); the server keeps the same key to derive their SMS words.
+    Without ``--wake-key-out`` the server keeps the key it has: a new one with no
+    device-side copy would make every SMS word disagree with the device.
     """
     import secrets
 
     from alerting.clients.transport import ServerError
 
-    wake_key = secrets.token_bytes(32)
+    wake_key = secrets.token_bytes(32) if args.wake_key_out else b""
     body = {
         "person_id": args.target,
         "name": args.name,
@@ -375,7 +389,7 @@ def cmd_contact_set(args: argparse.Namespace) -> int:
         "site": args.site,
         "groups": args.groups,
         "role": args.role,
-        "wake_key": b64u_encode(wake_key),
+        "wake_key": b64u_encode(wake_key) if wake_key else "",
     }
     api = _api(args)
     try:
@@ -511,7 +525,10 @@ def build_parser() -> argparse.ArgumentParser:
     cset.add_argument("--site", default="")
     cset.add_argument("--groups", nargs="*", default=[])
     cset.add_argument("--role", default="executor")
-    cset.add_argument("--wake-key-out", type=pathlib.Path)
+    cset.add_argument(
+        "--wake-key-out", type=pathlib.Path,
+        help="issue a new wake key and write it here for the device; omit to keep the old one",
+    )  # fmt: skip
     cset.set_defaults(func=cmd_contact_set)
     cremove = csub.add_parser("remove", help="stop sending orders to a person")
     server_args(cremove)

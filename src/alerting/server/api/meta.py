@@ -260,24 +260,28 @@ async def set_contact(body: ContactUpload, request: Request) -> dict[str, Any]:
                 raise ValueError
         except Exception:
             raise HTTPException(422, "wake_key must be 32 bytes, base64url") from None
+    # No wake key in the request keeps the one on file: the device holds a copy, and
+    # replacing it here alone would make every SMS word disagree with the device.
+    existing = app.repo.contact(body.person_id)
+    wake_key = body.wake_key or (existing["wake_key"] if existing else "")
     app.repo.upsert_contact(
         body.person_id,
         name=body.name,
         phone=body.phone,
         site=body.site,
         groups=body.groups,
-        wake_key=body.wake_key,
+        wake_key=wake_key,
         role=body.role,
     )
     principal = getattr(request.state, "principal", None)
+    # Site and groups are personal data (docs/08) and live only in the erasable
+    # contacts table; the chain is undeletable, so it records that a change happened.
     app.audit.append(
         Event.CONTACT_SET,
         {
             "person_id": body.person_id,
             "role": body.role,
-            "site": body.site,
-            "groups": body.groups,
-            "wake_key_set": bool(body.wake_key),
+            "wake_key_issued": bool(body.wake_key),
             "by": principal.person_id if principal else None,
         },
     )
