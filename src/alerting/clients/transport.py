@@ -99,9 +99,14 @@ class Api:
         timeout: float = 10.0,
         *,
         auth: httpx.Auth | None = None,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, auth=auth)
+        # `transport` lets a test hand in the server's in-process transport, so a
+        # client is exercised against the real app rather than a mock of it.
+        self._client = httpx.Client(
+            base_url=self.base_url, timeout=timeout, auth=auth, transport=transport
+        )
 
     @property
     def ws_url(self) -> str:

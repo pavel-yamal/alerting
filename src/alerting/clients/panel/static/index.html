@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Панель дежурного</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1b1f24; --muted: #5d6670; --line: #dde1e6;
+    --accent: #1f5fbf; --drill: #1f5fbf; --drill-bg: #e6eefb;
+    --real: #b42318; --real-bg: #fdecea; --ok: #1a7f37; --ok-bg: #e7f5ec;
+    --warn: #9a6700; --warn-bg: #fff4d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111418; --panel: #1a1f25; --text: #e6e9ed; --muted: #9aa4ae; --line: #2c333b;
+      --accent: #6ea8ff; --drill: #6ea8ff; --drill-bg: #17263d;
+      --real: #ff7b72; --real-bg: #3a1a18; --ok: #56d364; --ok-bg: #16301e;
+      --warn: #e3b341; --warn-bg: #3a2e12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+           background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 17px; margin: 0; }
+  header .who { margin-left: auto; color: var(--muted); }
+  main { display: grid; grid-template-columns: 360px 340px 1fr; gap: 16px; padding: 16px 20px; }
+  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
+  h2 { font-size: 15px; margin: 0 0 12px; }
+  h3 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); font-weight: 600; }
+  label { display: block; font-weight: 600; margin: 12px 0 4px; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; margin: 2px 12px 2px 0; }
+  input[type=text], input[type=password], select, textarea {
+    width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--text); font: inherit; }
+  textarea { min-height: 64px; resize: vertical; }
+  button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { background: var(--real); border-color: var(--real); color: #fff; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .mode { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .mode label { margin: 0; padding: 10px; border: 2px solid var(--line); border-radius: 6px;
+                text-align: center; cursor: pointer; font-weight: 700; }
+  .mode input { display: none; }
+  .mode input[value=true]:checked + span { color: var(--drill); }
+  .mode label:has(input[value=true]:checked) { border-color: var(--drill); background: var(--drill-bg); }
+  .mode label:has(input[value=false]:checked) { border-color: var(--real); background: var(--real-bg); color: var(--real); }
+  .list { display: flex; flex-direction: column; gap: 6px; }
+  .item { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+  .item:hover, .item.active { border-color: var(--accent); }
+  .item .top { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+  .item .sub { color: var(--muted); font-size: 13px; }
+  .tag { font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 4px; letter-spacing: .03em; }
+  .tag.drill { background: var(--drill-bg); color: var(--drill); }
+  .tag.real { background: var(--real-bg); color: var(--real); }
+  .tag.ok { background: var(--ok-bg); color: var(--ok); }
+  .tag.warn { background: var(--warn-bg); color: var(--warn); }
+  .banner { padding: 14px; border-radius: 6px; font-size: 20px; font-weight: 800; text-align: center; margin-bottom: 14px; }
+  .banner.drill { background: var(--drill-bg); color: var(--drill); }
+  .banner.real { background: var(--real-bg); color: var(--real); }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; width: 34%; }
+  .msg { margin-top: 12px; padding: 10px; border-radius: 6px; }
+  .msg.err { background: var(--real-bg); color: var(--real); }
+  .msg.ok { background: var(--ok-bg); color: var(--ok); }
+  .msg.warn { background: var(--warn-bg); color: var(--warn); }
+  .big { font-size: 28px; font-weight: 800; }
+  .empty { color: var(--muted); }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 14px; }
+  #login { max-width: 360px; margin: 10vh auto; }
+  .hidden { display: none !important; }
+  code { font-size: 12px; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<section id="login" class="hidden">
+  <h2>Панель дежурного — вход</h2>
+  <form id="login-form">
+    <label for="person">Идентификатор</label>
+    <input id="person" type="text" autocomplete="username" placeholder="например, p-003" required>
+    <label for="pass">Пароль ключа</label>
+    <input id="pass" type="password" autocomplete="current-password" required>
+    <div class="row"><button class="primary" type="submit">Войти</button></div>
+    <div class="hint">Ключ расшифровывается в панели и не уходит на сервер. Сессия закрывается после 15 минут бездействия.</div>
+    <div id="login-msg"></div>
+  </form>
+</section>
+
+<div id="app" class="hidden">
+  <header>
+    <h1>Панель дежурного</h1>
+    <span id="org" class="hint"></span>
+    <span class="who" id="who"></span>
+    <button id="logout" type="button">Выйти</button>
+  </header>
+  <main>
+    <section>
+      <h2>Новое оповещение</h2>
+      <form id="new-form">
+        <label>Режим</label>
+        <div class="mode">
+          <label><input type="radio" name="drill" value="true"><span>УЧЕНИЕ</span></label>
+          <label><input type="radio" name="drill" value="false"><span>БОЕВОЕ</span></label>
+        </div>
+        <div class="hint">Значения по умолчанию нет — выберите явно.</div>
+
+        <label for="scenario">Сценарий</label>
+        <select id="scenario" required></select>
+        <div class="hint" id="scenario-hint"></div>
+
+        <label for="severity">Важность</label>
+        <select id="severity" required></select>
+        <div class="hint" id="quorum-hint"></div>
+
+        <label>Кому</label>
+        <div id="groups"></div>
+        <div id="sites"></div>
+
+        <label for="text">Пояснение (не заменяет сценарий)</label>
+        <textarea id="text" maxlength="1000" placeholder="Например: задымление, 3 этаж, корпус А"></textarea>
+
+        <label for="ttl">Действует</label>
+        <select id="ttl">
+          <option value="600">10 минут</option>
+          <option value="900" selected>15 минут</option>
+          <option value="1800">30 минут</option>
+          <option value="3600">1 час</option>
+        </select>
+
+        <div class="row"><button class="primary" type="submit">Создать и перейти к подписи</button></div>
+        <div id="new-msg"></div>
+      </form>
+    </section>
+
+    <section>
+      <h2>Ожидают подписи</h2>
+      <div id="proposals" class="list"></div>
+      <div class="row">
+        <input id="open-id" type="text" placeholder="ID приказа">
+        <button id="open-btn" type="button">Открыть</button>
+      </div>
+      <h2 style="margin-top:20px">Разосланные</h2>
+      <div id="orders" class="list"></div>
+    </section>
+
+    <section id="detail">
+      <div class="empty">Выберите приказ слева или создайте новый.</div>
+    </section>
+  </main>
+</div>
+
+<script>
+"use strict";
+
+const SEVERITY = { info: "информация", warning: "предупреждение", critical: "критическая", catastrophic: "катастрофическая" };
+const ORDER = ["info", "warning", "critical", "catastrophic"];
+const ACK = { received: "получено устройством", acknowledged: "подтвердил", en_route: "выдвинулся",
+              completed: "выполнил", cannot_comply: "не может выполнить" };
+const ACTION = { START: "начать", STOP: "прекратить (отбой)", HOLD: "приостановить" };
+
+let meta = null;
+let current = null;           // { kind: "proposal" | "order", id }
+let now = Math.floor(Date.now() / 1000);
+
+// ---- helpers ---------------------------------------------------------------
+// Everything from the server goes in through textContent. Nothing is ever parsed
+// as HTML: order text is free text typed by a person.
+function el(tag, attrs = {}, ...children) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else node.setAttribute(k, v);
+  }
+  for (const child of children.flat()) {
+    if (child == null || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+const $ = (id) => document.getElementById(id);
+// replaceChildren() turns null into the text "null"; optional blocks are passed as
+// `condition ? node : null`, so they are filtered out here.
+const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
+const time = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("ru-RU") : "—";
+const left = (until) => {
+  const s = until - now;
+  if (s <= 0) return "истёк";
+  return s >= 60 ? `ещё ${Math.floor(s / 60)} мин` : `ещё ${s} с`;
+};
+const modeTag = (drill) => el("span", { class: "tag " + (drill ? "drill" : "real") }, drill ? "УЧЕНИЕ" : "БОЕВОЕ");
+const msg = (kind, text) => el("div", { class: "msg " + kind }, text);
+
+async function api(path, options = {}) {
+  const init = { method: options.method || "GET", headers: {}, credentials: "same-origin" };
+  if (init.method !== "GET") {
+    init.headers["X-Alerting-Panel"] = "1";
+    init.headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(options.body || {});
+  }
+  const response = await fetch(path, init);
+  let data = null;
+  try { data = await response.json(); } catch (_) { /* empty body */ }
+  if (response.status === 401 && path !== "/api/login") { showLogin(data && data.detail); throw new Error("401"); }
+  if (!response.ok) {
+    const detail = data && data.detail;
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail || response.status));
+  }
+  return data;
+}
+
+// ---- login -----------------------------------------------------------------
+function showLogin(reason) {
+  $("app").classList.add("hidden");
+  $("login").classList.remove("hidden");
+  $("login-msg").replaceChildren(reason ? msg("warn", reason) : "");
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("login-msg").replaceChildren(msg("warn", "Расшифровываю ключ и проверяю справочник…"));
+  try {
+    await api("/api/login", { method: "POST", body: { person_id: $("person").value, passphrase: $("pass").value } });
+    $("pass").value = "";
+    await start();
+  } catch (error) {
+    $("login-msg").replaceChildren(msg("err", error.message));
+  }
+});
+
+$("logout").addEventListener("click", async () => {
+  await api("/api/logout", { method: "POST" }).catch(() => {});
+  showLogin("Вы вышли.");
+});
+
+// ---- new proposal form -----------------------------------------------------
+function fillForm() {
+  const scenario = $("scenario");
+  scenario.replaceChildren(...meta.scenarios.map((s) =>
+    el("option", { value: s.code }, s.description ? `${s.code} — ${s.description}` : s.code)));
+  $("groups").replaceChildren(
+    el("div", { class: "hint" }, "Группы:"),
+    ...meta.groups.map((g) => el("label", { class: "inline" }, el("input", { type: "checkbox", name: "group", value: g }), g)));
+  $("sites").replaceChildren(
+    el("div", { class: "hint" }, "Площадки:"),
+    ...meta.sites.map((s) => el("label", { class: "inline" }, el("input", { type: "checkbox", name: "site", value: s }), s)));
+  scenario.onchange = fillSeverity;
+  $("severity").onchange = quorumHint;
+  fillSeverity();
+}
+
+function fillSeverity() {
+  const s = meta.scenarios.find((x) => x.code === $("scenario").value);
+  const lo = s && s.min_severity ? ORDER.indexOf(s.min_severity) : 0;
+  const hi = s && s.max_severity ? ORDER.indexOf(s.max_severity) : ORDER.length - 1;
+  const allowed = ORDER.filter((level, i) => i >= lo && i <= hi && meta.severities[level]);
+  $("severity").replaceChildren(...allowed.map((level) => el("option", { value: level }, SEVERITY[level])));
+  $("scenario-hint").textContent = s && (s.min_severity || s.max_severity)
+    ? `Для этого сценария: ${allowed.map((l) => SEVERITY[l]).join(", ")}.` : "";
+  quorumHint();
+}
+
+function quorumHint() {
+  const rule = meta.severities[$("severity").value];
+  if (!rule) { $("quorum-hint").textContent = ""; return; }
+  let text = `Нужно подписей: ${rule.launch}`;
+  if (rule.launch > 1 && rule.distinct_persons) text += " от разных людей";
+  const roles = Object.entries(rule.min_from_role || {}).map(([r, n]) => `${r} ×${n}`);
+  if (roles.length) text += `, в том числе ${roles.join(", ")}`;
+  if (rule.spread_s) text += `, все — в пределах ${Math.round(rule.spread_s / 60)} мин`;
+  $("quorum-hint").textContent = text + ".";
+}
+
+$("new-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const out = $("new-msg");
+  const mode = document.querySelector("input[name=drill]:checked");
+  if (!mode) { out.replaceChildren(msg("err", "Выберите режим: УЧЕНИЕ или БОЕВОЕ.")); return; }
+  const groups = [...document.querySelectorAll("input[name=group]:checked")].map((x) => x.value);
+  const sites = [...document.querySelectorAll("input[name=site]:checked")].map((x) => x.value);
+  if (!groups.length && !sites.length) { out.replaceChildren(msg("err", "Выберите, кого оповещать.")); return; }
+  try {
+    const created = await api("/api/proposals", { method: "POST", body: {
+      scenario: $("scenario").value, severity: $("severity").value, drill: mode.value === "true",
+      groups, sites, text: $("text").value.trim(), ttl_s: Number($("ttl").value),
+    }});
+    out.replaceChildren(msg("ok", "Создано. Проверьте и подпишите."));
+    $("text").value = "";
+    mode.checked = false;
+    await refreshLists();
+    openProposal(created.order_id);
+  } catch (error) {
+    out.replaceChildren(msg("err", error.message));
+  }
+});
+
+// ---- lists -----------------------------------------------------------------
+async function refreshLists() {
+  const [proposals, orders] = await Promise.all([api("/api/proposals"), api("/api/orders")]);
+  now = proposals.now;
+  const open = proposals.proposals.filter((p) => p.status === "open");
+  $("proposals").replaceChildren(...(open.length ? open.map((p) =>
+    el("div", { class: "item" + (current && current.id === p.order_id ? " active" : ""), onclick: () => openProposal(p.order_id) },
+      el("div", { class: "top" }, modeTag(p.drill), p.cancels ? "ОТБОЙ " : "", p.scenario),
+      el("div", { class: "sub" }, `${SEVERITY[p.severity]} · подписали: ${p.signed_by.length ? p.signed_by.join(", ") : "никто"} · ${left(p.not_valid_after)}`)))
+    : [el("div", { class: "empty" }, "Нет приказов, ожидающих подписи.")]));
+  $("orders").replaceChildren(...(orders.orders.length ? orders.orders.map((o) =>
+    el("div", { class: "item" + (current && current.id === o.order_id ? " active" : ""), onclick: () => openOrder(o.order_id) },
+      el("div", { class: "top" }, modeTag(o.drill), o.cancels ? "ОТБОЙ " : "", o.scenario),
+      el("div", { class: "sub" }, `${SEVERITY[o.severity]} · разослан ${time(o.dispatched_at)}`)))
+    : [el("div", { class: "empty" }, "Ещё ничего не разослано.")]));
+}
+
+$("open-btn").addEventListener("click", () => {
+  const id = $("open-id").value.trim();
+  if (id) openProposal(id);
+});
+
+// ---- review and sign -------------------------------------------------------
+async function openProposal(id) {
+  current = { kind: "proposal", id };
+  const detail = $("detail");
+  let view;
+  try { view = await api(`/api/proposals/${encodeURIComponent(id)}`); }
+  catch (error) { detail.replaceChildren(msg("err", error.message)); return; }
+  if (view.status === "dispatched") { openOrder(id); return; }
+  now = view.now;
+  const f = view.fields;
+  const audience = [
+    f.audience.groups.length ? `группы: ${f.audience.groups.join(", ")}` : null,
+    f.audience.sites.length ? `площадки: ${f.audience.sites.join(", ")}` : null,
+    f.audience.persons.length ? `лично: ${f.audience.persons.join(", ")}` : null,
+  ].filter(Boolean).join("; ") || "ПУСТО — приказ не дойдёт ни до кого";
+
+  const rows = [
+    ["Сценарий", f.scenario], ["Важность", SEVERITY[f.severity] || f.severity],
+    ["Действие", ACTION[f.action] || f.action], ["Кому", audience],
+    ["Пояснение", f.text || "—"],
+    ["Действует", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
+    ["Подтверждение", f.requires_ack ? `требуется, срок ${f.ack_deadline_s} с` : "не требуется"],
+    f.cancels ? ["ОТМЕНЯЕТ приказ", f.cancels] : null,
+    ["Поток / номер", f.stream], ["Организация / политика", `${f.org_id} / ${f.policy_id}`],
+  ].filter(Boolean);
+
+  const check = el("input", { type: "checkbox", id: "reviewed" });
+  const signBtn = el("button", { class: f.drill ? "primary" : "danger", type: "button", disabled: "" }, "Подписать");
+  const out = el("div");
+  const blocked = f.unexpected_fields.length > 0 || view.signed_by_me;
+  check.addEventListener("change", () => { signBtn.disabled = !check.checked || blocked; });
+  signBtn.addEventListener("click", async () => {
+    signBtn.disabled = true;
+    try {
+      const result = await api(`/api/proposals/${encodeURIComponent(id)}/sign`, { method: "POST", body: { digest: view.digest } });
+      if (result.dispatched) {
+        out.replaceChildren(msg("ok", `Кворум набран — разослано ${result.recipients} получателям.`),
+          ...result.warnings.map((w) => msg("warn", w)));
+        await refreshLists();
+        setTimeout(() => openOrder(id), 1200);
+      } else {
+        out.replaceChildren(msg("warn", "Подпись принята. Ещё не разослано:"),
+          el("ul", {}, result.blocking.map((b) => el("li", {}, b))));
+        await refreshLists();
+        setTimeout(() => openProposal(id), 1500);
+      }
+    } catch (error) {
+      out.replaceChildren(msg("err", error.message));
+      signBtn.disabled = false;
+    }
+  });
+
+  fill(detail,
+    el("div", { class: "banner " + (f.drill ? "drill" : "real") },
+      (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — реальное оповещение")),
+    el("h2", {}, "Вы подписываете"),
+    el("table", {}, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)))),
+    f.unexpected_fields.length ? msg("err", `В приказе есть поля, которые панель не показывает: ${f.unexpected_fields.join(", ")}. Не подписывайте.`) : null,
+    el("h3", {}, `Подписи: ${view.signed_by.length} из ${view.required ?? "?"}`),
+    view.signed_by.length ? el("ul", {}, view.signed_by.map((s) => el("li", {}, s))) : el("div", { class: "empty" }, "Пока никто не подписал."),
+    view.signed_by_me ? msg("warn", "Вы уже подписали этот приказ. Нужна подпись другого человека.") : null,
+    el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")),
+    el("div", { class: "row" }, signBtn, el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить")),
+    el("div", { class: "hint" }, "ID: ", el("code", {}, id)),
+    out,
+  );
+  highlight();
+}
+
+// ---- order status ----------------------------------------------------------
+async function openOrder(id) {
+  current = { kind: "order", id };
+  let status;
+  try { status = await api(`/api/orders/${encodeURIComponent(id)}`); }
+  catch (error) { $("detail").replaceChildren(msg("err", error.message)); return; }
+  renderOrder(status);
+  highlight();
+}
+
+function renderOrder(s) {
+  now = s.now;
+  const total = s.people.length;
+  const ackText = (p) => p.ack_status ? (ACK[p.ack_status] || p.ack_status) : "нет ответа";
+  const ackTag = (p) => p.ack_valid === false ? el("span", { class: "tag real" }, "ПОДДЕЛЬНАЯ РАСПИСКА")
+    : p.ack_status && p.ack_status !== "received" ? el("span", { class: "tag ok" }, ackText(p))
+    : p.ack_status ? el("span", { class: "tag warn" }, ackText(p))
+    : el("span", { class: "tag real" }, ackText(p));
+  const cancelText = el("input", { type: "text", placeholder: "Причина отбоя, например: ложное срабатывание" });
+  const out = el("div");
+  const cancelBtn = el("button", { class: "danger", type: "button", onclick: async () => {
+    if (!confirm("Создать приказ об отбое? Его тоже нужно будет подписать.")) return;
+    try {
+      const created = await api(`/api/orders/${encodeURIComponent(s.order_id)}/cancel`, { method: "POST", body: { text: cancelText.value.trim() } });
+      await refreshLists();
+      openProposal(created.order_id);
+    } catch (error) { out.replaceChildren(msg("err", error.message)); }
+  }}, "Отбой");
+
+  fill($("detail"),
+    el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${s.scenario} · разослан ${time(s.dispatched_at)}`),
+    el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
+    el("div", { class: "hint" }, "«Получено устройством» — приложение приняло и проверило приказ. Подтверждение — когда человек нажал «принял»."),
+    s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
+    s.outstanding.length ? msg("warn", `Нет подтверждения от человека: ${s.people.filter((p) => s.outstanding.includes(p.person_id)).map((p) => p.name || p.person_id).join(", ")} — пока не подтвердят, идёт эскалация по каналам.`) : (total ? msg("ok", "Все подтвердили.") : null),
+    s.stub_attempts ? msg("warn", `Попыток через каналы-заглушки: ${s.stub_attempts}. Они ничего не отправляют — до этих людей дошло только приложение.`) : null,
+    el("table", {},
+      el("tr", {}, el("th", {}, "Кто"), el("th", {}, "Ответ"), el("th", {}, "Каналы")),
+      s.people.map((p) => el("tr", {},
+        el("td", {}, p.name ? `${p.name} ` : "", el("code", {}, p.person_id)),
+        el("td", {}, ackTag(p), p.ack_at ? el("div", { class: "hint" }, time(p.ack_at)) : null),
+        el("td", {}, el("code", {}, p.channels_attempted.join(", ")))))),
+    el("h3", {}, "Отбой"),
+    el("div", { class: "row" }, cancelText, cancelBtn),
+    el("div", { class: "hint" }, "ID: ", el("code", {}, s.order_id)),
+    out,
+  );
+}
+
+function highlight() {
+  for (const node of document.querySelectorAll(".item")) node.classList.remove("active");
+  refreshLists().catch(() => {});
+}
+
+// ---- polling ---------------------------------------------------------------
+// The lists and an open status view refresh every 3 s. A review screen does not:
+// it must not change under the person reading it. If the proposal changes on the
+// server, signing is refused and they review again.
+setInterval(async () => {
+  if ($("app").classList.contains("hidden")) return;
+  try {
+    await refreshLists();
+    if (current && current.kind === "order") renderOrder(await api(`/api/orders/${encodeURIComponent(current.id)}`));
+  } catch (_) { /* shown on the next action */ }
+}, 3000);
+
+async function start() {
+  const me = await api("/api/me");
+  meta = await api("/api/meta");
+  $("who").textContent = `${me.name} · ${me.role} · ${me.person_id}`;
+  $("org").textContent = `организация ${meta.org_id}`;
+  fillForm();
+  $("login").classList.add("hidden");
+  $("app").classList.remove("hidden");
+  await refreshLists();
+}
+
+start().catch(() => showLogin());
+</script>
+</body>
+</html>

@@ -98,6 +98,33 @@ services:
       - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PORT:-7070}:8080"
     stop_grace_period: 45s
 
+  # Веб-панель дежурного и ЛПР. Это КЛИЕНТ, а не часть сервера: она расшифровывает
+  # ключ человека на время сессии и подписывает его запросы, как alerting-approver.
+  # На стенде ключи демо-людей лежат в томе clients, поэтому панель стоит рядом с
+  # сервером; в боевом контуре она живёт на рабочем месте дежурного, рядом с его
+  # ключом (docs/12-docker.md §8).
+  panel:
+    <<: *app
+    depends_on:
+      server: {condition: service_healthy}
+    entrypoint: ["alerting-panel"]
+    command: ["--host=0.0.0.0", "--port=8090"]
+    environment:
+      ALERTING_PANEL_SERVER: http://server:8080
+      ALERTING_PANEL_HOMES: /var/lib/alerting/clients
+      ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
+    volumes:
+      - clients:/var/lib/alerting/clients
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    ports:
+      # Только localhost: панель держит расшифрованные ключи.
+      - "${ALERTING_BIND:-127.0.0.1}:${ALERTING_PANEL_PORT:-7071}:8090"
+
   # ДЕМО-организация. Стирает схему и пишет корневой закрытый ключ на диск —
   # на боевом сервере не запускать никогда (docs/02-trust-and-approval.md).
   org-init:
