@@ -105,6 +105,7 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("POST", "/v1/acks"): ENROLLED,
     ("GET", "/v1/directory"): ENROLLED,
     ("GET", "/v1/policy"): ENROLLED,
+    ("GET", "/v1/revocations"): ENROLLED,
 }
 
 

@@ -223,7 +223,8 @@ class Panel:
         # panel trusts a single name, role or scenario from the server.
         cache = BundleCache(pin)
         try:
-            directory = cache.accept("directory", api.get("/v1/directory"))
+            cache.accept("directory", api.get("/v1/directory"))
+            directory = cache.accept("revocations", api.get("/v1/revocations"))
             policy = cache.accept("policy", api.get("/v1/policy"))
         except ServerError as exc:
             api.close()
@@ -388,6 +389,7 @@ def create_panel(
         # logging out. Verified and version-checked like at login.
         try:
             session.cache.accept("directory", session.api.get("/v1/directory"))
+            session.cache.accept("revocations", session.api.get("/v1/revocations"))
             session.cache.accept("policy", session.api.get("/v1/policy"))
         except Exception as exc:
             log.warning("bundle refresh failed for %s: %s", session.stored.person_id, exc)

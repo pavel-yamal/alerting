@@ -26,6 +26,7 @@ DOMAIN_ORDER = b"alerting.order.v1\x00"
 DOMAIN_ACK = b"alerting.ack.v1\x00"
 DOMAIN_DIRECTORY = b"alerting.directory.v1\x00"
 DOMAIN_POLICY = b"alerting.policy.v1\x00"
+DOMAIN_REVOCATIONS = b"alerting.revocations.v1\x00"
 DOMAIN_AUDIT_HEAD = b"alerting.audit-head.v1\x00"
 DOMAIN_WAKE = b"alerting.wake.v1"  # HMAC label, not a signature domain
 

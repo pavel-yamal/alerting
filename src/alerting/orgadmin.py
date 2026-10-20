@@ -29,18 +29,31 @@ from typing import Any
 
 import yaml
 
-from alerting.core.directory import Directory, DirectoryPayload, KeyEntry, Revocation
+from alerting.core.directory import (
+    Directory,
+    DirectoryPayload,
+    KeyEntry,
+    Revocation,
+    RevocationListPayload,
+    Revoker,
+)
 from alerting.core.policy import PolicyPayload
 from alerting.core.signing import (
     DOMAIN_DIRECTORY,
     DOMAIN_POLICY,
+    DOMAIN_REVOCATIONS,
     b64u_encode,
     key_id,
     private_key_from_b64u,
     public_key_from_b64u,
     public_key_to_b64u,
+    sign_payload,
+    verify_signature,
 )
 from alerting.orgkit import sign_bundle
+
+#: The revocation key's file name in its keystore home.
+REVOKER_NAME = "revoker"
 
 #: A policy past its validity is refused by every client. A year is long enough not
 #: to be an operational hazard and short enough that a lost root key's last policy
@@ -131,8 +144,16 @@ def verified_current(bundle: dict[str, Any], root_public_b64u: str) -> Directory
     return directory.payload
 
 
+_KEEP: Any = object()
+
+
 def _next(
-    current: DirectoryPayload, *, keys: Any, revoked: Any, issued_at: int
+    current: DirectoryPayload,
+    *,
+    keys: Any,
+    revoked: Any,
+    issued_at: int,
+    revokers: Any = _KEEP,
 ) -> DirectoryPayload:
     return DirectoryPayload(
         v=1,
@@ -142,6 +163,7 @@ def _next(
         issued_at=issued_at,
         keys=tuple(keys),
         revoked=tuple(revoked),
+        revokers=current.revokers if revokers is _KEEP else revokers,
     )
 
 
@@ -180,7 +202,11 @@ def add_key(
 
 
 def _select(
-    current: DirectoryPayload, person_id: str | None, kid: str | None, at: int
+    current: DirectoryPayload,
+    person_id: str | None,
+    kid: str | None,
+    at: int,
+    also_revoked: frozenset[str] = frozenset(),
 ) -> list[KeyEntry]:
     """The keys a command acts on.
 
@@ -190,7 +216,7 @@ def _select(
     """
     if bool(person_id) == bool(kid):
         raise ValueError("name exactly one of --person or --key-id")
-    revoked = {r.key_id for r in current.revoked}
+    revoked = {r.key_id for r in current.revoked} | also_revoked
     chosen = [
         e
         for e in current.keys
@@ -240,6 +266,114 @@ def revoke_keys(
         *(Revocation(key_id=e.key_id, revoked_at=at, reason=reason) for e in chosen),
     )
     return _next(current, keys=current.keys, revoked=revoked, issued_at=at), chosen
+
+
+# --- revocation keys: the fast path ---------------------------------------------------
+#
+# The root key is offline with two custodians; a stolen phone cannot wait for them. A
+# revocation key, named in the directory by the root, signs revocation lists and
+# nothing else. It is held by the duty shift. See docs/02-trust-and-approval.md §4.
+
+
+def add_revoker(
+    current: DirectoryPayload, *, public_key: str, label: str, issued_at: int
+) -> tuple[DirectoryPayload, Revoker]:
+    revoker = Revoker(
+        key_id=key_id(public_key_from_b64u(public_key)), public_key=public_key, label=label
+    )
+    existing = current.revokers or ()
+    if any(r.key_id == revoker.key_id for r in existing):
+        raise ValueError(f"revocation key {revoker.key_id} is already named")
+    if any(e.key_id == revoker.key_id for e in current.keys):
+        raise ValueError("a person's signing key cannot double as a revocation key")
+    payload = _next(
+        current,
+        keys=current.keys,
+        revoked=current.revoked,
+        issued_at=issued_at,
+        revokers=(*existing, revoker),
+    )
+    return payload, revoker
+
+
+def remove_revoker(
+    current: DirectoryPayload,
+    *,
+    kid: str,
+    absorb: dict[str, Any] | None,
+    issued_at: int,
+) -> tuple[DirectoryPayload, list[Revocation]]:
+    """Stop naming a revocation key, folding its list into ``revoked`` or not.
+
+    Once the key is gone its list stops counting everywhere. Absorbing keeps those
+    revocations; discarding (``absorb=None``) is for a revocation key that was itself
+    stolen, whose list cannot be trusted -- re-revoke what was genuine by hand.
+    """
+    existing = current.revokers or ()
+    if not any(r.key_id == kid for r in existing):
+        raise ValueError(f"{kid} is not a revocation key in this directory")
+    folded: list[Revocation] = []
+    if absorb:
+        listed = RevocationListPayload.model_validate(absorb["payload"])
+        signers = {r.key_id for r in existing}
+        if listed.signer not in signers:
+            raise ValueError("the list to absorb was not signed by a key this directory names")
+        # Verified here against the key that signed it: a file carried to the offline
+        # machine is not trusted for being on a USB stick.
+        signer = next(r for r in existing if r.key_id == listed.signer)
+        if not verify_signature(
+            DOMAIN_REVOCATIONS, absorb["payload"], absorb["signature"], signer.public()
+        ):
+            raise ValueError("the list to absorb does not verify")
+        already = {r.key_id for r in current.revoked}
+        folded = [r for r in listed.entries if r.key_id not in already]
+    remaining = tuple(r for r in existing if r.key_id != kid)
+    payload = _next(
+        current,
+        keys=current.keys,
+        revoked=(*current.revoked, *folded),
+        issued_at=issued_at,
+        revokers=remaining,
+    )
+    return payload, folded
+
+
+def next_revocations(
+    directory: Directory,
+    latest: dict[str, Any] | None,
+    *,
+    signer: str,
+    person_id: str | None,
+    kid: str | None,
+    at: int,
+    reason: str,
+) -> tuple[RevocationListPayload, list[KeyEntry]]:
+    """The next revocation list: everything still in force, plus these keys.
+
+    ``directory`` is the verified directory with the current list applied; ``latest``
+    is the newest list the server holds, applied or not, whose version must be
+    exceeded.
+    """
+    if signer not in directory.revokers:
+        raise ValueError(f"{signer} is not a revocation key in the current directory")
+    carried = directory.revocations.entries if directory.revocations else ()
+    chosen = _select(
+        directory.payload, person_id, kid, at, also_revoked=frozenset(r.key_id for r in carried)
+    )
+    version = int(latest["payload"]["version"]) if latest else 0
+    payload = RevocationListPayload(
+        v=1,
+        type="revocations",
+        org_id=directory.org_id,
+        version=version + 1,
+        issued_at=at,
+        signer=signer,
+        entries=(
+            *carried,
+            *(Revocation(key_id=e.key_id, revoked_at=at, reason=reason) for e in chosen),
+        ),
+    )
+    return payload, chosen
 
 
 def _sign_directory(args: argparse.Namespace, payload: DirectoryPayload) -> None:
@@ -309,6 +443,32 @@ def cmd_directory_revoke(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_directory_revoker(args: argparse.Namespace) -> int:
+    try:
+        if args.add:
+            payload, revoker = add_revoker(
+                _current(args), public_key=args.add, label=args.label, issued_at=int(time.time())
+            )
+            note = f"  revocation key added: {revoker.key_id} ({revoker.label})"
+        else:
+            if not args.absorb and not args.discard_revocations:
+                raise ValueError(
+                    "say what happens to the revocations it signed: --absorb FILE"
+                    " (alerting-org fetch --kind revocations) or --discard-revocations"
+                )
+            absorb = json.loads(args.absorb.read_text(encoding="utf-8")) if args.absorb else None
+            payload, folded = remove_revoker(
+                _current(args), kid=args.remove, absorb=absorb or None, issued_at=int(time.time())
+            )
+            note = f"  revocation key removed: {args.remove}; folded {len(folded)} revocation(s)"
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    _sign_directory(args, payload)
+    print(note)
+    return 0
+
+
 def cmd_directory_show(args: argparse.Namespace) -> int:
     bundle = json.loads(args.file.read_text(encoding="utf-8"))
     payload = DirectoryPayload.model_validate(bundle["payload"])
@@ -325,6 +485,8 @@ def cmd_directory_show(args: argparse.Namespace) -> int:
             )
         )
         print(f"  {entry.person_id:<8} {entry.role:<13} {entry.key_id}  {state:<18} {entry.name}")
+    for revoker in payload.revokers or ():
+        print(f"  revocation key {revoker.key_id}  {revoker.label}")
     return 0
 
 
@@ -363,7 +525,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     finally:
         api.close()
     args.out.write_text(json.dumps(bundle, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"{args.kind} version {bundle['payload']['version']} -> {args.out}")
+    version = bundle["payload"]["version"] if bundle else "none yet"
+    print(f"{args.kind} version {version} -> {args.out}")
     return 0
 
 
@@ -422,6 +585,72 @@ def cmd_contact_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_revoker_keygen(args: argparse.Namespace) -> int:
+    """Make a revocation key. Its public half goes to the custodians for the directory."""
+    from alerting.clients.keystore import save_key
+    from alerting.core.signing import generate_keypair
+
+    private, public = generate_keypair()
+    passphrase = args.passphrase or getpass.getpass("New passphrase for the revocation key: ")
+    path = save_key(REVOKER_NAME, private, passphrase, role="revoker", directory=args.home)
+    print(f"revocation key -> {path}")
+    print(f"  public key : {public_key_to_b64u(public)}")
+    print(f"  key id     : {key_id(public)}")
+    print("\nCustodians add it with: alerting-org directory revoker --add <public key> --label ...")
+    return 0
+
+
+def cmd_revoke_now(args: argparse.Namespace) -> int:
+    """Revoke a key in seconds, with the revocation key instead of the root.
+
+    Fetches the directory and the current list, verifies both against the root key
+    pinned in the operator's home, signs the next list and publishes it.
+    """
+    from alerting.clients.bundles import PinnedOrg
+    from alerting.clients.keystore import load_key
+    from alerting.clients.transport import ServerError
+
+    pin = PinnedOrg.load(args.home)
+    revoker_pass = args.revoker_passphrase or getpass.getpass("Revocation key passphrase: ")
+    try:
+        revoker = load_key(REVOKER_NAME, revoker_pass, directory=args.revoker_home)
+    except Exception as exc:
+        print(f"error: cannot open the revocation key: {exc}", file=sys.stderr)
+        return 2
+    api = _api(args)
+    try:
+        latest = api.get("/v1/revocations") or None
+        directory = Directory.load(
+            api.get("/v1/directory"), root_public_key=pin.root_public_key, org_id=pin.org_id
+        ).with_revocations(latest)
+        payload, chosen = next_revocations(
+            directory,
+            latest,
+            signer=revoker.key_id,
+            person_id=args.target,
+            kid=args.key_id,
+            at=int(time.time()),
+            reason=args.reason,
+        )
+        raw = payload.to_payload()
+        signature = sign_payload(DOMAIN_REVOCATIONS, raw, revoker.private_key)
+        bundle = {"payload": raw, "signature": signature}
+        result = api.post("/v1/bundles", {"bundle": bundle})
+    except (ServerError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        api.close()
+    for entry in chosen:
+        print(f"REVOKED {entry.person_id} {entry.key_id} (revocation list v{result['version']})")
+    for line in result.get("invalidated", []):
+        print(f"  !! no longer verifies: {line}")
+    if result.get("invalidated"):
+        print("  Those events were co-signed by a revoked key. Re-issue them if they stand.")
+    print("The server refuses the key from now on; open sockets close within 15 s.")
+    return 0
+
+
 def cmd_publish(args: argparse.Namespace) -> int:
     from alerting.clients.transport import ServerError
 
@@ -472,7 +701,7 @@ def build_parser() -> argparse.ArgumentParser:
     publish.set_defaults(func=cmd_publish)
 
     fetch = sub.add_parser("fetch", help="download the current signed directory or policy")
-    fetch.add_argument("--kind", choices=["directory", "policy"], required=True)
+    fetch.add_argument("--kind", choices=["directory", "policy", "revocations"], required=True)
     fetch.add_argument("--out", type=pathlib.Path, required=True)
     server_args(fetch)
     fetch.set_defaults(func=cmd_fetch)
@@ -511,9 +740,34 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--reason", required=True)
         command.set_defaults(func=func)
 
+    revoker = dsub.add_parser("revoker", help="name or drop a revocation key (fast path)")
+    signing_args(revoker)
+    which = revoker.add_mutually_exclusive_group(required=True)
+    which.add_argument("--add", metavar="PUBLIC_KEY", help="from alerting-org revoker-keygen")
+    which.add_argument("--remove", metavar="KEY_ID")
+    revoker.add_argument("--label", default="дежурная смена")
+    fate = revoker.add_mutually_exclusive_group()
+    fate.add_argument("--absorb", type=pathlib.Path, help="its list, to keep as revoked[]")
+    fate.add_argument("--discard-revocations", action="store_true", help="it was stolen")
+    revoker.set_defaults(func=cmd_directory_revoker)
+
     show = dsub.add_parser("show", help="list the keys in a signed directory")
     show.add_argument("--file", type=pathlib.Path, required=True)
     show.set_defaults(func=cmd_directory_show)
+
+    keygen = sub.add_parser("revoker-keygen", help="make a revocation key for the duty shift")
+    keygen.add_argument("--home", type=pathlib.Path, required=True)
+    keygen.add_argument("--passphrase")
+    keygen.set_defaults(func=cmd_revoker_keygen)
+
+    now = sub.add_parser("revoke-now", help="revoke with the revocation key, in seconds")
+    server_args(now)
+    now.add_argument("--for", dest="target", help="all of this person's live keys")
+    now.add_argument("--key-id", help="just this key")
+    now.add_argument("--reason", required=True)
+    now.add_argument("--revoker-home", type=pathlib.Path, required=True)
+    now.add_argument("--revoker-passphrase")
+    now.set_defaults(func=cmd_revoke_now)
 
     contact = sub.add_parser("contact", help="where to reach a person (server-held)")
     csub = contact.add_subparsers(dest="contact_command", required=True)

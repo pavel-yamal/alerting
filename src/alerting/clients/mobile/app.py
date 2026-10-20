@@ -199,7 +199,8 @@ class Mobile:
         )
         cache = BundleCache(pin)
         try:
-            directory = cache.accept("directory", api.get("/v1/directory"))
+            cache.accept("directory", api.get("/v1/directory"))
+            directory = cache.accept("revocations", api.get("/v1/revocations"))
             cache.accept("policy", api.get("/v1/policy"))
         except ServerError as exc:
             api.close()

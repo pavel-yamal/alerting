@@ -39,6 +39,18 @@ async def directory(request: Request) -> dict[str, Any]:
     return app.state.directory_bundle
 
 
+@router.get("/revocations")
+async def revocations(request: Request) -> dict[str, Any]:
+    """The newest revocation list, signed by a revocation key the directory names.
+
+    Empty until the first one is published. Devices apply it on top of the directory
+    and refuse a version lower than the highest they have seen; one that withholds it
+    keeps the copy they already hold.
+    """
+    app = request.app.state.alerting
+    return app.state.revocations_bundle or {}
+
+
 @router.get("/policy")
 async def policy(request: Request) -> dict[str, Any]:
     app = request.app.state.alerting
@@ -181,8 +193,10 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
     app = request.app.state.alerting
     payload = body.bundle.get("payload")
     kind = payload.get("type") if isinstance(payload, dict) else None
-    if kind not in ("directory", "policy"):
-        raise HTTPException(422, "bundle payload must have type directory or policy")
+    if kind not in ("directory", "policy", "revocations"):
+        raise HTTPException(422, "bundle payload must have type directory, policy or revocations")
+    if kind == "revocations":
+        return _publish_revocations(app, body.bundle, request)
 
     current = app.repo.latest_bundle(kind)
     seen = int(current["payload"]["version"]) if current else 0
@@ -204,7 +218,8 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
     if kind == "policy":
         _refuse_if_it_breaks_active_events(app, loaded, now)
     else:
-        invalidated = _broken_active_events(app, loaded, app.state.policy(), now)
+        effective = loaded.with_revocations(app.state.revocations_bundle)
+        invalidated = _broken_active_events(app, effective, app.state.policy(), now)
     app.repo.put_bundle(kind, loaded.version, body.bundle, now)
     principal = getattr(request.state, "principal", None)
     by = principal.person_id if principal else None
@@ -214,6 +229,11 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
             "version": loaded.version,
             "published_by": by,
             **({"policy_id": loaded.policy_id} if kind == "policy" else {}),
+            **(
+                {"revokers": sorted(loaded.revokers)}
+                if kind == "directory" and loaded.payload.revokers is not None
+                else {}
+            ),
             **({"invalidated": invalidated} if invalidated else {}),
         },
     )
@@ -223,6 +243,68 @@ async def publish_bundle(body: BundleUpload, request: Request) -> dict[str, Any]
     if invalidated:
         log.warning("directory %d invalidates active events: %s", loaded.version, invalidated)
     return {"kind": kind, "version": loaded.version, "invalidated": invalidated}
+
+
+def _publish_revocations(app: Any, bundle: dict[str, Any], request: Request) -> dict[str, Any]:
+    """The fast path: a revocation list signed by a revocation key, not the root.
+
+    Verified against the revocation keys the current root-signed directory names, and
+    only a higher version is accepted -- the same two checks every device makes. It
+    can only add revocations, so it is never refused for invalidating running events;
+    those are reported instead, as for a directory.
+    """
+    current = app.repo.latest_bundle("revocations")
+    seen = int(current["payload"]["version"]) if current else 0
+    base = Directory.load(
+        app.state.directory_bundle,
+        root_public_key=app.state.root_public_key,
+        org_id=app.state.org_id,
+    )
+    try:
+        effective = base.with_revocations(bundle, min_version=seen + 1)
+    except DirectoryRejected as exc:
+        raise HTTPException(409, f"revocation list refused: {exc}") from None
+    except Exception as exc:
+        raise HTTPException(422, f"malformed revocation list: {exc}") from None
+    listed = effective.revocations
+    if listed is None:
+        raise HTTPException(409, "revocation list refused: its signer is not a revocation key")
+    previous = {r["key_id"] for r in (current or {}).get("payload", {}).get("entries", [])}
+    if current and current["payload"]["signer"] in base.revokers:
+        # Cumulative, across revocation keys too: an entry silently dropped would
+        # un-revoke a key on every device that joins after this list, while older
+        # devices still refuse it. Only the root un-names a revocation key, and with
+        # it the list it signed (``alerting-org directory revoker --remove``).
+        missing = previous - {r.key_id for r in listed.entries}
+        if missing:
+            raise HTTPException(
+                409, f"revocation list refused: drops earlier entries {sorted(missing)}"
+            )
+
+    now = app.clock.now()
+    invalidated = _broken_active_events(app, effective, app.state.policy(), now)
+    app.repo.put_bundle("revocations", listed.version, bundle, now)
+    principal = getattr(request.state, "principal", None)
+    by = principal.person_id if principal else None
+    for revocation in listed.entries:
+        if revocation.key_id in previous:
+            continue
+        owner = base.lookup(revocation.key_id)
+        app.audit.append(
+            Event.KEY_REVOKED,
+            {
+                "key_id": revocation.key_id,
+                "person_id": owner.person_id if owner else None,
+                "role": owner.role if owner else None,
+                "revoked_at": revocation.revoked_at,
+                "reason": revocation.reason,
+                "revoked_with": listed.signer,
+                "published_by": by,
+                **({"invalidated": invalidated} if invalidated else {}),
+            },
+        )
+    log.warning("revocation list %d published by %s", listed.version, by)
+    return {"kind": "revocations", "version": listed.version, "invalidated": invalidated}
 
 
 #: Roles a contact may carry. The directory decides what a key may *sign*; this only

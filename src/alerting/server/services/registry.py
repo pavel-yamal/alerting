@@ -51,12 +51,22 @@ class OrgState:
             raise RuntimeError("no policy bundle published")
         return bundle
 
+    @property
+    def revocations_bundle(self) -> dict[str, Any] | None:
+        return self.repo.latest_bundle("revocations")
+
     def directory(self) -> Directory:
+        """The root-signed directory with the fast-path revocation list applied.
+
+        Every gate reads this -- signed requests, the socket handshake and its
+        periodic re-check, order verification -- so a published revocation list
+        takes effect on the next request without a restart.
+        """
         return Directory.load(
             self.directory_bundle,
             root_public_key=self.root_public_key,
             org_id=self.org_id,
-        )
+        ).with_revocations(self.revocations_bundle)
 
     def policy(self) -> Policy:
         return Policy.load(

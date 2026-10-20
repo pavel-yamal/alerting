@@ -21,6 +21,8 @@ class Reason(StrEnum):
     # --- trust anchors ------------------------------------------------------
     DIRECTORY_UNSIGNED = "directory_unsigned"
     DIRECTORY_ROLLBACK = "directory_rollback"
+    REVOCATIONS_UNSIGNED = "revocations_unsigned"
+    REVOCATIONS_ROLLBACK = "revocations_rollback"
     POLICY_UNSIGNED = "policy_unsigned"
     POLICY_ROLLBACK = "policy_rollback"
     POLICY_ID_MISMATCH = "policy_id_mismatch"

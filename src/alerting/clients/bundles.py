@@ -5,7 +5,8 @@ Two things make client-side verification real rather than decorative:
 1. The org **root public key is pinned at enrollment**, in person, and never fetched.
 2. Bundle **versions only go up**. A client that has seen directory version 7 refuses
    version 6 forever, so a server cannot roll it back to a directory that still
-   contains a key the org has since revoked.
+   contains a key the org has since revoked. The same holds for the revocation list
+   signed on the fast path.
 
 The cache also lets a client verify an order while the server is unreachable, which is
 the state it is most likely to be in during the incident that matters.
@@ -112,7 +113,15 @@ class BundleCache:
         write_atomically(self._state_path(), json.dumps(state, indent=2))
 
     def accept(self, kind: str, bundle: dict[str, Any]) -> Directory | Policy:
-        """Verify a freshly fetched bundle and cache it if it is not a rollback."""
+        """Verify a freshly fetched bundle and cache it if it is not a rollback.
+
+        A directory comes back with the cached revocation list applied, and
+        ``revocations`` returns the directory with the new list applied: a key
+        revoked on the fast path is never trusted again just because the root-signed
+        directory does not mention it yet.
+        """
+        if kind == "revocations":
+            return self._accept_revocations(bundle)
         loader = Directory.load if kind == "directory" else Policy.load
         loaded = loader(
             bundle,
@@ -122,13 +131,43 @@ class BundleCache:
         )
         write_atomically(self._path(kind), json.dumps(bundle, ensure_ascii=False, indent=2))
         self._write_state(**{f"{kind}_version": loaded.version})
+        if isinstance(loaded, Directory):
+            return loaded.with_revocations(self._cached_revocations())
         return loaded
+
+    def _accept_revocations(self, bundle: dict[str, Any]) -> Directory:
+        base = self._root_directory()
+        if not bundle:
+            # Withheld or none yet: keep what we hold. Dropping it would un-revoke.
+            return base.with_revocations(self._cached_revocations())
+        applied = base.with_revocations(bundle, min_version=self.seen_version("revocations"))
+        if applied.revocations is None:
+            # Signed by a key this directory no longer names; the root's word is newer.
+            return applied
+        path = self._path("revocations")
+        write_atomically(path, json.dumps(bundle, ensure_ascii=False, indent=2))
+        self._write_state(revocations_version=applied.revocations.version)
+        return applied
+
+    def _cached_revocations(self) -> dict[str, Any] | None:
+        path = self._path("revocations")
+        if not path.exists():
+            return None
+        blob: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return blob
+
+    def _root_directory(self) -> Directory:
+        bundle = json.loads(self._path("directory").read_text(encoding="utf-8"))
+        return Directory.load(
+            bundle, root_public_key=self.pin.root_public_key, org_id=self.pin.org_id
+        )
 
     def cached(self, kind: str) -> Directory | Policy:
         """Load from disk. Used when the server is unreachable."""
+        if kind == "directory":
+            return self._root_directory().with_revocations(self._cached_revocations())
         bundle = json.loads(self._path(kind).read_text(encoding="utf-8"))
-        loader = Directory.load if kind == "directory" else Policy.load
-        return loader(bundle, root_public_key=self.pin.root_public_key, org_id=self.pin.org_id)
+        return Policy.load(bundle, root_public_key=self.pin.root_public_key, org_id=self.pin.org_id)
 
     def directory(self) -> Directory:
         result = self.cached("directory")
