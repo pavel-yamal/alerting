@@ -86,6 +86,9 @@ class ConnectionRegistry:
     def connected_people(self) -> list[str]:
         return sorted(self._sinks)
 
+    def device_counts(self) -> dict[str, int]:
+        return {person_id: len(sinks) for person_id, sinks in self._sinks.items() if sinks}
+
     async def deliver(self, person_id: str, frame: dict[str, Any]) -> int:
         """Send to every device of this person; returns how many accepted it."""
         delivered = 0
@@ -144,19 +147,30 @@ class WebSocketChannel:
     async def send(self, recipient: Recipient, context: DispatchContext) -> DeliveryReceipt:
         frame = {"kind": "order", "envelope": context.envelope}
         rendered = json.dumps(frame, ensure_ascii=False)[:200]
-        delivered = await self.registry.deliver(recipient.person_id, frame)
-        if delivered:
-            return DeliveryReceipt(
-                self.name, recipient.person_id, "sent", f"{delivered} device(s)", rendered=rendered
-            )
+        local = await self.registry.deliver(recipient.person_id, frame)
         if self.fanout is None:
+            if local:
+                return DeliveryReceipt(
+                    self.name, recipient.person_id, "sent", f"{local} device(s)", rendered=rendered
+                )
             return DeliveryReceipt(self.name, recipient.person_id, "failed", "offline")
-        # Not connected to this process. Another one may hold the socket; only its
-        # confirmation counts as delivery.
-        delivered, detail = await self.fanout.relay(recipient.person_id, context.order.order_id)
-        status = "sent" if delivered else "failed"
+        # Relayed even when a local device took it: a person's phone and tablet may
+        # be connected to different processes, and every device gets the order.
+        # Only the other processes' confirmations count as delivery there.
+        remote, detail = await self.fanout.relay(recipient.person_id, context.order.order_id)
+        if local and remote:
+            detail = f"{local} device(s) here, {detail}"
+        elif local:
+            detail = f"{local} device(s)" + (
+                "" if detail == "offline" else f"; elsewhere: {detail}"
+            )
+        status = "sent" if local or remote else "failed"
         return DeliveryReceipt(
-            self.name, recipient.person_id, status, detail, rendered=rendered if delivered else ""
+            self.name,
+            recipient.person_id,
+            status,
+            detail,
+            rendered=rendered if status == "sent" else "",
         )
 
     async def probe(self) -> ProbeResult:

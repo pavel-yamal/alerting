@@ -54,6 +54,13 @@ PRESENCE_STALE_S = 60
 #: Hand-offs and abandoned presence are pruned past this age.
 PRUNE_AFTER_S = 3600
 
+#: A process that let a hand-off time out is not waited for again for this long.
+#: ``Dispatcher.fan_out`` goes recipient by recipient and starts the next channel
+#: only after all of them; without this, a crashed process still listed as holding
+#: thirty people's sockets would cost two seconds each -- a minute's delay to SMS
+#: and voice in exactly the failure where those are needed.
+SUSPECT_S = 30.0
+
 
 def new_process_id(node_id: str) -> str:
     """Unique per process, readable per node: ``app-1:3f9c2a``."""
@@ -78,6 +85,8 @@ class Fanout:
         self.registry: Any = None  # ConnectionRegistry; set by attach_registry
         self._task: asyncio.Task[None] | None = None
         self._listening = asyncio.Event()
+        #: process_id -> loop time until which it is not waited for.
+        self._suspect: dict[str, float] = {}
 
     def attach_registry(self, registry: Any) -> None:
         self.registry = registry
@@ -110,24 +119,39 @@ class Fanout:
             return 0, "offline"
 
         relay_id = self.repo.create_relay(order_id, person_id, self.process_id, now)
+        # Every holder is told, suspect or not: a process that recovered delivers.
         self.repo.notify(CHANNEL, str(relay_id))
 
         loop = asyncio.get_running_loop()
+        awaited = {h for h in holders if self._suspect.get(h, 0.0) <= loop.time()}
         deadline = loop.time() + self.relay_timeout
-        while True:
-            results = self.repo.relay_results(relay_id)
-            delivered = sum(int(r["delivered"]) for r in results)
-            if delivered or len(results) >= len(holders) or loop.time() >= deadline:
-                break
+        results = self.repo.relay_results(relay_id)
+        # Wait for every responsive holder, not the first: a person's devices may be
+        # spread over several processes, and the count should say how many it reached.
+        while awaited - {r["process_id"] for r in results} and loop.time() < deadline:
             await asyncio.sleep(RELAY_POLL_S)
+            results = self.repo.relay_results(relay_id)
 
+        answered = {r["process_id"] for r in results}
+        for holder in awaited - answered:
+            self._suspect[holder] = loop.time() + SUSPECT_S
+            log.warning(
+                "process %s did not confirm relay %s; not waiting on it for %gs",
+                holder,
+                relay_id,
+                SUSPECT_S,
+            )
+        for holder in answered:
+            self._suspect.pop(holder, None)
+
+        delivered = sum(int(r["delivered"]) for r in results)
         if delivered:
             via = ", ".join(sorted(r["process_id"] for r in results if r["delivered"]))
             return delivered, f"{delivered} device(s) via {via}"
         if results:
             return 0, "relayed, but the holding process reached no device"
-        waited = f"{self.relay_timeout:g}s"
-        return 0, f"connected via {', '.join(holders)}, but no confirmation in {waited}"
+        silent = sorted(set(holders) - answered)
+        return 0, f"connected via {', '.join(silent)}, but it did not confirm delivery"
 
     # --- receiving ------------------------------------------------------------------
     async def handle(self, relay_id: int) -> None:
@@ -187,7 +211,12 @@ class Fanout:
     def _housekeeping(self) -> None:
         now = self.clock.now()
         try:
-            self.repo.refresh_presence(self.process_id, now)
+            # Republished from the registry, not just touched: a row whose attach or
+            # detach write failed would otherwise stay wrong for the life of the
+            # socket -- missing (invisible to other processes) or left behind (others
+            # waiting on a socket that is gone).
+            counts = self.registry.device_counts() if self.registry is not None else {}
+            self.repo.replace_presence(self.process_id, counts, now)
             self.repo.prune_relays(now - PRUNE_AFTER_S)
             self.repo.prune_presence(now - PRUNE_AFTER_S)
         except Exception:

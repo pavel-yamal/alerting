@@ -118,7 +118,7 @@ def test_an_unconfirmed_hand_off_is_failed_not_sent(two_nodes, org, clock):
         for d in repo.dispatches(order_id)
         if d["person_id"] == "x-101" and d["channel"] == "ws"
     )
-    assert "no confirmation" in detail
+    assert "did not confirm" in detail
 
 
 def test_presence_follows_the_socket(two_nodes, org, clock):
@@ -144,3 +144,60 @@ def test_a_stopping_process_withdraws_its_presence(settings, clock, org):
     with psycopg.connect(settings.dsn) as connection:
         left = connection.execute("SELECT COUNT(*) FROM ws_presence").fetchone()
     assert left == (0,)
+
+
+def test_every_device_gets_it_when_they_are_on_different_processes(two_nodes, org, clock):
+    """A phone on one process and a tablet on the other: a local delivery must not
+    stop the hand-off, or the second device never hears about the order."""
+    one, two = two_nodes
+    here = connect_executor(two, org, "x-101", clock.now())
+    there = connect_executor(one, org, "x-101", clock.now())
+    try:
+        wait_until(lambda: two.app.state.alerting.fanout.connected_anywhere() == (1, 2))
+        order_id = dispatch_from(two, org, clock)
+
+        assert ws_attempts(two, org, clock, order_id, "x-101") == ["ws:sent"]
+        for socket in (here, there):
+            assert socket.receive_json()["envelope"]["payload"]["order_id"] == order_id
+        detail = next(
+            d["detail"]
+            for d in two.app.state.alerting.repo.dispatches(order_id)
+            if d["person_id"] == "x-101" and d["channel"] == "ws"
+        )
+        assert detail.startswith("1 device(s) here, 1 device(s) via app-1:")
+    finally:
+        for socket in (here, there):
+            socket.__exit__(None, None, None)
+
+
+def test_a_silent_process_is_waited_for_once_not_per_recipient(two_nodes, org, clock):
+    """A crashed process still listed for many people would otherwise cost the full
+    timeout for each of them, delaying every channel after ws."""
+    _, two = two_nodes
+    repo = two.app.state.alerting.repo
+    for person in ("x-101", "x-102"):
+        repo.set_presence("ghost:000000", person, 1, clock.now())
+    two.app.state.alerting.fanout.relay_timeout = 0.5
+
+    started = time.monotonic()
+    order_id = dispatch_from(two, org, clock)
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.95, f"waited {elapsed:.2f}s: once per recipient, not once in all"
+    for person in ("x-101", "x-102"):
+        assert ws_attempts(two, org, clock, order_id, person) == ["ws:failed"]
+
+
+def test_housekeeping_restores_presence_a_failed_write_lost(two_nodes, org, clock):
+    one, _ = two_nodes
+    fanout = one.app.state.alerting.fanout
+    socket = connect_executor(one, org, "x-102", clock.now())
+    try:
+        wait_until(lambda: fanout.connected_anywhere() == (1, 1))
+        # As if the write on attach had failed.
+        one.app.state.alerting.repo.clear_presence(fanout.process_id)
+        assert fanout.connected_anywhere() == (0, 0)
+        fanout._housekeeping()
+        assert fanout.connected_anywhere() == (1, 1)
+    finally:
+        socket.__exit__(None, None, None)

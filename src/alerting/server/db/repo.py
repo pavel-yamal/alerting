@@ -674,10 +674,17 @@ class Repo:
             (process_id, person_id, devices, at),
         )
 
-    def refresh_presence(self, process_id: str, at: int) -> None:
-        self._execute(
-            "UPDATE ws_presence SET updated_at = %s WHERE process_id = %s", (at, process_id)
-        )
+    def replace_presence(self, process_id: str, counts: Mapping[str, int], at: int) -> None:
+        """Make this process's presence exactly ``counts``, in one transaction."""
+        with self.tx():
+            self._execute("DELETE FROM ws_presence WHERE process_id = %s", (process_id,))
+            for person_id, devices in counts.items():
+                if devices > 0:
+                    self._execute(
+                        "INSERT INTO ws_presence (process_id, person_id, devices, updated_at)"
+                        " VALUES (%s, %s, %s, %s)",
+                        (process_id, person_id, devices, at),
+                    )
 
     def clear_presence(self, process_id: str) -> None:
         self._execute("DELETE FROM ws_presence WHERE process_id = %s", (process_id,))
