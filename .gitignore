@@ -29,3 +29,4 @@ deploy/inventory.env
 
 # Окружение docker compose
 docker/.env
+custodian-kit/

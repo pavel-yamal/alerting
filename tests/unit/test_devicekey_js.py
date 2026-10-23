@@ -50,6 +50,10 @@ const input = JSON.parse(fs.readFileSync(0, "utf8"));
     try { D.canonicalize(bad); out.refused.push(false); } catch (_) { out.refused.push(true); }
   }
   out.key_id = await D.keyId(D.fromB64u(input.raw_public));
+  const first = input.payloads[0];
+  const last = out.signatures[out.signatures.length - 1];
+  out.verified = await D.verify(input.raw_public, input.domain, first, out.signatures[0]);
+  out.forged = await D.verify(input.raw_public, input.domain, first, last);
   out.unexpected = D.unexpectedFields(Object.assign({}, input.payloads[0], { sneaky: 1 }));
   process.stdout.write(JSON.stringify(out));
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -98,6 +102,7 @@ def test_canonical_bytes_signatures_and_digests_match_python():
         assert digest == hashlib.sha256(DOMAIN_ORDER + canonicalize(payload)).hexdigest()
     assert out["key_id"] == key_id(public)
     assert out["unexpected"] == ["sneaky"]
+    assert out["verified"] is True and out["forged"] is False
 
 
 def test_a_delegation_signed_in_the_browser_verifies():
