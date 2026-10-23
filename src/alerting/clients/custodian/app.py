@@ -136,8 +136,10 @@ def create_custodian(vault_path: pathlib.Path) -> FastAPI:
         require_csrf(request)
         if vault_path.exists():
             raise HTTPException(409, f"корневой ключ уже есть: {vault_path}")
-        if body.vault.get("type") != custody.VAULT_TYPE:
-            raise HTTPException(422, "это не резервная копия корневого ключа")
+        try:
+            custody.check_vault(body.vault)
+        except CustodyError as exc:
+            raise refuse(exc) from None
         _write_vault(vault_path, body.vault)
         return status()
 

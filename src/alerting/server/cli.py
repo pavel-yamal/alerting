@@ -154,6 +154,10 @@ def _migrate(settings: Settings) -> int:
     return 0
 
 
+class _ImportRaced(Exception):
+    """Another publication landed between the version check and the write."""
+
+
 def _import_root(settings: Settings, answer_path: pathlib.Path | None, typed: str) -> int:
     """Move this server to the custodians' new root key.
 
@@ -221,21 +225,33 @@ def _import_root(settings: Settings, answer_path: pathlib.Path | None, typed: st
         repo = Repo(pool)
         clock = SystemClock()
         now = clock.now()
-        for kind, loaded, bundle in (
+        pairs = (
             ("directory", directory, bundles["directory"]),
             ("policy", policy, bundles["policy"]),
-        ):
+        )
+        # Both versions checked before anything is written, then both written in one
+        # transaction: half a migration -- a directory under the new root, a policy
+        # still under the old -- would leave a server that verifies neither, and a
+        # retry refused because the directory is no longer newer.
+        seen: dict[str, int] = {}
+        for kind, loaded, _ in pairs:
             current = repo.latest_bundle(kind)
-            seen = int(current["payload"]["version"]) if current else 0
-            if loaded.version <= seen:
-                log.error("%s version %d is not above the stored %d", kind, loaded.version, seen)
+            seen[kind] = int(current["payload"]["version"]) if current else 0
+            if loaded.version <= seen[kind]:
+                log.error(
+                    "%s version %d is not above the stored %d", kind, loaded.version, seen[kind]
+                )
                 return 2
-            stored = repo.put_bundle_if_latest(
-                kind, loaded.version, bundle, now, expected_latest=seen
-            )
-            if not stored:
-                log.error("%s changed while importing; run again", kind)
-                return 1
+        try:
+            with repo.tx():
+                for kind, loaded, bundle in pairs:
+                    if not repo.put_bundle_if_latest(
+                        kind, loaded.version, bundle, now, expected_latest=seen[kind]
+                    ):
+                        raise _ImportRaced(kind)
+        except _ImportRaced as exc:
+            log.error("%s changed while importing; nothing was stored. Run again", exc)
+            return 1
         raw_key = settings.load_server_key()
         from alerting.core.signing import private_key_from_b64u
 

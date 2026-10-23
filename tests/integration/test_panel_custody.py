@@ -61,7 +61,25 @@ def test_enrolment_and_a_new_codebook_go_out_and_come_back(panel_app, org, clock
     assert "FLOOD" in after["scenarios_yaml"]
 
     again = panel.post("/api/custody/answer", headers=PANEL, json={"answer": answer})
-    assert again.status_code == 409, "the same answer twice is a rollback attempt"
+    assert again.status_code == 200, "the same answer again is a no-op, not an error"
+    assert all(r.get("already") for r in again.json()["published"])
+
+
+def test_an_answer_interrupted_halfway_finishes_on_retry(panel_app, server, org, clock):  # noqa: F811
+    """Directory went out, policy did not: uploading the same file completes it."""
+    panel = logged_in(panel_app, org)
+    before = panel.get("/api/directory").json()
+    request = panel.post("/api/custody/request", headers=PANEL, json={"changes": [
+        {"op": "retire", "person_id": "x-103"},
+        {"op": "policy", "scenarios_yaml": before["scenarios_yaml"]},
+    ]}).json()  # fmt: skip
+    answer = custodians_sign(org, request, clock)
+    server.post("/v1/bundles", json={"bundle": answer["bundles"]["directory"]}).raise_for_status()
+
+    retried = panel.post("/api/custody/answer", headers=PANEL, json={"answer": answer})
+    assert retried.status_code == 200, retried.text
+    by_kind = {r["kind"]: r for r in retried.json()["published"]}
+    assert by_kind["directory"].get("already") and by_kind["policy"]["version"] == 2
 
 
 def test_a_broken_codebook_is_caught_at_the_desk(panel_app, org):  # noqa: F811

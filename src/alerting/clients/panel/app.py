@@ -940,6 +940,13 @@ def create_panel(
         for kind in ("directory", "policy"):
             if kind not in bundles:
                 continue
+            # The two bundles are published one after the other. If the first went
+            # out and the second failed, uploading the same answer again must finish
+            # the job, not stop at "version already seen" on the first.
+            if _server(session.api.get, f"/v1/{kind}") == bundles[kind]:
+                version = bundles[kind]["payload"]["version"]
+                published.append({"kind": kind, "version": version, "already": True})
+                continue
             result = _server(session.api.post, "/v1/bundles", {"bundle": bundles[kind]})
             published.append(result)
         fresh(session)
@@ -978,6 +985,9 @@ def create_panel(
         return {
             "payload": payload.to_payload(),
             "previous": [r["key_id"] for r in (latest or {}).get("payload", {}).get("entries", [])],
+            # The signed list it builds on, so the browser can check the baseline
+            # itself rather than take this response's word for it.
+            "latest": latest,
             "revoking": [
                 {"person_id": e.person_id, "name": e.name, "role": e.role, "key_id": e.key_id}
                 for e in chosen

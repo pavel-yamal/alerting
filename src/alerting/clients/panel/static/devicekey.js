@@ -88,6 +88,17 @@
     return [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
   }
 
+  // Verify a signature with a public key this browser already holds (its own
+  // revocation key's public half), never with one the panel hands over.
+  async function verify(publicB64u, domain, payload, signature) {
+    try {
+      const key = await crypto.subtle.importKey("raw", fromB64u(publicB64u), { name: "Ed25519" }, false, ["verify"]);
+      return await crypto.subtle.verify({ name: "Ed25519" }, key, fromB64u(signature), signingInput(domain, payload));
+    } catch (_) {
+      return false;
+    }
+  }
+
   async function sign(privateKey, domain, payload) {
     return b64u(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, signingInput(domain, payload)));
   }
@@ -185,7 +196,7 @@
   }
 
   root.DeviceKey = {
-    canonicalize, b64u, fromB64u, keyId, digestHex, sign, supported,
+    canonicalize, b64u, fromB64u, keyId, digestHex, sign, verify, supported,
     list, forget, create, unlock, checkDelegation, unexpectedFields, signingInput,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -132,6 +132,47 @@ def create_vault(
     return vault, private
 
 
+def check_vault(vault: Any) -> None:
+    """The whole structure of a sealed vault, before it is trusted as one.
+
+    Checked on restore, so a damaged backup is refused at the door instead of being
+    written as the only vault and breaking the custodians' screen until someone edits
+    the filesystem by hand. Says nothing about the passphrases -- only both can.
+    """
+    try:
+        if not isinstance(vault, dict) or vault.get("type") != VAULT_TYPE or vault.get("v") != 1:
+            raise ValueError("не файл корневого ключа")
+        if not isinstance(vault.get("org_id"), str) or not vault["org_id"]:
+            raise ValueError("нет организации")
+        public = public_key_from_b64u(vault["public_key"])
+        if key_id(public) != vault.get("key_id"):
+            raise ValueError("идентификатор ключа не совпадает с ключом")
+        names = vault.get("custodians")
+        if not isinstance(names, list) or len(names) != 2 or not all(names):
+            raise ValueError("должно быть два хранителя")
+        if not isinstance(vault.get("created_at"), int):
+            raise ValueError("нет даты создания")
+        kdf = vault["kdf"]
+        if (kdf.get("name"), kdf.get("n"), kdf.get("r"), kdf.get("p")) != (
+            "scrypt",
+            SCRYPT_N,
+            SCRYPT_R,
+            SCRYPT_P,
+        ):
+            raise ValueError("параметры шифрования не поддерживаются")
+        salts = vault["salts"]
+        if not (isinstance(salts, list) and len(salts) == 2):
+            raise ValueError("нужны две соли")
+        if any(len(b64u_decode(x)) != 16 for x in salts) or len(b64u_decode(vault["nonce"])) != 12:
+            raise ValueError("повреждены параметры шифрования")
+        if len(b64u_decode(vault["sealed"])) < 32:
+            raise ValueError("нет зашифрованного ключа")
+    except CustodyError:
+        raise
+    except Exception as exc:
+        raise CustodyError(f"резервная копия повреждена: {exc}") from None
+
+
 def open_vault(vault: dict[str, Any], passphrases: tuple[str, str]) -> Ed25519PrivateKey:
     """Both passphrases, or nothing. Which one was wrong is not said."""
     if vault.get("type") != VAULT_TYPE or vault.get("v") != 1:

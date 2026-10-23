@@ -64,3 +64,13 @@ def test_a_tampered_answer_is_refused(services, settings, migration, tmp_path):
     path = tmp_path / "tampered.json"
     path.write_text(json.dumps(answer), encoding="utf-8")
     assert _import_root(settings, path, answer["root_fingerprint"]) == 2
+
+
+def test_nothing_is_stored_when_either_bundle_is_stale(services, settings, migration, org):
+    """Half a migration would leave a server that verifies neither root."""
+    answer, path = migration
+    stale = dict(org.policy_bundle)
+    stale_payload = dict(stale["payload"], version=99)
+    services.repo.put_bundle("policy", 99, {"payload": stale_payload, "signature": "x"}, 1)
+    assert _import_root(settings, path, answer["root_fingerprint"]) == 2
+    assert services.repo.latest_bundle("directory")["payload"]["version"] == 1

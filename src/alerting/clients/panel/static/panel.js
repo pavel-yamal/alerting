@@ -563,13 +563,31 @@ async function fastRevoke(person) {
       const prepared = await api("/api/revocations/prepare", { method: "POST", body: {
         signer: record.key_id, reason: reason.value.trim(), key_id: person.key_id } });
       const list = prepared.payload;
-      // Checked before signing: our key, our organisation, every earlier entry kept,
-      // and nothing revoked beyond the key the person clicked.
+      // The baseline -- what was already revoked -- is taken only from a list this
+      // browser can verify itself: one signed by its own revocation key. Anything the
+      // panel merely claims was revoked before counts as new, and is shown.
+      let baseline = [];
+      const latest = prepared.latest;
+      if (latest && latest.payload) {
+        if (latest.payload.signer === record.key_id
+            && await DeviceKey.verify(record.public_key, "revocations", latest.payload, latest.signature)) {
+          baseline = latest.payload.entries.map((e) => e.key_id);
+        }
+        if (list.version !== latest.payload.version + 1) throw new Error("панель прислала неверную версию списка отзыва — не подписано");
+      }
       const ids = new Set(list.entries.map((e) => e.key_id));
-      const fresh = list.entries.filter((e) => !prepared.previous.includes(e.key_id)).map((e) => e.key_id);
       if (list.type !== "revocations" || list.signer !== record.key_id || list.org_id !== dir.org_id
-          || prepared.previous.some((k) => !ids.has(k)) || fresh.length !== 1 || fresh[0] !== person.key_id) {
+          || baseline.some((k) => !ids.has(k)) || !ids.has(person.key_id)) {
         throw new Error("панель прислала неверный список отзыва — не подписано");
+      }
+      const fresh = list.entries.filter((e) => !baseline.includes(e.key_id) && e.key_id !== person.key_id);
+      if (fresh.length) {
+        // Earlier revocations made with another device's key cannot be checked here.
+        // The person sees every one of them and decides.
+        const lines = fresh.map((e) => `• ${keyName(e.key_id)} (${e.key_id}) — ${e.reason || "без причины"}`);
+        if (!confirm(`Вместе с ${person.person_id} список отзыва содержит ещё ${fresh.length} ключ(а), отозванных раньше другим ключом отзыва — проверить это на этом устройстве нельзя:\n\n${lines.join("\n")}\n\nЕсли кого-то из них вы не знаете как отозванного — нажмите «Отмена». Подписать весь список?`)) {
+          throw new Error("отменено: список не подписан");
+        }
       }
       const signature = await DeviceKey.sign(key, "revocations", list);
       const result = await api("/api/revocations/publish", { method: "POST", body: { payload: list, signature } });

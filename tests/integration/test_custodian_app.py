@@ -91,3 +91,22 @@ def test_a_backup_restores_on_another_laptop(screen, tmp_path):
     assert other.post("/api/vault/check", headers=H, json={"passphrases": PASSES}).json() == {
         "ok": True
     }
+
+
+def test_a_damaged_backup_is_refused_and_nothing_is_written(screen, tmp_path):
+    screen.post("/api/vault/create", headers=H, json={
+        "org_id": "acme", "names": ["Иванов", "Петров"], "passphrases": PASSES,
+    })  # fmt: skip
+    good = screen.get("/api/vault/file").json()
+    target = tmp_path / "third" / "vault.json"
+    other = TestClient(create_custodian(target))
+    for broken in [
+        {"type": custody.VAULT_TYPE, "v": 1},
+        dict(good, public_key="AAAA"),
+        dict(good, key_id="ed25519:someone-else"),
+        dict(good, salts=[good["salts"][0]]),
+    ]:
+        response = other.post("/api/vault/restore", headers=H, json={"vault": broken})
+        assert response.status_code == 422, response.text
+        assert not target.exists()
+    assert other.post("/api/vault/restore", headers=H, json={"vault": good}).status_code == 200
