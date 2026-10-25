@@ -178,10 +178,16 @@ const chosenScenario = () => {
 };
 
 function fillForm() {
+  // Rebuilt when a new list of events arrives (syncMeta), possibly mid-way through
+  // filling the form: the event already picked stays picked if it is still listed.
+  const picked = document.querySelector("input[name=scenario]:checked");
+  const keep = picked ? picked.value : null;
   $("scenarios").replaceChildren(...meta.scenarios.map((s) =>
     el("label", { class: "choice" },
       el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillScenario }),
       s.description || s.code, el("small", {}, s.code))));
+  const again = keep && [...document.querySelectorAll("input[name=scenario]")].find((r) => r.value === keep);
+  if (again) again.checked = true;
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillScenario();
 }
@@ -228,7 +234,9 @@ $("new-form").addEventListener("submit", async (event) => {
     out.replaceChildren();
     $("text").value = "";
     mode.checked = false;
-    document.querySelector("input[name=scenario]:checked").checked = false;
+    // The form may have been rebuilt while the proposal was being sent (syncMeta).
+    const picked = document.querySelector("input[name=scenario]:checked");
+    if (picked) picked.checked = false;
     fillScenario();
     await refreshLists();
     openProposal(created.order_id);
@@ -241,7 +249,24 @@ $("new-form").addEventListener("submit", async (event) => {
 const item = (id, onclick, top, sub) => el("div",
   { class: "item" + (current && current.id === id ? " active" : ""), onclick }, el("div", { class: "top" }, top), el("div", { class: "sub" }, sub));
 
+// The codebook can change while this is open: a newly published policy adds or
+// renames events. /api/meta re-verifies the signed bundles on the panel, so it is asked
+// at most once a minute, and at once when the form is about to be used; the form is
+// rebuilt only if the events changed, so a half-filled one is not wiped.
+const META_EVERY_MS = 60000;
+let metaAt = 0;
+async function syncMeta(force = false) {
+  if (!force && Date.now() - metaAt < META_EVERY_MS) return;
+  const fresh = await api("/api/meta");
+  metaAt = Date.now();
+  const changed = JSON.stringify([fresh.scenarios, fresh.severities])
+    !== JSON.stringify([meta.scenarios, meta.severities]);
+  meta = fresh;
+  if (changed) fillForm();
+}
+
 async function refreshLists() {
+  syncMeta().catch(() => { /* the list it has stays */ });
   const [proposals, orders, events] = await Promise.all([
     api("/api/proposals"), api("/api/orders"), api("/api/events/active")]);
   now = proposals.now;
@@ -743,6 +768,7 @@ async function start() {
     return;
   }
   meta = await api("/api/meta");
+  metaAt = Date.now();
   $("who").textContent = `${me.name} · ${ROLE[me.role] || me.role} · ${me.person_id}` + (me.device_key ? " · ключ устройства" : " · демо-ключ на сервере");
   $("org").textContent = config.org_label || `организация ${meta.org_id}`;
   fillForm();

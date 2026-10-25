@@ -430,3 +430,23 @@ def test_a_decision_maker_rejects_a_proposal_from_the_panel(panel_app):
         f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
     )
     assert late.status_code == 409
+
+
+def test_a_newly_published_list_of_events_reaches_a_session_without_logging_out(
+    panel_app, server, org, clock
+):
+    """The app and the panel page ask /api/meta again while open (at most once a
+    minute, and when the form is opened); what they get must already be the new list."""
+    from tests.integration.test_events import next_policy
+
+    director = browser(panel_app, "p-001")
+    codes = {s["code"] for s in director.get("/api/meta").json()["scenarios"]}
+    assert "FIRE" not in codes
+
+    server.auth = signer_for(org, "p-001", clock)
+    fire = {"min_severity": "critical", "description": "Пожар", "until_cancelled": True}
+    published = server.post("/v1/bundles", json={"bundle": next_policy(org, 2, FIRE=fire)})
+    assert published.status_code == 200, published.text
+
+    scenarios = {s["code"]: s for s in director.get("/api/meta").json()["scenarios"]}
+    assert scenarios["FIRE"]["description"] == "Пожар"

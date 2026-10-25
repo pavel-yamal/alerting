@@ -366,8 +366,25 @@ async function logout() {
 // ---- 3. lists ----------------------------------------------------------------------
 const TAB_TITLES = { sign: "На подпись", events: "Действуют", orders: "История", new: "Создать" };
 
+// The codebook can change while this is open: a newly published policy adds or
+// renames events. /api/meta re-verifies the signed bundles on the panel, so it is asked
+// at most once a minute, and at once when the form is about to be used; the form is
+// rebuilt only if the events changed, so a half-filled one is not wiped.
+const META_EVERY_MS = 60000;
+let metaAt = 0;
+async function syncMeta(force = false) {
+  if (!force && Date.now() - metaAt < META_EVERY_MS) return;
+  const fresh = await api("/api/meta");
+  metaAt = Date.now();
+  const changed = JSON.stringify([fresh.scenarios, fresh.severities])
+    !== JSON.stringify([meta.scenarios, meta.severities]);
+  meta = fresh;
+  if (changed) fillForm();
+}
+
 async function start() {
   meta = await api("/api/meta");
+  metaAt = Date.now();
   $("account").textContent = L.initials(me.name, me.person_id);
   fillForm();
   showTab("sign");
@@ -380,12 +397,14 @@ function showTab(name) {
   for (const tab of ["sign", "events", "orders", "new"]) $(`tab-${tab}`).classList.toggle("hidden", tab !== name);
   $("tab-title").textContent = TAB_TITLES[name];
   window.scrollTo(0, 0);
+  if (name === "new") syncMeta(true).catch(() => { /* the list it has stays */ });
 }
 for (const button of document.querySelectorAll(".tabbar button")) button.addEventListener("click", () => showTab(button.dataset.tab));
 
 const modeLead = (drill) => leadIcon(drill ? "history" : "alert", drill ? "" : "real");
 
 async function refresh() {
+  syncMeta().catch(() => { /* the list it has stays */ });
   const [proposals, orders, events] = await Promise.all([
     api("/api/proposals"), api("/api/orders"), api("/api/events/active")]);
   now = proposals.now;
@@ -668,7 +687,13 @@ const pickRow = (name, value, title, sub, onchange) => el("label", { class: "cel
   el("div", { class: "body" }, el("div", { class: "title" }, title), sub ? el("div", { class: "sub" }, sub) : null));
 
 function fillForm() {
+  // Rebuilt when a new list of events arrives (syncMeta), possibly mid-way through
+  // filling the form: the event already picked stays picked if it is still listed.
+  const picked = document.querySelector("input[name=scenario]:checked");
+  const keep = picked ? picked.value : null;
   fill($("scenarios"), meta.scenarios.map((s) => pickRow("scenario", s.code, s.description || s.code, s.code, fillScenario)));
+  const again = keep && [...document.querySelectorAll("input[name=scenario]")].find((r) => r.value === keep);
+  if (again) again.checked = true;
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillScenario();
 }
