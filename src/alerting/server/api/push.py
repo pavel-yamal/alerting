@@ -30,10 +30,11 @@ class TokenRef(BaseModel):
 @router.post("/tokens")
 async def register(body: TokenForm, request: Request) -> dict[str, Any]:
     app = request.app.state.alerting
-    person_id = request.state.principal.person_id
+    principal = request.state.principal
     app.repo.save_push_token(
         body.token.strip(),
-        person_id,
+        principal.person_id,
+        principal.key_id,
         body.platform,
         device_label=body.device_label,
         app_version=body.app_version,

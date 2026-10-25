@@ -359,11 +359,12 @@ $("change-panel").addEventListener("click", () => showSetup());
 
 async function logout() {
   // The server forgets this phone first, while the session can still say whose it
-  // is: the next person signed in here must not get this one's notifications. A
-  // logout never waits on it for long.
+  // is: the next person signed in here must not get this one's notifications. That
+  // includes a registration still under way, which release waits for. A logout
+  // never hangs on a dead network, though.
   await Promise.race([
     AppPush.release(unregisterPush).catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, 5000)),
+    new Promise((resolve) => setTimeout(resolve, 15000)),
   ]);
   await api("/api/logout", { method: "POST" }).catch(() => {});
   await showLogin();

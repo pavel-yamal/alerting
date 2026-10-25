@@ -297,10 +297,12 @@ class MobilePush:
             return PushResult(ok=False, error=str(exc))
         if retry.ok:
             return PushResult(ok=True, status_code=200, apns_env=other)
-        # Neither host takes it: the token is garbage.
-        return PushResult(
-            ok=False, status_code=retry.status_code, gone=True, error="BadDeviceToken"
-        )
+        if retry.gone or retry.error == "BadDeviceToken":
+            # Neither host takes it: the token is garbage.
+            return PushResult(ok=False, status_code=retry.status_code, gone=True, error=retry.error)
+        # The other host failed for its own reasons (a timeout, 429, 503): the token
+        # may well be good there. Keep it, and report what actually happened.
+        return retry
 
     # --- FCM ----------------------------------------------------------------------
 

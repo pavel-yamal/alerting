@@ -64,6 +64,18 @@
   }
 
   let current = null; // the token registered in this launch
+  let pending = null; // a registration under way
+
+  // A registration still running when the person logs out would land after the
+  // release and leave this phone on the logged-out person's notifications. So
+  // release waits for it, and only then forgets the token it produced.
+  function registering(work) {
+    const run = work();
+    pending = run;
+    const clear = () => { if (pending === run) pending = null; };
+    run.then(clear, clear);
+    return run;
+  }
 
   const api = {
     supported: () => Boolean(plugin()),
@@ -83,12 +95,14 @@
       if (!p) throw new Error("Уведомления работают только в приложении");
       const { receive } = await p.requestPermissions();
       if (receive !== "granted") throw new Error("Уведомления запрещены. Разрешить их можно в настройках телефона.");
-      await ensureChannel(p);
-      const token = await awaitToken(p);
-      if (!token) throw new Error("Телефон выдал пустой адрес для уведомлений");
-      const answer = await register({ token, platform: platform() });
-      current = token;
-      return answer;
+      return registering(async () => {
+        await ensureChannel(p);
+        const token = await awaitToken(p);
+        if (!token) throw new Error("Телефон выдал пустой адрес для уведомлений");
+        const answer = await register({ token, platform: platform() });
+        current = token;
+        return answer;
+      });
     },
 
     // On every launch, silently: tokens change by themselves (reinstall, restore,
@@ -98,12 +112,14 @@
       if (!p) return null;
       try {
         if ((await api.permission()) !== "granted") return null;
-        await ensureChannel(p);
-        const token = await awaitToken(p);
-        if (!token) return null;
-        await register({ token, platform: platform() });
-        current = token;
-        return token;
+        return await registering(async () => {
+          await ensureChannel(p);
+          const token = await awaitToken(p);
+          if (!token) return null;
+          await register({ token, platform: platform() });
+          current = token;
+          return token;
+        });
       } catch (_) {
         return null;
       }
@@ -112,6 +128,7 @@
     // On logout, and from the account menu: the server forgets this phone, so the
     // next person signed in here does not get the previous one's notifications.
     async release(unregister) {
+      if (pending) await pending.catch(() => {});
       const token = current;
       current = null;
       if (token) await unregister(token);

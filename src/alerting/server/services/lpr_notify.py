@@ -110,8 +110,25 @@ class LprNotifier:
     async def send(
         self, people: Iterable[str], notice: Notice, order_id: str = ""
     ) -> list[dict[str, Any]]:
-        """Send to every device of ``people`` now; one result per device."""
-        rows = self.repo.push_tokens_for(sorted(set(people)))
+        """Send to every device of ``people`` now; one result per device.
+
+        Only to phones whose own key may still sign: a person is kept when one of
+        their keys is good, but the lost phone whose key was revoked is not.
+        """
+        directory = self.state.directory()
+        roles = set(self.state.policy().approver_roles)
+        now = self.clock.now()
+
+        def admitted(row: Any) -> bool:
+            entry = directory.lookup(row["key_id"])
+            return (
+                entry is not None
+                and entry.person_id == row["person_id"]
+                and entry.role in roles
+                and directory.signer_status(row["key_id"], now) is None
+            )
+
+        rows = [r for r in self.repo.push_tokens_for(sorted(set(people))) if admitted(r)]
         data = {"order_id": order_id, "open": notice.opens}
         results = await asyncio.gather(*(self._deliver(row, notice, data) for row in rows))
         return [

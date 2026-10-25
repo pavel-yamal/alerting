@@ -796,6 +796,7 @@ class Repo:
         self,
         token: str,
         person_id: str,
+        key_id: str,
         platform: str,
         *,
         device_label: str,
@@ -810,16 +811,18 @@ class Repo:
         Xcode is corrected on the first send.
         """
         self._execute(
-            "INSERT INTO push_tokens (token, person_id, platform, apns_env, device_label,"
-            " app_version, created_at, last_seen_at)"
-            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            "INSERT INTO push_tokens (token, person_id, key_id, platform, apns_env,"
+            " device_label, app_version, created_at, last_seen_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             " ON CONFLICT (token) DO UPDATE SET person_id = EXCLUDED.person_id,"
+            " key_id = EXCLUDED.key_id,"
             " platform = EXCLUDED.platform, device_label = EXCLUDED.device_label,"
             " app_version = EXCLUDED.app_version, last_seen_at = EXCLUDED.last_seen_at,"
             " last_error = NULL, failure_count = 0",
             (
                 token,
                 person_id,
+                key_id,
                 platform,
                 "production" if platform == "ios" else None,
                 device_label,

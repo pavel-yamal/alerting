@@ -16,9 +16,10 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from alerting.clients.transport import SignedRequests
 from alerting.core.clock import FixedClock
-from alerting.core.signing import DOMAIN_ORDER, public_key_to_b64u, sign_payload
-from alerting.orgadmin import revoke_keys, verified_current
+from alerting.core.signing import DOMAIN_ORDER, generate_keypair, public_key_to_b64u, sign_payload
+from alerting.orgadmin import add_key, revoke_keys, verified_current
 from alerting.orgkit import Org
 from alerting.server.app import create_app
 from alerting.server.config import Settings
@@ -161,6 +162,44 @@ def test_a_revoked_decision_maker_is_told_nothing(server, org, clock):
     publish(server, org, revoked)
     propose(server, org, clock, "p-001")
     assert tokens_told(server) == ["token-p-002"]
+
+
+def test_revoking_a_lost_phones_key_silences_that_phone_but_not_the_owners_other(
+    server, org, clock
+):
+    """p-002 has a second phone with its own key. Losing it revokes that key, not the
+    person: the first phone keeps getting notifications, the lost one gets none."""
+    server.auth = signer_for(org, "p-001", clock)
+    directory = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    private, public = generate_keypair()
+    enrolled, second = add_key(
+        directory, person_id="p-002", name="Кузнецова Е. П.", role="lpr",
+        public_key=public_key_to_b64u(public), issued_at=clock.now(),
+    )  # fmt: skip
+    publish(server, org, enrolled)
+
+    register(server, org, clock, "p-002", "token-first-phone")
+    server.auth = SignedRequests(
+        org_id=org.org_id, key_id=second.key_id, person_id="p-002",
+        private_key=private, clock=clock,
+    )  # fmt: skip
+    lost = server.post("/v1/push/tokens", json={"token": "token-lost-phone", "platform": "ios"})
+    assert lost.status_code == 200, lost.text
+
+    propose(server, org, clock, "p-001")
+    assert tokens_told(server) == ["token-first-phone", "token-lost-phone"]
+
+    server.auth = signer_for(org, "p-001", clock)
+    current = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    revoked, _ = revoke_keys(current, person_id=None, kid=second.key_id, at=clock.now(),
+                             reason="lost")  # fmt: skip
+    publish(server, org, revoked)
+    propose(server, org, clock, "p-001")
+    assert tokens_told(server) == ["token-first-phone"]
 
 
 def test_only_decision_makers_register_and_only_for_themselves(server, org, clock):

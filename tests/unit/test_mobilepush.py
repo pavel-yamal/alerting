@@ -140,6 +140,18 @@ async def test_a_sandbox_token_is_found_on_the_other_host_and_reported(apns):
     assert [r.url.host for r in seen] == ["api.push.apple.com", "api.sandbox.push.apple.com"]
 
 
+async def test_a_transient_failure_on_the_other_host_keeps_the_token(apns):
+    """Production says BadDeviceToken, sandbox is busy: the token may be good there,
+    and deleting it would silence the phone until its owner signs in again."""
+    for answer in ((503, {"reason": "ServiceUnavailable"}), (429, {"reason": "TooManyRequests"})):
+        _, transport = apple([(400, {"reason": "BadDeviceToken"}), answer])
+        result = await MobilePush(apns, None, transport=transport).send_apns(
+            "t", "production", "T", "B", {}
+        )
+        assert not result.ok and not result.gone
+        assert result.error == answer[1]["reason"]
+
+
 async def test_a_token_neither_host_takes_or_apple_unregistered_is_gone(apns):
     _, transport = apple([(400, {"reason": "BadDeviceToken"})] * 2)
     assert (await MobilePush(apns, None, transport=transport).send_apns("t", "production", "T",

@@ -115,3 +115,20 @@ test("in a browser there is no push at all", async () => {
   assert.equal(await push.sync(register), null);
   await assert.rejects(push.enable(register), /только в приложении/);
 });
+
+test("a logout during a registration still under way unregisters what it registered", async () => {
+  const push = load(fakePlugin({ permission: "granted", token: "late-token" }));
+  let answer;
+  const slowRegister = (device) => new Promise((resolve) => { answer = () => { sent.push({ ...device }); resolve({}); }; });
+  const syncing = push.sync(slowRegister);
+  await new Promise((r) => setTimeout(r, 5)); // the token arrived; the panel has not answered
+  const gone = [];
+  const releasing = push.release(async (token) => gone.push(token));
+  assert.deepEqual(gone, [], "it waits for the registration, rather than skip it");
+  answer();
+  await syncing;
+  await releasing;
+  assert.deepEqual(sent, [{ token: "late-token", platform: "ios" }]);
+  assert.deepEqual(gone, ["late-token"]);
+  assert.equal(push.enabled(), false);
+});

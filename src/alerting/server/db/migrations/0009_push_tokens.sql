@@ -9,6 +9,10 @@
 CREATE TABLE push_tokens (
     token            text    PRIMARY KEY,
     person_id        text    NOT NULL,
+    -- The device key the phone registered with. Checked before every send: revoking
+    -- a lost phone's key must silence that phone even when its owner has another
+    -- device whose key is still good.
+    key_id           text    NOT NULL,
     platform         text    NOT NULL CHECK (platform IN ('ios', 'android')),
     -- iOS only: where this token was last accepted. A build from Xcode gets a
     -- sandbox token, TestFlight and the App Store a production one.
