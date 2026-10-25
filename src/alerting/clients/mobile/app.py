@@ -12,9 +12,9 @@ keys are there. A native app moves exactly this logic onto the phone, with the k
 the platform keystore and push to wake it; until then this is the demonstration of
 the flow, not the security boundary a phone would be.
 
-An executor's key signs receipts, never orders, so the session is not idle-timed like
-the duty officer's panel: listening for hours is the job. It has an absolute lifetime
-of one shift instead.
+A session has no lifetime: listening for days is the job. It ends when the person
+logs out, when their key is revoked, or when an administrator ends it
+(:mod:`alerting.clients.session_admin`).
 """
 
 from __future__ import annotations
@@ -40,6 +40,7 @@ from pydantic import BaseModel, Field
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.executor_cli import describe, verify_one
 from alerting.clients.keystore import StoredKey, load_key
+from alerting.clients.session_admin import add_admin_routes, issue_token
 from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
@@ -56,11 +57,9 @@ log = logging.getLogger("alerting.mobile")
 COOKIE = "alerting_mobile"
 CSRF_HEADER = "X-Alerting-Mobile"
 
-#: One shift. After that the person logs in again and the key is unlocked afresh.
-SESSION_LIFETIME_S = 12 * 3600
-
-#: How often expired sessions are swept without waiting for a request: a closed page
-#: sends none, and its listener would otherwise keep the key unlocked past the shift.
+#: How often every session's key is re-checked without waiting for a request: a
+#: closed page sends none, and its listener would otherwise keep a revoked key
+#: unlocked and listening.
 SWEEP_INTERVAL_S = 30
 
 #: Reconnect delay bounds for the order stream.
@@ -68,7 +67,7 @@ RECONNECT_MIN_S = 1.0
 RECONNECT_MAX_S = 30.0
 #: How often a session re-fetches the directory, revocation list and policy. Orders
 #: are verified on arrival; without this, one signed by a key revoked afterwards kept
-#: showing as genuine for the rest of a 12-hour session.
+#: showing as genuine for the rest of the session.
 TRUST_REFRESH_S = 15
 
 PERSON_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -126,7 +125,8 @@ class Session:
     api: Api
     name: str
     home: pathlib.Path
-    started: float
+    #: Wall-clock time of the login, for the administrator's list.
+    since: int
     inbox: dict[str, InboxItem] = field(default_factory=dict)
     connected: bool = False
     last_error: str = ""
@@ -224,7 +224,7 @@ class Mobile:
             api.close()
             raise HTTPException(403, "это приложение исполнителя; дежурные и ЛПР — в панели")
 
-        session = Session(stored, pin, cache, api, entry.name, home, started=self.monotonic())
+        session = Session(stored, pin, cache, api, entry.name, home, since=self.clock.now())
         session.trust_checked = self.monotonic()
         token = secrets.token_urlsafe(32)
         with self._lock:
@@ -242,21 +242,54 @@ class Mobile:
         return token, session
 
     def session(self, token: str | None) -> Session:
-        self.sweep()
         with self._lock:
             session = self.sessions.get(token or "")
             if session is None:
-                raise HTTPException(401, "смена закончилась или вход не выполнен — войдите")
+                raise HTTPException(401, "сессия завершена или вход не выполнен — войдите")
             return session
 
     def sweep(self) -> None:
-        """End every session past its shift: its listener stops and the key goes."""
-        now = self.monotonic()
+        """End every session whose key the server or the directory no longer admits:
+        its listener stops and the key goes."""
         with self._lock:
-            for token, session in list(self.sessions.items()):
-                if now - session.started > SESSION_LIFETIME_S:
-                    log.info("mobile session ended (shift over): %s", session.stored.person_id)
-                    self._drop(token)
+            sessions = list(self.sessions.items())
+        for token, session in sessions:
+            if not self.refresh_trust(session):
+                self.end(token, "ключ отозван")
+
+    def end(self, token: str, why: str) -> None:
+        with self._lock:
+            session = self.sessions.get(token)
+            if session is not None:
+                log.info("mobile session ended (%s): %s", why, session.stored.person_id)
+                self._drop(token)
+
+    # --- the administrator ----------------------------------------------------
+    def list_sessions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            sessions = list(self.sessions.values())
+        return [
+            {
+                "person_id": s.stored.person_id,
+                "name": s.name,
+                "role": "executor",
+                "since": s.since,
+                "kind": "connected" if s.connected else "reconnecting",
+            }
+            for s in sorted(sessions, key=lambda s: s.since)
+        ]
+
+    def end_sessions(self, person_id: str | None) -> int:
+        """End one person's session, or every session with ``None``."""
+        with self._lock:
+            tokens = [
+                t
+                for t, s in self.sessions.items()
+                if person_id is None or s.stored.person_id == person_id
+            ]
+        for token in tokens:
+            self.end(token, "администратор")
+        return len(tokens)
 
     def start_sweeper(self) -> None:
         def run() -> None:
@@ -401,23 +434,37 @@ class Mobile:
                 target.cancelled_by = order_id
         return item
 
-    def refresh_trust(self, session: Session, *, force: bool = False) -> None:
+    def refresh_trust(self, session: Session, *, force: bool = False) -> bool:
         """Re-fetch the bundles and re-check the orders this session already shows.
 
         Only ever downgrades: an order that verified and no longer does -- a signer
         revoked since, on either path -- is marked rejected with the reason. Nothing
         rejected is promoted back. A failed fetch keeps what the device holds.
+
+        Returns ``False`` once this session's own key is no longer admitted -- the
+        server refuses it, or the directory lists it revoked -- and the session must
+        end. An outage is not that: the person stays signed in.
         """
         if not force and self.monotonic() - session.trust_checked < TRUST_REFRESH_S:
-            return
+            return True
         session.trust_checked = self.monotonic()
         try:
             session.cache.accept("directory", session.api.get("/v1/directory"))
             session.cache.accept("revocations", session.api.get("/v1/revocations"))
             session.cache.accept("policy", session.api.get("/v1/policy"))
+        except ServerError as exc:
+            if str(exc).startswith(("401", "403")):
+                return False
+            log.warning("trust refresh failed for %s: %s", session.stored.person_id, exc)
+            return True
         except Exception as exc:
             log.warning("trust refresh failed for %s: %s", session.stored.person_id, exc)
-            return
+            return True
+        directory = session.directory
+        if directory.lookup(session.stored.key_id) is None or directory.is_revoked(
+            session.stored.key_id
+        ):
+            return False
         with session.lock:
             for item in session.inbox.values():
                 if not item.accepted:
@@ -434,6 +481,7 @@ class Mobile:
                 if not decision.accepted:
                     item.accepted = False
                     item.reasons = [describe(r) for r in decision.reasons]
+        return True
 
     def report_received(self, session: Session) -> None:
         """Send "received" for verified orders the page has now fetched.
@@ -546,6 +594,7 @@ def create_mobile(
     connector: Connector = websockets_connector,
     clock: Clock | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    state_dir: pathlib.Path | None = None,
 ) -> FastAPI:
     mobile = Mobile(
         homes=homes,
@@ -559,6 +608,13 @@ def create_mobile(
     app = FastAPI(title="alerting mobile", docs_url=None, redoc_url=None, openapi_url=None)
     mobile.start_sweeper()
     app.state.mobile = mobile
+    if state_dir is not None:
+        add_admin_routes(
+            app,
+            issue_token(state_dir),
+            list_sessions=mobile.list_sessions,
+            end_sessions=mobile.end_sessions,
+        )
 
     def current(request: Request) -> Session:
         return mobile.session(request.cookies.get(COOKIE))
@@ -605,8 +661,10 @@ def create_mobile(
         return {"ok": True}
 
     @app.get("/api/inbox")
-    def inbox(session: Session = Depends(current)) -> dict[str, Any]:
-        mobile.refresh_trust(session)
+    def inbox(request: Request, session: Session = Depends(current)) -> dict[str, Any]:
+        if not mobile.refresh_trust(session):
+            mobile.end(request.cookies.get(COOKIE) or "", "ключ отозван")
+            raise HTTPException(401, "ключ отозван — сессия завершена")
         mobile.report_received(session)
         with session.lock:
             items = sorted(session.inbox.items(), key=lambda kv: kv[1].arrival, reverse=True)

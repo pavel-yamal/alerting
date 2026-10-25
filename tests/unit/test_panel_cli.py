@@ -21,3 +21,10 @@ def test_an_unusable_configuration_is_refused(argv, monkeypatch):
     with pytest.raises(SystemExit) as stopped:
         main(argv)
     assert stopped.value.code == 2
+
+
+@pytest.mark.parametrize("argv", [["sessions"], ["end-session", "p-003"], ["end-session", "--all"]])
+def test_admin_commands_need_the_running_panels_token(argv, tmp_path, capsys):
+    """No token file: no panel on this host wrote one, and nothing is sent."""
+    assert main(["--state", str(tmp_path), *argv]) == 1
+    assert "admin.token" in capsys.readouterr().err

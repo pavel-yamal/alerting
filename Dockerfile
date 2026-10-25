@@ -31,6 +31,7 @@ RUN useradd --system --uid 10001 --home-dir /var/lib/alerting --shell /usr/sbin/
     && install -d -o alerting -g alerting -m 0700 \
         /var/lib/alerting /var/lib/alerting/heads /var/lib/alerting/spool \
         /var/lib/alerting/clients /var/lib/alerting/demo-keys /var/lib/alerting/panel \
+        /var/lib/alerting/mobile \
         /run/alerting-app /run/alerting-owner
 
 # Все пути абсолютные: относительные отказывают молча (docs/09-deployment.md §4).

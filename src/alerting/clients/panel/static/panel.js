@@ -46,9 +46,6 @@ const msg = (kind, text) => el("div", { class: "msg " + kind }, text);
 
 async function api(path, options = {}) {
   const init = { method: options.method || "GET", headers: {}, credentials: "same-origin" };
-  // Background polling must not count as activity, or an unattended tab would keep
-  // the session -- and the unlocked key -- alive forever.
-  if (!options.poll) init.headers["X-Alerting-Activity"] = "1";
   if (init.method !== "GET") {
     init.headers["X-Alerting-Panel"] = "1";
     init.headers["Content-Type"] = "application/json";
@@ -231,9 +228,9 @@ $("new-form").addEventListener("submit", async (event) => {
 });
 
 // ---- lists -----------------------------------------------------------------
-async function refreshLists(poll = false) {
+async function refreshLists() {
   const [proposals, orders, events] = await Promise.all([
-    api("/api/proposals", { poll }), api("/api/orders", { poll }), api("/api/events/active", { poll })]);
+    api("/api/proposals"), api("/api/orders"), api("/api/events/active")]);
   now = proposals.now;
   $("events").replaceChildren(...(events.events.length ? events.events.map((e) =>
     el("div", { class: "item" + (current && current.id === e.order_id ? " active" : ""), onclick: () => openOrder(e.order_id) },
@@ -423,10 +420,27 @@ function highlight() {
 setInterval(async () => {
   if ($("app").classList.contains("hidden")) return;
   try {
-    await refreshLists(true);
-    if (current && current.kind === "order") renderOrder(await api(`/api/orders/${encodeURIComponent(current.id)}`, { poll: true }));
+    await refreshLists();
+    if (current && current.kind === "order") renderOrder(await api(`/api/orders/${encodeURIComponent(current.id)}`));
   } catch (_) { /* shown on the next action */ }
 }, 3000);
+
+// ---- keeping a device-key session -------------------------------------------
+// The session has no timeout: it lasts until logout, revocation of the key or the
+// administrator ending it. But the delegation it signs with is bounded (12 h), and
+// only this page, holding the unlocked key, can sign the next one. So the page renews
+// it while there is plenty of time left; a closed tab stops renewing, and its
+// session lapses on its own.
+const RENEW_WHEN_LEFT_S = 6 * 3600;
+async function renewDelegation() {
+  if (!me || !me.device_key || !deviceKey || !me.delegation_until) return;
+  if (me.delegation_until - Math.floor(Date.now() / 1000) > RENEW_WHEN_LEFT_S) return;
+  const begun = await api("/api/device/renew/begin", { method: "POST" });
+  DeviceKey.checkDelegation(begun.delegation, deviceRecord, Math.floor(Date.now() / 1000));
+  const signature = await DeviceKey.sign(deviceKey, "delegation", begun.delegation);
+  me = await api("/api/device/renew/finish", { method: "POST", body: { signature } });
+}
+setInterval(() => { renewDelegation().catch(() => { /* retried next minute */ }); }, 60000);
 
 // ---- directory, custodians' requests, revocation key --------------------------------
 // The panel never holds the root key. Changes to who may sign are collected here into

@@ -16,6 +16,12 @@ passphrases, or controls this process, can sign. Off unless enabled.
 Either way the panel re-derives what is signed from the payload itself and refuses
 unless the person approved *those* bytes (see :func:`sign_proposal`), and the server
 never sees a device key.
+
+A session has no idle timeout and no lifetime of its own. It ends when the person
+logs out, when their key is revoked, or when an administrator ends it
+(:mod:`alerting.clients.session_admin`). A device-key session also needs its page:
+the delegation lasts at most 12 hours and only the open page, which holds the
+unlocked key, can renew it -- so a closed tab's session lapses on its own.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ from alerting import custody
 from alerting.clients.approver_cli import KNOWN_PAYLOAD_FIELDS
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import load_key
+from alerting.clients.session_admin import add_admin_routes, issue_token
 from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.canonical import canonicalize
 from alerting.core.clock import Clock, SystemClock
@@ -52,6 +59,7 @@ from alerting.core.http_auth import MAX_DELEGATION_S, delegation_payload, encode
 from alerting.core.policy import Policy
 from alerting.core.signing import (
     DOMAIN_ORDER,
+    DOMAIN_SESSION_DELEGATION,
     generate_keypair,
     public_key_to_b64u,
     sign_payload,
@@ -69,17 +77,9 @@ COOKIE = "alerting_panel"
 #: page on another origin cannot make the panel sign on the operator's behalf.
 CSRF_HEADER = "X-Alerting-Panel"
 
-#: An unattended panel with an unlocked key is a signing machine for whoever walks
-#: past. Fifteen minutes of inactivity ends the session; the key is dropped with it.
-IDLE_TIMEOUT_S = 15 * 60
-
-#: Sent by the page on requests a person caused (a click, a submit). Only those count
-#: as activity. The page also polls every few seconds, and if polling counted, a tab
-#: left open on an unattended desk would keep its key unlocked forever.
-ACTIVITY_HEADER = "X-Alerting-Activity"
-
-#: How often expired sessions are swept even if nobody calls the panel at all -- a
-#: closed tab never sends the request that would have noticed its session expired.
+#: How often every session is checked even if nobody calls the panel at all: a
+#: revoked key or a lapsed delegation must end the session without waiting for a
+#: request from a tab that may be closed.
 SWEEP_INTERVAL_S = 30
 
 #: Person ids become path components of the key store. Anything else is refused
@@ -90,8 +90,8 @@ KEY_ID = re.compile(r"^ed25519:[A-Za-z0-9_-]{22}$")
 #: How long a browser has to sign the delegation it was handed.
 CHALLENGE_TTL_S = 120
 
-#: The delegation's own lifetime. The session idles out after 15 minutes anyway and
-#: drops the session key; this caps what a key leaked from this process is worth.
+#: The delegation's own lifetime. The open page renews it well before it runs out
+#: (panel.js); this caps what a session key leaked from this process is worth.
 DELEGATION_S = MAX_DELEGATION_S
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
@@ -113,7 +113,15 @@ class Session:
     #: allowed in at all: the server lets every operator create and watch proposals,
     #: and an organisation may keep duty officers out of ``approver_roles`` on purpose.
     can_sign: bool
-    last_seen: float
+    #: Wall-clock time of the login, for the administrator's list.
+    since: int
+    #: The request signer, kept so a renewed delegation can be swapped in.
+    auth: SignedRequests | None = None
+    #: Device-key sessions: the session key the delegation names, when the current
+    #: delegation runs out, and a renewal handed to the page and not yet signed.
+    session_public: str | None = None
+    delegation_until: int | None = None
+    pending_renewal: dict[str, Any] | None = None
 
     @property
     def directory(self) -> Directory:
@@ -190,6 +198,10 @@ class DeviceFinish(BaseModel):
     signature: str
 
 
+class RenewFinish(BaseModel):
+    signature: str
+
+
 @dataclass
 class Challenge:
     person_id: str
@@ -259,7 +271,7 @@ class Panel:
         self.server_url = server_url
         self.transport = transport
         self.clock = clock or SystemClock()
-        # Idle time is measured on a monotonic clock, injected so a test can advance it.
+        # Login challenges age on a monotonic clock, injected so a test can advance it.
         self.monotonic = monotonic
         self.sessions: dict[str, Session] = {}
         self.challenges: dict[str, Challenge] = {}
@@ -306,18 +318,15 @@ class Panel:
             # One message for both: which person ids exist is not the panel's to say.
             raise HTTPException(401, "неверный идентификатор или пароль") from None
 
-        api = Api(
-            self.server_url,
-            auth=SignedRequests(
-                org_id=pin.org_id,
-                key_id=stored.key_id,
-                person_id=stored.person_id,
-                private_key=stored.private_key,
-                clock=self.clock,
-            ),
-            transport=self.transport,
+        auth = SignedRequests(
+            org_id=pin.org_id,
+            key_id=stored.key_id,
+            person_id=stored.person_id,
+            private_key=stored.private_key,
+            clock=self.clock,
         )
-        return self._open(api, pin, stored.person_id, stored.key_id, stored.private_key)
+        api = Api(self.server_url, auth=auth, transport=self.transport)
+        return self._open(api, auth, pin, stored.person_id, stored.key_id, stored.private_key)
 
     def begin_device_login(self, person_id: str, key_id: str) -> tuple[str, dict[str, Any]]:
         """Hand the browser a delegation to sign for a session key made here."""
@@ -351,23 +360,57 @@ class Panel:
         if pending is None or self.monotonic() - pending.created > CHALLENGE_TTL_S:
             raise HTTPException(401, "вход устарел — начните заново")
         assert self.pin is not None
-        api = Api(
-            self.server_url,
-            auth=SignedRequests(
-                org_id=self.pin.org_id,
-                key_id=pending.key_id,
-                person_id=pending.person_id,
-                private_key=pending.session_key,
-                clock=self.clock,
-                delegation=encode_delegation(pending.payload, signature),
-            ),
-            transport=self.transport,
+        auth = SignedRequests(
+            org_id=self.pin.org_id,
+            key_id=pending.key_id,
+            person_id=pending.person_id,
+            private_key=pending.session_key,
+            clock=self.clock,
+            delegation=encode_delegation(pending.payload, signature),
         )
-        return self._open(api, self.pin, pending.person_id, pending.key_id, None)
+        api = Api(self.server_url, auth=auth, transport=self.transport)
+        token, session = self._open(api, auth, self.pin, pending.person_id, pending.key_id, None)
+        session.session_public = pending.payload["session_key"]
+        session.delegation_until = pending.payload["not_after"]
+        return token, session
+
+    def begin_renewal(self, session: Session) -> dict[str, Any]:
+        """A fresh delegation for the session key this session already signs with.
+
+        Only the page can sign it -- the device key is there, not here -- so a
+        session lasts exactly as long as some page keeps renewing it.
+        """
+        if session.session_public is None or self.pin is None:
+            raise HTTPException(409, "сессия не на ключе устройства — продлевать нечего")
+        now = self.clock.now()
+        payload = delegation_payload(
+            org_id=self.pin.org_id,
+            key_id=session.key_id,
+            person_id=session.person_id,
+            session_key=session.session_public,
+            not_before=now,
+            not_after=now + DELEGATION_S,
+        )
+        session.pending_renewal = payload
+        return payload
+
+    def finish_renewal(self, session: Session, signature: str) -> None:
+        payload, session.pending_renewal = session.pending_renewal, None
+        entry = session.directory.lookup(session.key_id)
+        if payload is None or entry is None or session.auth is None:
+            raise HTTPException(409, "продление не начато — начните заново")
+        # Checked here, before the swap: a bad signature must not replace a working
+        # delegation with one the server will refuse.
+        if not verify_signature(DOMAIN_SESSION_DELEGATION, payload, signature, entry.public()):
+            raise HTTPException(401, "подпись доверенности не сходится")
+        session.auth.delegation = encode_delegation(payload, signature)
+        session.delegation_until = payload["not_after"]
+        log.info("panel session renewed: %s", session.person_id)
 
     def _open(
         self,
         api: Api,
+        auth: SignedRequests,
         pin: PinnedOrg,
         person_id: str,
         key_id: str,
@@ -416,7 +459,8 @@ class Panel:
             entry.name,
             entry.role,
             can_sign=entry.role in policy.approver_roles,
-            last_seen=self.monotonic(),
+            since=self.clock.now(),
+            auth=auth,
         )
         with self._lock:
             self.sessions[token] = session
@@ -428,39 +472,98 @@ class Panel:
         )
         return token, session
 
-    def session(self, token: str | None, *, activity: bool) -> Session:
-        """The live session for ``token``. Only ``activity`` extends it."""
+    def session(self, token: str | None) -> Session:
+        """The live session for ``token``."""
         self.sweep()
         with self._lock:
             session = self.sessions.get(token or "")
             if session is None:
-                raise HTTPException(401, "сессия истекла или не начата — войдите")
-            if activity:
-                session.last_seen = self.monotonic()
+                raise HTTPException(401, "сессия завершена или не начата — войдите")
             return session
 
+    def refresh_trust(self, session: Session) -> bool:
+        """Re-fetch the bundles; ``False`` once the server no longer admits this key.
+
+        A failed fetch for any other reason -- the server down, a bundle that does
+        not verify -- keeps the session on what it holds: the person is not signed
+        out by an outage.
+        """
+        try:
+            session.cache.accept("directory", session.api.get("/v1/directory"))
+            session.cache.accept("revocations", session.api.get("/v1/revocations"))
+            session.cache.accept("policy", session.api.get("/v1/policy"))
+        except ServerError as exc:
+            if str(exc).startswith(("401", "403")):
+                return False
+            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        except Exception as exc:
+            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        directory = session.directory
+        entry = directory.lookup(session.key_id)
+        return entry is not None and not directory.is_revoked(session.key_id)
+
     def sweep(self) -> None:
-        """Drop every session idle past the timeout, and its unlocked key with it."""
-        now = self.monotonic()
+        """End every device-key session whose delegation lapsed: its page is gone."""
+        now = self.clock.now()
         with self._lock:
-            expired = [t for t, s in self.sessions.items() if now - s.last_seen > IDLE_TIMEOUT_S]
-            dropped = [self.sessions.pop(t) for t in expired]
-        for session in dropped:
-            session.api.close()
-            log.info("panel session expired: %s", session.person_id)
+            lapsed = [
+                t
+                for t, s in self.sessions.items()
+                if s.delegation_until is not None and now > s.delegation_until
+            ]
+        for token in lapsed:
+            self._end(token, "доверенность не продлена")
+
+    def check_trust(self) -> None:
+        """End every session whose key the server or the directory no longer admits."""
+        with self._lock:
+            sessions = list(self.sessions.items())
+        for token, session in sessions:
+            if not self.refresh_trust(session):
+                self._end(token, "ключ отозван")
 
     def start_sweeper(self) -> None:
         def run() -> None:
             while not self._stop.wait(SWEEP_INTERVAL_S):
                 self.sweep()
+                self.check_trust()
 
         threading.Thread(target=run, name="panel-session-sweeper", daemon=True).start()
 
-    def logout(self, token: str | None) -> None:
+    def _end(self, token: str, why: str) -> None:
         with self._lock:
-            session = self.sessions.pop(token or "", None)
+            session = self.sessions.pop(token, None)
         if session is not None:
             session.api.close()
+            log.info("panel session ended (%s): %s", why, session.person_id)
+
+    def logout(self, token: str | None) -> None:
+        self._end(token or "", "выход")
+
+    # --- the administrator ----------------------------------------------------
+    def list_sessions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            sessions = list(self.sessions.values())
+        return [
+            {
+                "person_id": s.person_id,
+                "name": s.name,
+                "role": s.role,
+                "since": s.since,
+                "kind": "device key" if s.signer is None else "server-held key",
+            }
+            for s in sorted(sessions, key=lambda s: s.since)
+        ]
+
+    def end_sessions(self, person_id: str | None) -> int:
+        """End one person's sessions, or every session with ``None``."""
+        with self._lock:
+            tokens = [
+                t for t, s in self.sessions.items() if person_id is None or s.person_id == person_id
+            ]
+        for token in tokens:
+            self._end(token, "администратор")
+        return len(tokens)
 
 
 def _server(call: Any, *args: Any, **kwargs: Any) -> Any:
@@ -499,17 +602,21 @@ def create_panel(
     panel.start_sweeper()
     app = FastAPI(title="alerting panel", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
+    if state_dir is not None:
+        add_admin_routes(
+            app,
+            issue_token(state_dir),
+            list_sessions=panel.list_sessions,
+            end_sessions=panel.end_sessions,
+        )
 
     def current(request: Request) -> Session:
-        return panel.session(
-            request.cookies.get(COOKIE), activity=request.headers.get(ACTIVITY_HEADER) == "1"
-        )
+        return panel.session(request.cookies.get(COOKIE))
 
     def guarded(request: Request) -> Session:
         if request.headers.get(CSRF_HEADER) != "1":
             raise HTTPException(403, "запрос не из панели")
-        # A state-changing request is always a person acting.
-        return panel.session(request.cookies.get(COOKIE), activity=True)
+        return current(request)
 
     def names(session: Session) -> dict[str, str]:
         return {entry.person_id: entry.name for entry in session.directory.payload.keys}
@@ -565,6 +672,8 @@ def create_panel(
             "can_sign": session.can_sign,
             # The page signs orders itself when the key lives in the browser.
             "device_key": session.signer is None,
+            # And renews the delegation before this; ``None`` for a server-held key.
+            "delegation_until": session.delegation_until,
         }
 
     def require_csrf(request: Request) -> None:
@@ -600,6 +709,15 @@ def create_panel(
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
         return who(session)
 
+    @app.post("/api/device/renew/begin")
+    def renew_begin(session: Session = Depends(guarded)) -> dict[str, Any]:
+        return {"delegation": panel.begin_renewal(session)}
+
+    @app.post("/api/device/renew/finish")
+    def renew_finish(body: RenewFinish, session: Session = Depends(guarded)) -> dict[str, Any]:
+        panel.finish_renewal(session, body.signature)
+        return who(session)
+
     @app.post("/api/logout")
     def logout(request: Request, response: Response) -> dict[str, bool]:
         panel.logout(request.cookies.get(COOKIE))
@@ -611,16 +729,13 @@ def create_panel(
         return who(session)
 
     @app.get("/api/meta")
-    def meta(session: Session = Depends(current)) -> dict[str, Any]:
+    def meta(request: Request, session: Session = Depends(current)) -> dict[str, Any]:
         # Re-synced here rather than trusted from login: a newly published policy --
         # a new event in the codebook, a changed quorum -- shows up without anyone
         # logging out. Verified and version-checked like at login.
-        try:
-            session.cache.accept("directory", session.api.get("/v1/directory"))
-            session.cache.accept("revocations", session.api.get("/v1/revocations"))
-            session.cache.accept("policy", session.api.get("/v1/policy"))
-        except Exception as exc:
-            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        if not panel.refresh_trust(session):
+            panel.logout(request.cookies.get(COOKIE))
+            raise HTTPException(401, "ключ отозван — сессия завершена")
         policy = session.policy.payload
         roster = _server(session.api.get, "/v1/roster")["people"]
         return {

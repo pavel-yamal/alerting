@@ -146,6 +146,8 @@ services:
     environment:
       ALERTING_MOBILE_SERVER: http://server:8080
       ALERTING_MOBILE_HOMES: /var/lib/alerting/clients
+      # Токен администратора для `alerting-mobile sessions` / `end-session`.
+      ALERTING_MOBILE_STATE: /var/lib/alerting/mobile
       ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
     volumes:
       - clients:/var/lib/alerting/clients

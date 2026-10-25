@@ -18,22 +18,20 @@ from fastapi.testclient import TestClient
 
 from alerting.clients.bundles import PinnedOrg
 from alerting.clients.keystore import save_key
-from alerting.clients.panel.app import (
-    ACTIVITY_HEADER,
-    CSRF_HEADER,
-    IDLE_TIMEOUT_S,
-    create_panel,
-)
+from alerting.clients.panel.app import CSRF_HEADER, create_panel
+from alerting.clients.session_admin import ADMIN_HEADER, TOKEN_FILE
 from alerting.core.clock import FixedClock
 from alerting.core.signing import public_key_to_b64u
+from alerting.orgadmin import revoke_keys, verified_current
 from alerting.orgkit import Org, build_org
 from alerting.server.app import create_app
 from alerting.server.config import Settings
 from alerting.server.services.bootstrap import publish_org
+from tests.integration.conftest import signer_for
+from tests.integration.test_enrollment import publish
 
 PASSPHRASE = "demo"
 PANEL = {CSRF_HEADER: "1"}
-ACTIVE = {ACTIVITY_HEADER: "1"}
 
 
 class Monotonic:
@@ -229,32 +227,56 @@ def test_meta_comes_from_the_verified_policy(panel_app):
     assert "fire-wardens" in meta["groups"]
 
 
-def test_background_polling_does_not_keep_an_idle_session_alive(panel_app, monotonic):
-    """The page polls every few seconds. If that counted as activity, a tab left open
-    on an empty desk would keep the key unlocked forever."""
+def test_a_session_has_no_timeout(panel_app, clock, monotonic):
+    """Signed in until logout, revocation or the administrator -- not until a timer."""
     officer = browser(panel_app, "p-003")
-    for _ in range(IDLE_TIMEOUT_S // 60 + 1):
-        monotonic.now += 60
-        officer.get("/api/proposals")  # what the poller sends: no activity header
-    assert officer.get("/api/me").status_code == 401
-
-
-def test_a_person_acting_keeps_the_session(panel_app, monotonic):
-    officer = browser(panel_app, "p-003")
+    panel = panel_app.state.panel
     for _ in range(3):
-        monotonic.now += IDLE_TIMEOUT_S - 60
-        assert officer.get("/api/me", headers=ACTIVE).status_code == 200
+        clock.advance(24 * 3600)
+        monotonic.now += 24 * 3600
+        panel.sweep()  # what the background sweeper does every 30 s
+        panel.check_trust()
+        assert officer.get("/api/me").status_code == 200
 
 
-def test_an_abandoned_session_is_dropped_without_another_request(panel_app, monotonic):
-    """A closed tab never sends the request that would notice its session expired,
-    so expiry cannot wait for one."""
+def test_revoking_the_key_ends_the_session_without_another_request(panel_app, server, org, clock):
+    """A closed tab sends nothing, so the sweeper is what notices."""
     browser(panel_app, "p-003")
     panel = panel_app.state.panel
-    assert len(panel.sessions) == 1
-    monotonic.now += IDLE_TIMEOUT_S + 1
-    panel.sweep()
+    server.auth = signer_for(org, "p-001", clock)
+    current = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    revoked, _ = revoke_keys(current, person_id="p-003", kid=None, at=clock.now(), reason="lost")
+    publish(server, org, revoked)
+    panel.check_trust()
     assert panel.sessions == {}
+
+
+def test_the_administrator_ends_a_session(homes, server, clock, monotonic, tmp_path):
+    state = tmp_path / "panel-state"
+    app = create_panel(
+        homes=homes,
+        server_url="http://testserver",
+        transport=server._transport,
+        clock=clock,
+        monotonic=monotonic,
+        state_dir=state,
+    )
+    officer = browser(app, "p-003")
+    director = browser(app, "p-001")
+    admin = TestClient(app)
+    assert admin.get("/admin/sessions").status_code == 403, "nothing without the token"
+    admin.headers[ADMIN_HEADER] = (state / TOKEN_FILE).read_text()
+    assert (state / TOKEN_FILE).stat().st_mode & 0o077 == 0
+
+    listed = admin.get("/admin/sessions").json()["sessions"]
+    assert sorted(s["person_id"] for s in listed) == ["p-001", "p-003"]
+    assert admin.post("/admin/sessions/end", json={"person_id": "p-003"}).json() == {"ended": 1}
+    assert officer.get("/api/me").status_code == 401
+    assert director.get("/api/me").status_code == 200
+    assert admin.post("/admin/sessions/end", json={"all": True}).json() == {"ended": 1}
+    assert director.get("/api/me").status_code == 401
 
 
 def test_an_operator_outside_the_quorum_roles_may_propose_but_not_sign(

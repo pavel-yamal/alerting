@@ -6,6 +6,10 @@ With ``--org`` and ``--root-key`` people sign in with a key kept in their own br
 (docs/adr/0012). ``--server-keys`` additionally allows the demo login with keys under
 ``--homes`` -- unlocked in this process, which is what the Docker stand uses and what
 a real installation should not.
+
+Sessions have no timeout. ``alerting-panel sessions`` lists who is signed in and
+``alerting-panel end-session <person>`` signs a person out; both talk to the panel
+running on this host, with the token it wrote to ``--state``.
 """
 
 from __future__ import annotations
@@ -14,6 +18,7 @@ import argparse
 import os
 import pathlib
 
+from alerting.clients.session_admin import add_admin_commands, run_admin_command
 from alerting.server.logging_config import configure as configure_logging
 
 
@@ -44,7 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         "--state",
         type=pathlib.Path,
         default=pathlib.Path(os.environ.get("ALERTING_PANEL_STATE", "var/panel")),
-        help="where verified bundles are cached for device-key sessions",
+        help="where verified bundles and the administrator's token are kept",
     )
     parser.add_argument(
         "--server-keys",
@@ -58,7 +63,10 @@ def main(argv: list[str] | None = None) -> int:
         help="bind address. With --server-keys it holds unlocked keys: keep it on localhost",
     )
     parser.add_argument("--port", type=int, default=8090)
+    add_admin_commands(parser.add_subparsers(dest="command"))
     args = parser.parse_args(argv)
+    if args.command:
+        return run_admin_command(args, args.state, args.port)
 
     configure_logging(os.environ.get("ALERTING_LOG_LEVEL", "INFO"), json_output=False)
 
