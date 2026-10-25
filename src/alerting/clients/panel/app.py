@@ -995,6 +995,9 @@ def create_panel(
         known = names(session)
         for person in status["people"]:
             person["name"] = known.get(person["person_id"], "")
+        # Who signed it: the envelope's own signatures, named from the directory.
+        envelope = _server(session.api.get, f"/v1/orders/{order_id}")
+        status["signed_by"] = signer_names(session, envelope.get("signatures", []))
         status["now"] = session_now(panel)
         return status
 

@@ -86,6 +86,8 @@ APPROVER_ROLES: tuple[str, ...] = ("lpr",)
 _APPROVER_ROLES = frozenset(APPROVER_ROLES)
 
 #: The codebook. The scenario code is the actionable unit; free text is advisory.
+#: Every event lasts until its stand-down (``until_cancelled``), never until a timer:
+#: an evacuation does not end because a delivery window closed.
 DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     "EVAC.BUILDING": ScenarioRule(
         min_severity=Severity.CRITICAL,
@@ -104,6 +106,7 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
         min_severity=Severity.WARNING,
         description="Сбор на пункте сбора",
         card="Прибыть на пункт сбора, доложить старшему.",
+        until_cancelled=True,
     ),
     "STAND.BY": ScenarioRule(
         max_severity=Severity.WARNING,
@@ -115,6 +118,7 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
         max_severity=Severity.INFO,
         description="Технический тест канала",
         card="Действий не требуется. Подтвердить получение.",
+        until_cancelled=True,
     ),
 }
 
@@ -159,6 +163,7 @@ def build_org(
     directory_version: int = 1,
     policy_version: int = 1,
     approver_roles: tuple[str, ...] = APPROVER_ROLES,
+    scenarios: dict[str, ScenarioRule] | None = None,
 ) -> Org:
     """Create an organisation with a fresh root key and a signed directory and policy."""
     root_private, _ = generate_keypair()
@@ -205,7 +210,7 @@ def build_org(
         not_valid_after=issued_at + policy_ttl_s,
         approver_roles=approver_roles,
         severities=dict(DEFAULT_SEVERITIES),
-        scenarios=dict(DEFAULT_SCENARIOS),
+        scenarios=dict(DEFAULT_SCENARIOS if scenarios is None else scenarios),
     )
 
     return Org(

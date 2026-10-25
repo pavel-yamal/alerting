@@ -28,6 +28,7 @@ let meta = null;
 let record = null;          // the key this session was opened with (public facts only)
 let now = Math.floor(Date.now() / 1000);
 let current = null;         // { kind: "proposal" | "order", id }
+let biometry = "none";      // what the vault reports: "face", "fingerprint", ...
 
 // ---- helpers ---------------------------------------------------------------------
 // Everything from the network goes in through textContent: order text is free text.
@@ -38,23 +39,94 @@ function el(tag, attrs = {}, ...children) {
     else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
     else node.setAttribute(k, v);
   }
-  for (const child of children.flat()) {
+  for (const child of children.flat(Infinity)) {
     if (child == null || child === false) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
   return node;
 }
 const $ = (id) => document.getElementById(id);
-const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
-const msg = (kind, text) => el("div", { class: "msg " + kind }, text);
+const fill = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false));
+const icon = (name) => $("icons").content.querySelector(`[data-icon="${name}"]`).cloneNode(true);
+const MARK = { ok: "calm", warn: "alert", err: "alert" };
+const msg = (kind, ...text) => el("div", { class: "msg " + kind }, el("span", { class: "mark" }, icon(MARK[kind])), el("div", {}, ...text));
 const modeTag = (drill) => el("span", { class: "tag " + (drill ? "drill" : "real") }, drill ? "УЧЕНИЕ" : "БОЕВОЕ");
 const describeScenario = (code) => {
   const s = meta && meta.scenarios.find((x) => x.code === code);
   return s && s.description ? s.description : code;
 };
+const biometryName = () => ({ face: "Face ID", fingerprint: "Touch ID", iris: "Optic ID" })[biometry] || "биометрией";
+const errorText = (error) => (error.code ? L.vaultMessage(error) : error.message);
+
+// One list row. `lead` is the coloured square on the left, `value` the grey text on
+// the right; a row with `onclick` is a button with a chevron.
+function cell({ title, sub, value, valueClass, lead, onclick, extra }) {
+  const kids = [
+    lead || null,
+    el("div", { class: "body" }, el("div", { class: "title" }, title), sub ? el("div", { class: "sub" }, sub) : null),
+    value != null ? el("div", { class: "value " + (valueClass || "") }, value) : null,
+    extra || null,
+  ];
+  const classes = ["cell", lead ? "with-lead" : "", onclick ? "nav" : ""].join(" ").trim();
+  return onclick ? el("button", { type: "button", class: classes, onclick }, kids) : el("div", { class: classes }, kids);
+}
+const leadIcon = (name, tone) => el("span", { class: "lead-icon " + (tone || "") }, icon(name));
+// A field of the review: grey label above, the value below.
+const kv = (label, value, cls) => el("div", { class: "cell kv " + (cls || "") },
+  el("div", { class: "body" }, el("div", { class: "label" }, label), el("div", { class: "val " + (cls || "") }, value)));
+const group = (...rows) => el("div", { class: "group" }, rows);
+const sectionTitle = (text) => el("div", { class: "section-title" }, text);
+const empty = (name, title, sub) => el("div", { class: "empty" }, icon(name), el("div", { class: "title" }, title), sub ? el("div", { class: "sub" }, sub) : null);
+
+// A button that shows a spinner while its work runs, and cannot be pressed twice.
+async function busy(button, work) {
+  button.disabled = true;
+  button.classList.add("busy");
+  try { return await work(); }
+  finally { button.classList.remove("busy"); button.disabled = false; }
+}
+
+// A sheet from the bottom of the screen: the app's own, instead of confirm() and of
+// fields squeezed into a row. `build(close)` returns its content; `onDismiss` runs
+// when the person taps outside it, `onGone` once it has left the page either way.
+function sheet(build, { onDismiss, onGone } = {}) {
+  const layer = el("div", { class: "sheet-layer" });
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    layer.classList.add("closing");
+    setTimeout(() => { layer.remove(); if (onGone) onGone(); }, 200);
+  };
+  const dismiss = () => { close(); if (onDismiss) onDismiss(); };
+  layer.append(el("div", { class: "scrim", onclick: dismiss }),
+    el("div", { class: "sheet", role: "dialog", "aria-modal": "true" }, el("div", { class: "grabber" }), build(close)));
+  document.body.append(layer);
+  return close;
+}
+
+// Yes or no, in a sheet. Resolves true only on the named action.
+function ask({ title, text, ok, danger }) {
+  return new Promise((resolve) => {
+    sheet((close) => [
+      el("h2", {}, title),
+      text ? el("p", { class: "sheet-text" }, text) : null,
+      el("button", { type: "button", class: "btn " + (danger ? "danger" : "primary"), onclick: () => { close(); resolve(true); } }, ok),
+      el("button", { type: "button", class: "btn", onclick: () => { close(); resolve(false); } }, "Отмена"),
+    ], { onDismiss: () => resolve(false) });
+  });
+}
+
+function toast(text, kind = "ok") {
+  const node = el("div", { class: "toast " + kind, role: "status" }, text);
+  document.body.append(node);
+  requestAnimationFrame(() => node.classList.add("show"));
+  setTimeout(() => { node.classList.remove("show"); setTimeout(() => node.remove(), 300); }, 2600);
+}
 
 function show(screen) {
   for (const id of ["setup", "login", "main", "detail"]) $(id).classList.toggle("hidden", id !== screen);
+  window.scrollTo(0, 0);
 }
 
 async function api(path, options = {}) {
@@ -111,26 +183,30 @@ function renderChrome() {
     link.parentElement.classList.toggle("hidden", !url);
   }
   // A demonstration stand says so on every screen: its orders reach nobody real.
-  $("demo-banner").classList.toggle("hidden", !(config && config.demo));
-  $("enroll-person-row").classList.toggle("hidden", Boolean(config && config.demo));
-  $("enroll-person").required = !(config && config.demo);
+  const demo = Boolean(config && config.demo);
+  $("demo-banner").classList.toggle("hidden", !demo);
+  document.body.classList.toggle("demo", demo);
+  $("enroll-person-row").classList.toggle("hidden", demo);
+  $("enroll-person").required = !demo;
 }
 
 $("setup-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const out = $("setup-msg");
-  try {
-    panelUrl = L.normalizePanelUrl($("panel-url").value);
-    out.replaceChildren(msg("warn", "Проверяю панель…"));
-    config = await api("/api/config");
-    if (!config.device_login || !config.org_id) {
-      throw new Error("На этой панели не настроен вход ключом устройства (--org и --root-key).");
+  out.replaceChildren();
+  await busy(event.submitter || $("setup-form").querySelector("button"), async () => {
+    try {
+      panelUrl = L.normalizePanelUrl($("panel-url").value);
+      config = await api("/api/config");
+      if (!config.device_login || !config.org_id) {
+        throw new Error("На этой панели не настроен вход ключом устройства (--org и --root-key).");
+      }
+      localStorage.setItem(PANEL_KEY, panelUrl);
+      await showLogin();
+    } catch (error) {
+      out.replaceChildren(msg("err", error.message));
     }
-    localStorage.setItem(PANEL_KEY, panelUrl);
-    await showLogin();
-  } catch (error) {
-    out.replaceChildren(msg("err", error.message));
-  }
+  });
 });
 
 // ---- 2. login ----------------------------------------------------------------------
@@ -138,25 +214,39 @@ async function showLogin(reason) {
   token = null; me = null;
   show("login");
   renderChrome();
+  $("enroll-msg").replaceChildren();
   $("login-msg").replaceChildren(reason ? msg("warn", reason) : "");
-  $("login-panel").textContent = `Панель: ${panelUrl}` + (config ? ` · ${config.org_label || `организация ${config.org_id}`}` : "");
+  $("login-panel").textContent = panelUrl.replace(/^https:\/\//, "") + (config ? ` · ${config.org_id}` : "");
   let keys = [];
   try {
+    const status = await Vault.status();
+    biometry = status.biometry || "none";
     keys = (await Vault.list()).filter((k) => k.panel === panelUrl && (!config || k.org_id === config.org_id));
   } catch (error) {
     $("login-msg").replaceChildren(msg("err", L.vaultMessage(error)));
   }
-  $("enroll").open = !keys.length;
-  fill($("login-keys"), keys.map((k) => el("div", { class: "keycard" },
-    el("div", {}, el("b", {}, k.person_id), " · ", el("code", {}, k.key_id.slice(8, 16) + "…")),
-    el("div", { class: "row" },
-      el("button", { class: "primary", type: "button", onclick: () => login(k) }, "Войти"),
-      el("button", { type: "button", onclick: () => forget(k) }, "Удалить ключ")))));
+  fill($("login-keys"), keys.length ? [
+    sectionTitle(keys.length > 1 ? "Ключи на этом телефоне" : "Ключ на этом телефоне"),
+    keys.map((k) => {
+      const enter = el("button", { class: "btn primary", type: "button" }, `Войти с ${biometryName()}`);
+      enter.addEventListener("click", () => busy(enter, () => login(k)));
+      return el("div", { class: "keycard" },
+        cell({ lead: leadIcon("key"), title: k.person_id, sub: `ключ ${L.keyShort(k.key_id)}`,
+               extra: el("button", { type: "button", class: "icon-btn", "aria-label": "Действия с ключом", onclick: () => keyActions(k) }, "⋯") }),
+        enter);
+    }),
+  ] : []);
+  fill($("enroll-entry"), keys.length
+    ? el("button", { type: "button", class: "btn plain", onclick: openEnroll }, "Зарегистрировать другой ключ")
+    : el("button", { type: "button", class: "enroll-card", onclick: openEnroll },
+        leadIcon("phone"),
+        el("div", { class: "body" }, el("div", { class: "title" }, "Зарегистрировать этот телефон"),
+          el("div", { class: "sub" }, "Ключ создаётся здесь и защищается биометрией. Нужен один раз."))));
 }
 
 async function login(keyRecord) {
   const out = $("login-msg");
-  out.replaceChildren(msg("warn", "Проверяю справочник…"));
+  out.replaceChildren();
   try {
     const begun = await api("/api/device/begin", { method: "POST", body: { person_id: keyRecord.person_id, key_id: keyRecord.key_id } });
     // Signed only after checking it is a delegation for this very key, bounded in time.
@@ -170,75 +260,115 @@ async function login(keyRecord) {
     record = keyRecord;
     await start();
   } catch (error) {
-    out.replaceChildren(msg(L.isCancel(error) ? "warn" : "err", error.code ? L.vaultMessage(error) : error.message));
+    out.replaceChildren(msg(L.isCancel(error) ? "warn" : "err", errorText(error)));
   }
 }
 
+function keyActions(keyRecord) {
+  sheet((close) => [
+    el("h2", {}, keyRecord.person_id),
+    el("p", { class: "sheet-text" }, `Идентификатор ключа: ${keyRecord.key_id}`),
+    el("button", { type: "button", class: "btn tinted-danger", onclick: () => { close(); forget(keyRecord); } }, "Удалить ключ с телефона"),
+    el("button", { type: "button", class: "btn", onclick: close }, "Отмена"),
+  ]);
+}
+
 async function forget(keyRecord) {
-  if (!confirm("Удалить ключ с телефона? Войти можно будет только после новой регистрации. Если телефон больше не ваш, попросите отозвать ключ в справочнике.")) return;
+  const sure = await ask({
+    title: "Удалить ключ?", danger: true, ok: "Удалить",
+    text: "Войти можно будет только после новой регистрации. Если телефон больше не ваш, попросите отозвать ключ в справочнике.",
+  });
+  if (!sure) return;
   try {
     await Vault.remove(keyRecord.key_id);
-    await showLogin("Ключ удалён с телефона.");
+    await showLogin();
+    toast("Ключ удалён с телефона");
   } catch (error) {
     $("login-msg").replaceChildren(msg("err", L.vaultMessage(error)));
   }
 }
 
-$("enroll-form").addEventListener("submit", async (event) => {
+// The enrolment form lives in #parked and moves into a sheet while it is open.
+const enrollForm = $("enroll-form");
+let closeEnroll = null;
+function openEnroll() {
+  $("enroll-err").replaceChildren();
+  closeEnroll = sheet(() => enrollForm, { onGone: () => { closeEnroll = null; $("parked").append(enrollForm); } });
+  if (!(config && config.demo)) setTimeout(() => $("enroll-person").focus(), 300);
+}
+
+// Copy a public value; where the WebView refuses the clipboard, the text is
+// selectable all at once anyway (.mono).
+function copyButton(text) {
+  const button = el("button", { type: "button", class: "btn small" }, "Скопировать");
+  button.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); toast("Скопировано"); }
+    catch (_) { toast("Выделите текст и скопируйте", "warn"); }
+  });
+  return button;
+}
+
+enrollForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const out = $("enroll-msg");
+  const out = $("enroll-err");
   const demo = Boolean(config && config.demo);
   let personId = $("enroll-person").value.trim();
   if (!demo && !L.PERSON_ID.test(personId)) { out.replaceChildren(msg("err", "Идентификатор: латиница, цифры и дефис, например p-010.")); return; }
-  try {
-    const status = await Vault.status();
-    if (!status.available) {
-      const error = new Error(status.reason || "unavailable");
-      error.code = status.reason === "not_enrolled" ? "not_enrolled" : "unavailable";
-      throw error;
-    }
-    const made = await DeviceKey.generate();
-    if (demo) {
-      // The demo stand enrols the key itself and says who it now is (demo_enroll.py).
-      const enrolled = await api("/api/demo/enroll", { method: "POST", body: { public_key: made.public_key } });
-      if (enrolled.key_id !== made.key_id) throw new Error("Демо-стенд внёс в справочник другой ключ.");
-      personId = enrolled.person_id;
-    }
-    const keyRecord = {
-      person_id: personId, org_id: config.org_id, key_id: made.key_id, public_key: made.public_key,
-      panel: panelUrl, created: Math.floor(Date.now() / 1000),
-    };
-    await Vault.store(keyRecord, made.pkcs8, "Защитить ключ подписи вашей биометрией");
-    $("enroll-person").value = "";
-    if (demo) {
-      fill(out, msg("ok", `Демо-стенд зарегистрировал этот телефон как «${personId}». Нажмите «Войти».`));
+  await busy(enrollForm.querySelector("button[type=submit]"), async () => {
+    try {
+      const status = await Vault.status();
+      if (!status.available) {
+        const error = new Error(status.reason || "unavailable");
+        error.code = status.reason === "not_enrolled" ? "not_enrolled" : "unavailable";
+        throw error;
+      }
+      const made = await DeviceKey.generate();
+      if (demo) {
+        // The demo stand enrols the key itself and says who it now is (demo_enroll.py).
+        const enrolled = await api("/api/demo/enroll", { method: "POST", body: { public_key: made.public_key } });
+        if (enrolled.key_id !== made.key_id) throw new Error("Демо-стенд внёс в справочник другой ключ.");
+        personId = enrolled.person_id;
+      }
+      const keyRecord = {
+        person_id: personId, org_id: config.org_id, key_id: made.key_id, public_key: made.public_key,
+        panel: panelUrl, created: Math.floor(Date.now() / 1000),
+      };
+      await Vault.store(keyRecord, made.pkcs8, "Защитить ключ подписи вашей биометрией");
+      $("enroll-person").value = "";
+      if (closeEnroll) closeEnroll();
       await showLogin();
-      return;
+      if (demo) {
+        toast(`Телефон зарегистрирован как «${personId}»`);
+        return;
+      }
+      fill($("enroll-msg"),
+        msg("ok", el("b", {}, "Ключ создан и защищён биометрией."), " Передайте регистрирующему лично публичный ключ и сверьте идентификатор после внесения в справочник."),
+        group(
+          el("div", { class: "cell kv" }, el("div", { class: "body" }, el("div", { class: "label" }, "Публичный ключ"),
+            el("div", { class: "val mono" }, keyRecord.public_key)), copyButton(keyRecord.public_key)),
+          el("div", { class: "cell kv" }, el("div", { class: "body" }, el("div", { class: "label" }, "Идентификатор ключа"),
+            el("div", { class: "val mono" }, keyRecord.key_id)), copyButton(keyRecord.key_id))),
+        el("p", { class: "footnote" }, "Если на телефоне поменять набор отпечатков или лиц, ключ станет недоступен — это защита, а не сбой: понадобится новая регистрация."));
+    } catch (error) {
+      out.replaceChildren(msg("err", errorText(error)));
     }
-    fill(out,
-      msg("ok", "Ключ создан и защищён биометрией. Передайте регистрирующему лично:"),
-      el("div", { class: "hint" }, "Публичный ключ"), el("div", { class: "keybox" }, keyRecord.public_key),
-      el("div", { class: "hint" }, "Идентификатор ключа — сверьте его в справочнике после внесения"),
-      el("div", { class: "keybox" }, keyRecord.key_id),
-      el("div", { class: "hint" }, "Если на телефоне поменять набор отпечатков или лиц, ключ станет недоступен — это защита, а не сбой: понадобится новая регистрация."));
-    await showLogin();
-    $("enroll").open = true;
-  } catch (error) {
-    out.replaceChildren(msg("err", error.code ? L.vaultMessage(error) : error.message));
-  }
+  });
 });
 
 $("change-panel").addEventListener("click", () => showSetup());
 
-$("logout").addEventListener("click", async () => {
+async function logout() {
   await api("/api/logout", { method: "POST" }).catch(() => {});
-  showLogin("Вы вышли.");
-});
+  await showLogin();
+  toast("Вы вышли");
+}
 
 // ---- 3. lists ----------------------------------------------------------------------
+const TAB_TITLES = { sign: "На подпись", events: "Действуют", orders: "История", new: "Создать" };
+
 async function start() {
   meta = await api("/api/meta");
-  $("who").textContent = `${me.name} · ${me.person_id}`;
+  $("account").textContent = L.initials(me.name, me.person_id);
   fillForm();
   showTab("sign");
   show("main");
@@ -246,13 +376,14 @@ async function start() {
 }
 
 function showTab(name) {
-  for (const button of document.querySelectorAll(".tabs button")) button.classList.toggle("active", button.dataset.tab === name);
+  for (const button of document.querySelectorAll(".tabbar button")) button.classList.toggle("active", button.dataset.tab === name);
   for (const tab of ["sign", "events", "orders", "new"]) $(`tab-${tab}`).classList.toggle("hidden", tab !== name);
+  $("tab-title").textContent = TAB_TITLES[name];
+  window.scrollTo(0, 0);
 }
-for (const button of document.querySelectorAll(".tabs button")) button.addEventListener("click", () => showTab(button.dataset.tab));
+for (const button of document.querySelectorAll(".tabbar button")) button.addEventListener("click", () => showTab(button.dataset.tab));
 
-const item = (onclick, top, sub) => el("button", { class: "item", type: "button", onclick },
-  el("div", { class: "top" }, top), el("div", { class: "sub" }, sub));
+const modeLead = (drill) => leadIcon(drill ? "history" : "alert", drill ? "" : "real");
 
 async function refresh() {
   const [proposals, orders, events] = await Promise.all([
@@ -261,19 +392,24 @@ async function refresh() {
   const open = L.openProposals(proposals.proposals);
   $("sign-count").textContent = String(open.length);
   $("sign-count").classList.toggle("hidden", !open.length);
-  fill($("proposals"), open.length ? open.map((p) =>
-    item(() => openProposal(p.order_id), [modeTag(p.drill), p.cancels ? " Отбой: " : " ", describeScenario(p.scenario)],
-      `подписей: ${p.signed_by.length} · ${L.left(p.not_valid_after, now)}`))
-    : el("div", { class: "empty" }, "Нет предложений на подпись."));
-  fill($("events"), events.events.length ? events.events.map((e) =>
-    item(() => openOrder(e.order_id), [modeTag(e.drill), " ", describeScenario(e.scenario)],
-      `с ${L.time(e.dispatched_at)} · ` + (e.until_cancelled ? "до отбоя" : `до ${L.time(e.not_valid_after)}`)))
-    : el("div", { class: "empty" }, "Всё спокойно: действующих оповещений нет."));
-  fill($("orders"), orders.orders.length ? orders.orders.map((o) =>
-    item(() => openOrder(o.order_id),
-      [modeTag(o.drill), o.cancels ? " Отбой: " : " ", describeScenario(o.scenario), o.cancelled_by ? el("span", { class: "tag ok" }, "отменено") : null],
-      L.time(o.dispatched_at)))
-    : el("div", { class: "empty" }, "Пока ничего не рассылалось."));
+  fill($("proposals"), open.length ? group(open.map((p) => cell({
+    lead: leadIcon("sign", p.drill ? "" : "real"),
+    title: [modeTag(p.drill), p.cancels ? "Отбой: " : "", describeScenario(p.scenario)],
+    sub: `${p.signed_by.length} ${L.plural(p.signed_by.length, "подпись", "подписи", "подписей")} · ${L.left(p.not_valid_after, now)}`,
+    onclick: () => openProposal(p.order_id),
+  }))) : empty("sign", "Нечего подписывать", "Новые предложения появятся здесь."));
+  fill($("events"), events.events.length ? group(events.events.map((e) => cell({
+    lead: modeLead(e.drill),
+    title: [modeTag(e.drill), describeScenario(e.scenario)],
+    sub: `с ${L.time(e.dispatched_at)} · ` + (e.until_cancelled ? "до отбоя" : `до ${L.time(e.not_valid_after)}`),
+    onclick: () => openOrder(e.order_id),
+  }))) : empty("calm", "Всё спокойно", "Действующих оповещений нет."));
+  fill($("orders"), orders.orders.length ? group(orders.orders.map((o) => cell({
+    lead: modeLead(o.drill),
+    title: [modeTag(o.drill), o.cancels ? "Отбой: " : "", describeScenario(o.scenario)],
+    sub: [L.time(o.dispatched_at), o.cancelled_by ? el("span", { class: "tag ok" }, "отменено") : null],
+    onclick: () => openOrder(o.order_id),
+  }))) : empty("history", "Пока пусто", "Разосланные оповещения появятся здесь."));
   renderRenewal();
 }
 
@@ -283,8 +419,10 @@ async function refresh() {
 function renderRenewal() {
   const note = $("renew-note");
   if (!L.needsRenewal(me, Math.floor(Date.now() / 1000))) { note.replaceChildren(); return; }
-  fill(note, el("span", { class: "hint" }, `Сеанс до ${L.time(me.delegation_until)} `),
-    el("button", { type: "button", class: "small", onclick: renew }, "Продлить"));
+  const button = el("button", { type: "button", class: "btn small primary" }, "Продлить");
+  button.addEventListener("click", () => busy(button, renew));
+  fill(note, el("div", { class: "renew" },
+    el("div", { class: "body" }, `Сеанс истекает в ${L.time(me.delegation_until)}`), button));
 }
 
 async function renew() {
@@ -295,17 +433,42 @@ async function renew() {
       (key) => DeviceKey.sign(key, "delegation", begun.delegation));
     me = await api("/api/device/renew/finish", { method: "POST", body: { signature } });
     renderRenewal();
+    toast(`Сеанс продлён до ${L.time(me.delegation_until)}`);
   } catch (error) {
-    if (error.message !== "401") $("renew-note").append(msg("err", error.code ? L.vaultMessage(error) : error.message));
+    if (error.message !== "401") toast(errorText(error), "warn");
   }
 }
 
+$("account").addEventListener("click", () => {
+  sheet((close) => {
+    const renewBtn = el("button", { type: "button", class: "btn" }, `Продлить сеанс (${biometryName()})`);
+    renewBtn.addEventListener("click", () => busy(renewBtn, async () => { await renew(); close(); }));
+    return [
+      el("div", { class: "who-card" }, el("div", { class: "avatar" }, L.initials(me.name, me.person_id)),
+        el("div", { class: "name" }, me.name || me.person_id),
+        el("div", { class: "sub" }, `${me.person_id} · ключ ${L.keyShort(me.key_id || record.key_id)}`)),
+      group(
+        cell({ title: "Панель", value: panelUrl.replace(/^https:\/\//, "") }),
+        cell({ title: "Организация", value: config ? config.org_id : "—" }),
+        me.delegation_until ? cell({ title: "Сеанс до", value: L.time(me.delegation_until) }) : null),
+      me.delegation_until ? renewBtn : null,
+      privacyUrl() ? el("a", { class: "btn", href: privacyUrl(), target: "_blank", rel: "noopener" }, "Политика конфиденциальности") : null,
+      el("button", { type: "button", class: "btn tinted-danger", onclick: () => { close(); logout(); } }, "Выйти"),
+    ];
+  });
+});
+
 // ---- 4. review and sign ------------------------------------------------------------
-async function openProposal(id) {
-  current = { kind: "proposal", id };
+function openDetail(kind, id, title) {
+  current = { kind, id };
   show("detail");
+  $("detail-title").textContent = title;
+}
+
+async function openProposal(id) {
+  openDetail("proposal", id, "Проверка приказа");
   const body = $("detail-body");
-  body.replaceChildren(msg("warn", "Загружаю приказ…"));
+  body.replaceChildren(el("div", { class: "empty" }, el("div", { class: "sub" }, "Загружаю приказ…")));
   let view;
   try { view = await api(`/api/proposals/${encodeURIComponent(id)}`); }
   catch (error) { body.replaceChildren(msg("err", error.message)); return; }
@@ -315,95 +478,147 @@ async function openProposal(id) {
   const problems = await DeviceKey.reviewProblems(view.payload, view.digest, record.org_id);
   const audience = L.audienceSummary(f.audience, f.drill);
   const rows = [
-    ["Что", `${describeScenario(f.scenario)} (${f.scenario})`],
-    ["Режим", f.drill ? "учение" : "БОЕВОЕ"],
-    ["Действие", L.ACTION[f.action] || f.action],
-    meta.delivery === "rss" ? ["Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : "")] : ["Кому", audience.text],
-    ["Пояснение", f.text || "—"],
-    ["Действует", `до ${L.time(f.not_valid_after)} (${L.left(f.not_valid_after, now)})`],
-    f.cancels ? ["Отменяет приказ", f.cancels] : null,
-  ].filter(Boolean);
-  const technical = [
-    ["Подтверждение", f.requires_ack ? `требуется, срок ${f.ack_deadline_s} с` : "не требуется"],
-    ["Поток / номер", f.stream], ["Организация / политика", `${f.org_id} / ${f.policy_id}`],
+    kv("Режим", f.drill ? "Учение" : "БОЕВОЕ", f.drill ? "strong" : "real"),
+    kv("Действие", L.ACTION[f.action] || f.action),
+    rssOnly()
+      ? kv("Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : ""))
+      : kv("Кому", audience.text, audience.everyone ? "" : "alert"),
+    kv("Пояснение", f.text || "—"),
+    // Two different times: how long the event lasts, and how long this proposal
+    // waits for its signatures. They used to share one line, "Действует до 21:44".
+    f.cancels ? null : kv("Действует", untilCancelled(f.scenario) ? "до отбоя" : `до ${L.time(f.not_valid_after)}`),
+    kv("Ждёт подписей", `до ${L.time(f.not_valid_after)} (${L.left(f.not_valid_after, now)})`),
+    f.cancels ? kv("Отменяет приказ", f.cancels) : null,
+    kv("Сценарий", f.scenario),
   ];
-  const table = (list) => el("table", {}, list.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v))));
+  const technical = [
+    kv("Подтверждение", f.requires_ack ? `требуется, срок ${f.ack_deadline_s} с` : "не требуется"),
+    kv("Поток / номер", f.stream), kv("Организация / политика", `${f.org_id} / ${f.policy_id}`),
+  ];
 
   const blocked = f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign || problems.length > 0;
-  const check = el("input", { type: "checkbox" });
-  const signBtn = el("button", { class: (f.drill ? "primary" : "danger") + " big", type: "button", disabled: "" },
+  const check = el("input", { type: "checkbox", class: "switch", "aria-label": "Я проверил все поля приказа" });
+  const signBtn = el("button", { class: "btn " + (f.drill ? "primary" : "danger"), type: "button", disabled: "" },
     f.drill ? "Подписать учение" : "Подписать БОЕВОЙ приказ");
   const out = el("div");
+  if (blocked) check.disabled = true;
   check.addEventListener("change", () => { signBtn.disabled = !check.checked || blocked; });
   signBtn.addEventListener("click", async () => {
     signBtn.disabled = true;
+    signBtn.classList.add("busy");
     try {
       const reason = `${f.cancels ? "ОТБОЙ · " : ""}${f.drill ? "УЧЕНИЕ" : "БОЕВОЕ"}: ${describeScenario(f.scenario)}`;
       const sig = await withKey(record, `Подписать — ${reason}`, (key) => DeviceKey.sign(key, "order", view.payload));
       const result = await api(`/api/proposals/${encodeURIComponent(id)}/sign`, { method: "POST", body: { digest: view.digest, sig } });
+      signBtn.classList.remove("busy");
       if (result.dispatched) {
-        fill(out, msg("ok", meta.delivery === "rss" ? "Обе подписи есть — опубликовано в RSS-ленте." : `Кворум набран — разослано ${result.recipients} получателям.`), result.warnings.map((w) => msg("warn", w)));
+        toast(rssOnly() ? "Подписано — опубликовано в RSS-ленте"
+          : `Разослано: ${result.recipients} ${L.plural(result.recipients, "получатель", "получателя", "получателей")}`);
+        fill(out, result.warnings.map((w) => msg("warn", w)));
         setTimeout(() => openOrder(id), 1200);
       } else {
-        fill(out, msg("warn", "Подпись принята. Ещё не разослано:"), el("ul", {}, result.blocking.map((b) => el("li", {}, L.blockingText(b)))));
+        fill(out, msg("ok", el("b", {}, "Подпись принята."), rssOnly() ? " Ещё не опубликовано:" : " Ещё не разослано:",
+          el("ul", {}, result.blocking.map((b) => el("li", {}, L.blockingText(b))))));
+        check.checked = false; check.disabled = true;
+        out.scrollIntoView({ behavior: "smooth", block: "center" });
       }
       refresh().catch(() => {});
     } catch (error) {
-      out.replaceChildren(msg(L.isCancel(error) ? "warn" : "err", error.code ? L.vaultMessage(error) : error.message));
+      signBtn.classList.remove("busy");
+      out.replaceChildren(msg(L.isCancel(error) ? "warn" : "err", errorText(error)));
       signBtn.disabled = !check.checked || blocked;
     }
   });
 
+  const signable = view.can_sign && !view.signed_by_me;
+  const required = view.required ?? "?";
+  const dots = Number.isInteger(view.required) && view.required <= 6
+    ? el("div", { class: "dots" }, Array.from({ length: view.required }, (_, i) => el("i", { class: i < view.signed_by.length ? "on" : "" })))
+    : null;
   fill(body,
-    el("div", { class: "banner " + (f.drill ? "drill" : "real") }, (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — реальное оповещение")),
-    el("h2", {}, view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР"),
-    audience.everyone ? null : msg("err", `Необычные получатели: ${audience.text}. Проверьте, прежде чем подписывать.`),
-    table(rows),
-    el("details", { class: "more" }, el("summary", {}, "Технические поля"), table(technical)),
-    f.unexpected_fields.length ? msg("err", `В приказе есть поля, которые экран не показывает: ${f.unexpected_fields.join(", ")}. Не подписывайте.`) : null,
-    problems.length ? msg("err", `Подписать нельзя: ${problems.join("; ")}.`) : null,
-    el("h3", {}, `Подписи: ${view.signed_by.length} из ${view.required ?? "?"}`),
-    view.signed_by.length ? el("ul", {}, view.signed_by.map((s) => el("li", {}, s))) : el("div", { class: "empty" }, "Пока никто не подписал."),
+    el("div", { class: "hero-card " + (f.drill ? "drill" : "real") },
+      el("div", { class: "mode" }, (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — РЕАЛЬНОЕ ОПОВЕЩЕНИЕ")),
+      el("div", { class: "what" }, describeScenario(f.scenario)),
+      el("div", { class: "meta" }, view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР")),
+    audience.everyone || rssOnly() ? null : msg("err", el("b", {}, "Необычные получатели: "), audience.text, ". Проверьте, прежде чем подписывать."),
+    f.unexpected_fields.length ? msg("err", el("b", {}, "В приказе есть поля, которые экран не показывает: "), f.unexpected_fields.join(", "), ". Не подписывайте.") : null,
+    problems.length ? msg("err", el("b", {}, "Подписать нельзя: "), problems.join("; "), ".") : null,
+    sectionTitle("Приказ"),
+    group(rows),
+    sectionTitle("Подписи"),
+    group(
+      cell({ title: `${view.signed_by.length} из ${required}`, sub: Number(required) > 1 ? "от разных людей" : null, extra: dots }),
+      view.signed_by.map((s) => cell({ title: s, lead: leadIcon("calm", "ok") }))),
     view.signed_by_me ? msg("warn", "Вы уже подписали. Нужна подпись другого человека.") : null,
-    view.can_sign && !view.signed_by_me ? el("label", { class: "inline" }, check, "Я проверил все поля приказа") : null,
-    view.can_sign && !view.signed_by_me ? signBtn : null,
-    view.can_sign && !view.signed_by_me ? el("div", { class: "hint" }, "Подпись ставит ключ этого телефона после Face ID или отпечатка — над показанными полями.") : null,
+    el("details", { class: "cell-details" }, el("summary", {}, "Технические поля"), technical),
     out,
+    signable ? el("div", { class: "actionbar" },
+      el("label", { class: "confirm" }, el("span", {}, "Я проверил все поля приказа"), check),
+      signBtn,
+      el("div", { class: "hint" }, `Подпись ставит ключ этого телефона после ${biometryName()} — над показанными полями.`)) : null,
   );
 }
 
 async function openOrder(id) {
-  current = { kind: "order", id };
-  show("detail");
+  openDetail("order", id, "Оповещение");
   let s;
   try { s = await api(`/api/orders/${encodeURIComponent(id)}`); }
   catch (error) { $("detail-body").replaceChildren(msg("err", error.message)); return; }
   now = s.now;
   const total = s.people.length;
-  const cancelText = el("input", { type: "text", placeholder: "Причина отбоя" });
-  const out = el("div");
-  const cancelBtn = el("button", { class: "danger", type: "button", onclick: async () => {
-    if (!confirm("Создать приказ об отбое? Его тоже нужно будет подписать.")) return;
-    try {
-      const created = await api(`/api/orders/${encodeURIComponent(s.order_id)}/cancel`, { method: "POST", body: { text: cancelText.value.trim() } });
-      openProposal(created.order_id);
-    } catch (error) { out.replaceChildren(msg("err", error.message)); }
-  }}, "Отбой");
+  const progress = el("progress", { max: String(Math.max(total, 1)), value: String(s.acknowledged) });
+  const canCancel = me.can_issue && !s.cancels && !s.cancelled_by;
+  const signers = s.signed_by || [];
   fill($("detail-body"),
-    el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${describeScenario(s.scenario)} · ${L.time(s.dispatched_at)}`),
-    s.rss_only ? msg("ok", "Опубликовано в RSS-ленте. Рассылки нет.") : el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
+    el("div", { class: "hero-card " + (s.drill ? "drill" : "real") },
+      el("div", { class: "mode" }, `${s.cancels ? "ОТБОЙ · " : ""}${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${L.time(s.dispatched_at)}`),
+      el("div", { class: "what" }, describeScenario(s.scenario)),
+      // RSS only: nobody is sent anything, so there is nothing to confirm -- "0 из 0
+      // подтвердили" answered a question this installation does not ask.
+      s.rss_only
+        ? el("div", { class: "meta" }, "Опубликовано в RSS-ленте")
+        : el("div", { class: "big-count" }, `${s.acknowledged} `, el("small", {}, `из ${total} подтвердили`)),
+      s.rss_only ? null : el("div", { class: "progress-line" }, progress)),
     s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
-    s.outstanding.length ? msg("warn", `Нет подтверждения: ${s.outstanding.length} чел. — идёт эскалация по каналам.`) : (total ? msg("ok", "Все подтвердили.") : null),
-    s.cancels ? el("button", { type: "button", onclick: () => openOrder(s.cancels) }, "Открыть событие, которое отменено") : null,
+    s.rss_only ? null : s.outstanding.length ? msg("warn", `Нет подтверждения: ${s.outstanding.length} чел. — идёт эскалация по каналам.`) : (total ? msg("ok", "Все подтвердили.") : null),
     s.cancelled_by ? msg("ok", "Событие отменено отбоем.") : null,
-    !s.cancels && !s.cancelled_by ? el("h3", {}, s.until_cancelled ? "Действует до отбоя" : `Действует до ${L.time(s.not_valid_after)}`) : null,
-    me.can_issue && !s.cancels && !s.cancelled_by ? el("div", { class: "row" }, cancelText, cancelBtn) : null,
-    s.rss_only ? null : el("details", { class: "more" }, el("summary", {}, `Кто ответил (${total})`),
-      el("table", {}, s.people.map((p) => el("tr", {},
-        el("td", {}, p.name || p.person_id),
-        el("td", {}, p.ack_valid === false ? "ПОДДЕЛЬНАЯ РАСПИСКА" : p.ack_status ? (L.ACK[p.ack_status] || p.ack_status) : "нет ответа"))))),
-    out,
+    group(
+      !s.cancels && !s.cancelled_by ? cell({ title: "Действует", value: s.until_cancelled ? "до отбоя" : `до ${L.time(s.not_valid_after)}` }) : null,
+      s.cancels ? cell({ title: "Открыть отменённое событие", onclick: () => openOrder(s.cancels) }) : null),
+    sectionTitle(`Подписали · ${signers.length}`),
+    signers.length ? group(signers.map((name) => cell({ title: name, lead: leadIcon("calm", "ok") })))
+      : el("p", { class: "footnote" }, "Подписи не найдены."),
+    s.rss_only ? null : sectionTitle(`Кто ответил · ${total}`),
+    s.rss_only ? null : total ? group(s.people.map((p) => cell({
+      title: p.name || p.person_id,
+      value: p.ack_valid === false ? "ПОДДЕЛЬНАЯ РАСПИСКА" : p.ack_status ? (L.ACK[p.ack_status] || p.ack_status) : "нет ответа",
+      valueClass: L.ackTone(p),
+    }))) : el("p", { class: "footnote" }, "Получателей нет."),
+    canCancel ? el("div", { class: "list-gap" }, el("button", { type: "button", class: "btn tinted-danger", onclick: () => askCancel(s) }, "Отбой…")) : null,
   );
+}
+
+// Stand down: a reason, then a proposal that needs signing like any other.
+function askCancel(s) {
+  sheet((close) => {
+    const reason = el("textarea", { rows: "3", maxlength: "1000", placeholder: "Причина отбоя" });
+    const out = el("div");
+    const go = el("button", { type: "button", class: "btn danger" }, "Создать отбой");
+    go.addEventListener("click", () => busy(go, async () => {
+      try {
+        const created = await api(`/api/orders/${encodeURIComponent(s.order_id)}/cancel`, { method: "POST", body: { text: reason.value.trim() } });
+        close();
+        openProposal(created.order_id);
+      } catch (error) { out.replaceChildren(msg("err", error.message)); }
+    }));
+    return [
+      el("h2", {}, "Отбой"),
+      el("p", { class: "sheet-text" }, `«${describeScenario(s.scenario)}». Отбой — тоже приказ: его нужно будет подписать.`),
+      group(reason),
+      out, go,
+      el("button", { type: "button", class: "btn", onclick: close }, "Отмена"),
+    ];
+  });
 }
 
 $("back").addEventListener("click", () => { current = null; show("main"); refresh().catch(() => {}); });
@@ -413,22 +628,34 @@ const chosenScenario = () => {
   const picked = document.querySelector("input[name=scenario]:checked");
   return picked ? meta.scenarios.find((x) => x.code === picked.value) : null;
 };
+// The installation publishes to the RSS feed only (ALERTING_DELIVERY=rss): nothing is
+// sent to anyone, so the screens speak of the feed, not of recipients.
+const rssOnly = () => Boolean(meta && meta.delivery === "rss");
+const untilCancelled = (code) => {
+  const s = meta && meta.scenarios.find((x) => x.code === code);
+  return Boolean(s && s.until_cancelled);
+};
+const chosenTtl = () => Number((document.querySelector("input[name=ttl]:checked") || { value: 900 }).value);
+
+const pickRow = (name, value, title, sub, onchange) => el("label", { class: "cell pick" },
+  el("input", { type: "radio", name, value, onchange }),
+  el("div", { class: "body" }, el("div", { class: "title" }, title), sub ? el("div", { class: "sub" }, sub) : null));
 
 function fillForm() {
-  fill($("scenarios"), meta.scenarios.map((s) => el("label", { class: "choice" },
-    el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillScenario }),
-    s.description || s.code, el("small", {}, s.code))));
+  fill($("scenarios"), meta.scenarios.map((s) => pickRow("scenario", s.code, s.description || s.code, s.code, fillScenario)));
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillScenario();
 }
 
-// No level to choose: an event is a drill or real; the scenario fixes the rest.
+// There is no level to choose: an event is a drill or real, the scenario fixes the
+// rest (the panel takes the scenario's own level).
 function fillScenario() {
   const s = chosenScenario();
   const parts = [];
   if (s && s.until_cancelled) parts.push("Действует до отбоя.");
   if (s && s.card) parts.push(`Люди увидят: «${s.card}»`);
   $("scenario-hint").textContent = parts.join(" ");
+  $("scenario-hint").classList.toggle("hidden", !parts.length);
   updateSummary();
 }
 
@@ -436,13 +663,14 @@ function updateSummary() {
   const s = chosenScenario();
   const mode = document.querySelector("input[name=drill]:checked");
   const rule = s && meta.severities[s.severity];
+  const row = (k, v) => el("div", { class: "row" }, el("span", {}, k), el("span", {}, v));
   if (!s) { fill($("summary"), el("div", { class: "hint" }, "Выберите, что случилось.")); return; }
   fill($("summary"),
-    meta.delivery === "rss"
-      ? el("div", {}, "После подписей уйдёт в RSS-ленту" + (mode && mode.value === "true" ? " с пометкой «УЧЕНИЕ»" : "") + ". Рассылки нет.")
-      : el("div", {}, `Получат: все (${meta.recipients} чел.)` + (mode && mode.value === "false" ? " и публичная RSS-лента" : "")),
-    el("div", {}, `Нужно подписей ЛПР: ${rule ? rule.launch : "?"}` + (rule && rule.launch > 1 ? " — от разных людей" : "")),
-    mode ? null : el("div", { class: "hint" }, "Выберите: учение или боевое."));
+    rssOnly()
+      ? row("Куда", "RSS-лента" + (mode && mode.value === "true" ? " (с пометкой «УЧЕНИЕ»)" : "") + ", рассылки нет")
+      : row("Получат", `все (${meta.recipients} чел.)` + (mode && mode.value === "false" ? " и RSS-лента" : "")),
+    row("Нужно подписей ЛПР", `${rule ? rule.launch : "?"}` + (rule && rule.launch > 1 ? " — от разных людей" : "")),
+    mode ? null : row("Режим", "не выбран"));
 }
 
 $("new-form").addEventListener("submit", async (event) => {
@@ -452,18 +680,21 @@ $("new-form").addEventListener("submit", async (event) => {
   const mode = document.querySelector("input[name=drill]:checked");
   if (!s) { out.replaceChildren(msg("err", "Выберите, что случилось.")); return; }
   if (!mode) { out.replaceChildren(msg("err", "Выберите: учение или боевое.")); return; }
-  try {
-    const created = await api("/api/proposals", { method: "POST", body: {
-      scenario: s.code, drill: mode.value === "true",
-      text: $("text").value.trim(), ttl_s: Number($("ttl").value),
-    }});
-    out.replaceChildren();
-    $("text").value = "";
-    mode.checked = false;
-    openProposal(created.order_id);
-  } catch (error) {
-    out.replaceChildren(msg("err", error.message));
-  }
+  await busy(event.submitter || $("new-form").querySelector("button[type=submit]"), async () => {
+    try {
+      const created = await api("/api/proposals", { method: "POST", body: {
+        scenario: s.code, drill: mode.value === "true",
+        text: $("text").value.trim(), ttl_s: chosenTtl(),
+      }});
+      out.replaceChildren();
+      $("text").value = "";
+      mode.checked = false;
+      updateSummary();
+      openProposal(created.order_id);
+    } catch (error) {
+      out.replaceChildren(msg("err", error.message));
+    }
+  });
 });
 
 // ---- polling -----------------------------------------------------------------------
@@ -479,8 +710,7 @@ document.addEventListener("visibilitychange", () => {
 
 // ---- boot --------------------------------------------------------------------------
 (async () => {
-  // The panel's wording speaks of browsers; inside the app the cure is the phone's.
-  const problem = (await DeviceKey.supported()) && L.UNSUPPORTED_PHONE;
+  const problem = await DeviceKey.supported();
   if (problem) {
     fill($("fatal"), msg("err", problem));
     $("fatal").classList.remove("hidden");

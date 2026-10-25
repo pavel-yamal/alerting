@@ -324,6 +324,8 @@ def test_active_events_and_their_stand_down_are_linked(panel_app):
     active = officer.get("/api/events/active").json()["events"]
     assert [e["order_id"] for e in active] == [order_id]
     assert active[0]["until_cancelled"] is True
+    signed = officer.get(f"/api/orders/{order_id}").json()["signed_by"]
+    assert sorted(signed) == ["Орлов Д. С. (lpr)", "Смирнов А. В. (lpr)"]
 
     cancel_id = officer.post(
         f"/api/orders/{order_id}/cancel", json={"text": "Отбой"}, headers=PANEL

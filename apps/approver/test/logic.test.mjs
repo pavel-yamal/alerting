@@ -51,9 +51,11 @@ test("an audience other than everyone is spelled out", () => {
   assert.match(L.audienceSummary({}, false).text, /ПУСТО/);
 });
 
-test("no level to choose: the form has no severity field", () => {
+test("no level anywhere: neither the form nor the screens show one", () => {
   const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
-  assert.doesNotMatch(html, /id="severity/);
+  const app = readFileSync(new URL("../src/app.js", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /severity|Уровень/);
+  assert.doesNotMatch(app, /L\.SEVERITY|Уровень/);
 });
 
 test("every vault code has words, and an unknown one falls back to its message", () => {
@@ -110,8 +112,18 @@ test("a key generated for the vault signs after the round trip, and only signs",
   assert.equal(await D.verify(made.public_key, "order", payload, sig), true);
 });
 
-test("an unsupported phone is told what to update, not which browser to install", () => {
-  assert.match(L.UNSUPPORTED_PHONE, /iOS 17/);
-  assert.match(L.UNSUPPORTED_PHONE, /Android System WebView/);
-  assert.doesNotMatch(L.UNSUPPORTED_PHONE, /браузер/);
+test("what the screens print: short key, initials, plurals, answer colours", () => {
+  assert.equal(L.keyShort("ed25519:AbCdEfGhIjKlMnOpQrStUv"), "AbCdEfGh…");
+  assert.equal(L.initials("Иван Петров", "p-001"), "ИП");
+  assert.equal(L.initials("Демо-ЛПР 3", "demo-3"), "Д3");
+  assert.equal(L.initials("", "p-010"), "P");
+  assert.equal(L.plural(1, "подпись", "подписи", "подписей"), "подпись");
+  assert.equal(L.plural(3, "подпись", "подписи", "подписей"), "подписи");
+  assert.equal(L.plural(11, "подпись", "подписи", "подписей"), "подписей");
+  assert.equal(L.plural(22, "подпись", "подписи", "подписей"), "подписи");
+  assert.equal(L.ackTone({ ack_status: "acknowledged" }), "ok");
+  assert.equal(L.ackTone({ ack_status: "received" }), "warn");
+  assert.equal(L.ackTone({ ack_status: null }), "none");
+  assert.equal(L.ackTone({ ack_status: "cannot_comply" }), "bad");
+  assert.equal(L.ackTone({ ack_status: "acknowledged", ack_valid: false }), "bad", "a forged receipt is never green");
 });

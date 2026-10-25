@@ -26,7 +26,7 @@ from psycopg.rows import dict_row
 from alerting.clients.transport import SignedRequests
 from alerting.core.clock import FixedClock
 from alerting.core.signing import public_key_to_b64u
-from alerting.orgkit import Org, build_org
+from alerting.orgkit import DEFAULT_SCENARIOS, Org, build_org
 from alerting.server.app import AppServices, create_app
 from alerting.server.config import Settings
 from alerting.server.db import migrate
@@ -142,6 +142,14 @@ def _restore_triggers(connection: psycopg.Connection) -> None:
 @pytest.fixture
 def org() -> Org:
     return build_org(issued_at=ISSUED_AT)
+
+
+def finite_muster_org() -> Org:
+    """Every shipped scenario lasts until a stand-down; this org keeps one, MUSTER,
+    whose delivery window is its life -- for the tests of that rule."""
+    scenarios = dict(DEFAULT_SCENARIOS)
+    scenarios["MUSTER"] = scenarios["MUSTER"].model_copy(update={"until_cancelled": None})
+    return build_org(issued_at=ISSUED_AT, scenarios=scenarios)
 
 
 @pytest.fixture

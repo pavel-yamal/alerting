@@ -294,7 +294,8 @@ async function openProposal(id) {
       ? ["Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : "")]
       : ["Кому", everyone ? `все${f.drill ? "" : " и публичная RSS-лента"}` : unusual],
     ["Пояснение", f.text || "—"],
-    ["Действует", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
+    f.cancels ? null : ["Действует", (meta.scenarios.find((x) => x.code === f.scenario) || {}).until_cancelled ? "до отбоя" : `до ${time(f.not_valid_after)}`],
+    ["Ждёт подписей", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
     f.cancels ? ["Отменяет приказ", f.cancels] : null,
   ].filter(Boolean);
   // Still every signed field -- just the technical ones folded away.
@@ -389,6 +390,7 @@ function renderOrder(s) {
   fill($("detail"),
     el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${describe(s.scenario)} · ${time(s.dispatched_at)}`),
     s.rss_only ? msg("ok", "Опубликовано в RSS-ленте. Рассылки нет.") : null,
+    el("div", {}, el("b", {}, "Подписали: "), (s.signed_by || []).join(", ") || "—"),
     s.rss_only ? null : el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
     s.rss_only ? null : el("div", { class: "hint" }, "«Получено устройством» — приложение приняло и проверило приказ. Подтверждение — когда человек нажал «принял»."),
     s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
