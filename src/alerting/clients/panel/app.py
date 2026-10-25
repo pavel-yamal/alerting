@@ -848,6 +848,9 @@ def create_panel(
             },
             # Who "everyone" is right now, for the form to say so.
             "recipients": sum(1 for person in roster if person.get("role") != "canary"),
+            # "rss": the order goes to the RSS feed and to nobody else. Asked of the
+            # server, which is what decides it (ALERTING_DELIVERY).
+            "delivery": _server(session.api.get, "/v1/proposals").get("delivery", "channels"),
         }
 
     @app.post("/api/proposals")

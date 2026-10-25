@@ -86,8 +86,9 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         action=body.action,
         audience=body.audience,
         text=body.text,
-        requires_ack=body.requires_ack,
-        ack_deadline_s=body.ack_deadline_s,
+        # Nothing is delivered in RSS-only mode, so there is nothing to acknowledge.
+        requires_ack=False if app.settings.rss_only else body.requires_ack,
+        ack_deadline_s=0 if app.settings.rss_only else body.ack_deadline_s,
         policy_id=policy.policy_id,
         cancels=body.cancels,
     )
@@ -134,6 +135,8 @@ async def list_proposals(request: Request) -> dict[str, Any]:
     rows = app.repo.recent_proposals(app.clock.now() - RECENT_S)
     signatures = app.repo.signatures_for([row["order_id"] for row in rows])
     return {
+        # The panel and the app say "goes to the RSS feed" instead of "everyone gets it".
+        "delivery": app.settings.delivery,
         "proposals": [
             {
                 "order_id": row["order_id"],
@@ -146,7 +149,7 @@ async def list_proposals(request: Request) -> dict[str, Any]:
                 ],
             }
             for row in rows
-        ]
+        ],
     }
 
 

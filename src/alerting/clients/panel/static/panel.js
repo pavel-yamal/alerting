@@ -200,8 +200,10 @@ function updateSummary() {
   const signers = rule ? rule.launch : "?";
   fill($("summary"),
     el("div", {}, el("b", {}, describe(s.code))),
-    el("div", {}, `Получат: все (${meta.recipients} чел.)`
-      + (mode && mode.value === "false" ? " и публичная RSS-лента" : mode ? " · учение в RSS-ленту не попадает" : "")),
+    meta.delivery === "rss"
+      ? el("div", {}, "После подписей уйдёт в RSS-ленту" + (mode && mode.value === "true" ? " с пометкой «УЧЕНИЕ»" : "") + ". Рассылки нет.")
+      : el("div", {}, `Получат: все (${meta.recipients} чел.)`
+        + (mode && mode.value === "false" ? " и публичная RSS-лента" : mode ? " · учение в RSS-ленту не попадает" : "")),
     el("div", {}, `Нужно подписей ЛПР: ${signers}` + (rule && rule.launch > 1 ? " — от разных людей" : "")),
     mode ? null : el("div", { class: "hint" }, "Выберите: учение или боевое."));
 }
@@ -288,7 +290,9 @@ async function openProposal(id) {
     ["Что", `${describe(f.scenario)} (${f.scenario})`],
     ["Режим", f.drill ? "учение" : "БОЕВОЕ"],
     ["Действие", ACTION[f.action] || f.action],
-    ["Кому", everyone ? `все${f.drill ? "" : " и публичная RSS-лента"}` : unusual],
+    meta.delivery === "rss"
+      ? ["Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : "")]
+      : ["Кому", everyone ? `все${f.drill ? "" : " и публичная RSS-лента"}` : unusual],
     ["Пояснение", f.text || "—"],
     ["Действует", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
     f.cancels ? ["Отменяет приказ", f.cancels] : null,
@@ -312,7 +316,7 @@ async function openProposal(id) {
       if (local) body.sig = await DeviceKey.sign(deviceKey, "order", view.payload);
       const result = await api(`/api/proposals/${encodeURIComponent(id)}/sign`, { method: "POST", body });
       if (result.dispatched) {
-        out.replaceChildren(msg("ok", `Кворум набран — разослано ${result.recipients} получателям.`),
+        out.replaceChildren(msg("ok", meta.delivery === "rss" ? "Обе подписи есть — опубликовано в RSS-ленте." : `Кворум набран — разослано ${result.recipients} получателям.`),
           ...result.warnings.map((w) => msg("warn", w)));
         await refreshLists();
         setTimeout(() => openOrder(id), 1200);
@@ -384,12 +388,13 @@ function renderOrder(s) {
 
   fill($("detail"),
     el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${describe(s.scenario)} · ${time(s.dispatched_at)}`),
-    el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
-    el("div", { class: "hint" }, "«Получено устройством» — приложение приняло и проверило приказ. Подтверждение — когда человек нажал «принял»."),
+    s.rss_only ? msg("ok", "Опубликовано в RSS-ленте. Рассылки нет.") : null,
+    s.rss_only ? null : el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
+    s.rss_only ? null : el("div", { class: "hint" }, "«Получено устройством» — приложение приняло и проверило приказ. Подтверждение — когда человек нажал «принял»."),
     s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
     s.outstanding.length ? msg("warn", `Нет подтверждения от человека: ${s.people.filter((p) => s.outstanding.includes(p.person_id)).map((p) => p.name || p.person_id).join(", ")} — пока не подтвердят, идёт эскалация по каналам.`) : (total ? msg("ok", "Все подтвердили.") : null),
     s.stub_attempts ? msg("warn", `Попыток через каналы-заглушки: ${s.stub_attempts}. Они ничего не отправляют — до этих людей дошло только приложение.`) : null,
-    el("table", {},
+    s.rss_only ? null : el("table", {},
       el("tr", {}, el("th", {}, "Кто"), el("th", {}, "Ответ"), el("th", {}, "Каналы")),
       s.people.map((p) => el("tr", {},
         el("td", {}, p.name ? `${p.name} ` : "", el("code", {}, p.person_id)),

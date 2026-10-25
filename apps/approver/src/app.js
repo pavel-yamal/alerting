@@ -318,7 +318,7 @@ async function openProposal(id) {
     ["Что", `${describeScenario(f.scenario)} (${f.scenario})`],
     ["Режим", f.drill ? "учение" : "БОЕВОЕ"],
     ["Действие", L.ACTION[f.action] || f.action],
-    ["Кому", audience.text],
+    meta.delivery === "rss" ? ["Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : "")] : ["Кому", audience.text],
     ["Пояснение", f.text || "—"],
     ["Действует", `до ${L.time(f.not_valid_after)} (${L.left(f.not_valid_after, now)})`],
     f.cancels ? ["Отменяет приказ", f.cancels] : null,
@@ -342,7 +342,7 @@ async function openProposal(id) {
       const sig = await withKey(record, `Подписать — ${reason}`, (key) => DeviceKey.sign(key, "order", view.payload));
       const result = await api(`/api/proposals/${encodeURIComponent(id)}/sign`, { method: "POST", body: { digest: view.digest, sig } });
       if (result.dispatched) {
-        fill(out, msg("ok", `Кворум набран — разослано ${result.recipients} получателям.`), result.warnings.map((w) => msg("warn", w)));
+        fill(out, msg("ok", meta.delivery === "rss" ? "Обе подписи есть — опубликовано в RSS-ленте." : `Кворум набран — разослано ${result.recipients} получателям.`), result.warnings.map((w) => msg("warn", w)));
         setTimeout(() => openOrder(id), 1200);
       } else {
         fill(out, msg("warn", "Подпись принята. Ещё не разослано:"), el("ul", {}, result.blocking.map((b) => el("li", {}, L.blockingText(b)))));
@@ -391,14 +391,14 @@ async function openOrder(id) {
   }}, "Отбой");
   fill($("detail-body"),
     el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${describeScenario(s.scenario)} · ${L.time(s.dispatched_at)}`),
-    el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
+    s.rss_only ? msg("ok", "Опубликовано в RSS-ленте. Рассылки нет.") : el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
     s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
     s.outstanding.length ? msg("warn", `Нет подтверждения: ${s.outstanding.length} чел. — идёт эскалация по каналам.`) : (total ? msg("ok", "Все подтвердили.") : null),
     s.cancels ? el("button", { type: "button", onclick: () => openOrder(s.cancels) }, "Открыть событие, которое отменено") : null,
     s.cancelled_by ? msg("ok", "Событие отменено отбоем.") : null,
     !s.cancels && !s.cancelled_by ? el("h3", {}, s.until_cancelled ? "Действует до отбоя" : `Действует до ${L.time(s.not_valid_after)}`) : null,
     me.can_issue && !s.cancels && !s.cancelled_by ? el("div", { class: "row" }, cancelText, cancelBtn) : null,
-    el("details", { class: "more" }, el("summary", {}, `Кто ответил (${total})`),
+    s.rss_only ? null : el("details", { class: "more" }, el("summary", {}, `Кто ответил (${total})`),
       el("table", {}, s.people.map((p) => el("tr", {},
         el("td", {}, p.name || p.person_id),
         el("td", {}, p.ack_valid === false ? "ПОДДЕЛЬНАЯ РАСПИСКА" : p.ack_status ? (L.ACK[p.ack_status] || p.ack_status) : "нет ответа"))))),
@@ -438,7 +438,9 @@ function updateSummary() {
   const rule = s && meta.severities[s.severity];
   if (!s) { fill($("summary"), el("div", { class: "hint" }, "Выберите, что случилось.")); return; }
   fill($("summary"),
-    el("div", {}, `Получат: все (${meta.recipients} чел.)` + (mode && mode.value === "false" ? " и публичная RSS-лента" : "")),
+    meta.delivery === "rss"
+      ? el("div", {}, "После подписей уйдёт в RSS-ленту" + (mode && mode.value === "true" ? " с пометкой «УЧЕНИЕ»" : "") + ". Рассылки нет.")
+      : el("div", {}, `Получат: все (${meta.recipients} чел.)` + (mode && mode.value === "false" ? " и публичная RSS-лента" : "")),
     el("div", {}, `Нужно подписей ЛПР: ${rule ? rule.launch : "?"}` + (rule && rule.launch > 1 ? " — от разных людей" : "")),
     mode ? null : el("div", { class: "hint" }, "Выберите: учение или боевое."));
 }

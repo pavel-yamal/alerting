@@ -60,7 +60,7 @@ def test_a_real_alert_and_its_stand_down_are_in_the_feed(server, org, clock):
     feed = items(server)
     assert [i["guid"] for i in feed] == [cancel_id, order_id]  # newest first
     alert = feed[1]
-    assert alert["title"] == "Полная эвакуация здания — критическая"
+    assert alert["title"] == "Полная эвакуация здания"
     assert alert["description"].startswith("Задымление, 3 этаж <b>")  # text, not markup
     assert alert["category"] == "EVAC.BUILDING"
     assert feed[0]["title"] == "ОТБОЙ: Полная эвакуация здания"

@@ -67,7 +67,11 @@ class Dispatcher:
         channels: ChannelRegistry,
         audit: AuditService,
         clock: Clock,
+        *,
+        rss_only: bool = False,
     ) -> None:
+        #: Record and publish to the feed; send nothing to anyone (Settings.delivery).
+        self.rss_only = rss_only
         self.repo = repo
         self.state = state
         self.channels = channels
@@ -201,7 +205,7 @@ class Dispatcher:
         # the metric both docs/06 §9 and docs/07 §2 call the main one -- without it
         # "90% of acknowledgements" has no meaning, and the chain could not answer
         # the one question it is most often asked.
-        recipients = self.state.recipients_for(order)
+        recipients = [] if self.rss_only else self.state.recipients_for(order)
 
         with self.repo.tx():
             self.repo.create_order(
@@ -237,9 +241,15 @@ class Dispatcher:
                     "drill": order.drill,
                     "cancels": order.cancels,
                     "recipients": len(recipients),
+                    "delivery": "rss" if self.rss_only else "channels",
                     "warnings": [str(w) for w in decision.warnings],
                 },
             )
+
+        if self.rss_only:
+            # Not "reached nobody": there was nobody to reach by design. The order is
+            # recorded, and the feed is built from the orders table.
+            return DispatchResult(decision, [], [])
 
         if not recipients:
             # Degrading closed here would lose nothing (there is nobody to warn), but
@@ -405,7 +415,9 @@ class Dispatcher:
             # Counted and surfaced separately: these attempts sent nothing at all, and
             # an operator reading a green dashboard has to be able to see that.
             "stub_attempts": by_status.get("stub", 0),
-            "reached_nobody": not people,
+            # RSS-only: nobody was meant to be reached, the order went to the feed.
+            "rss_only": self.rss_only,
+            "reached_nobody": not people and not self.rss_only,
         }
 
     #: The only scenario code the canary may use. Checked, not trusted: it is what

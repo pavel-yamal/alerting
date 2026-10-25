@@ -225,6 +225,7 @@ def test_meta_comes_from_the_verified_policy(panel_app):
     assert "EVAC.BUILDING" in codes and "CANARY" not in codes
     assert meta["severities"]["critical"]["launch"] == 2
     assert meta["recipients"] >= 3  # one audience: everyone
+    assert meta["delivery"] == "channels"  # the server's ALERTING_DELIVERY
 
 
 def test_a_session_has_no_timeout(panel_app, clock, monotonic):

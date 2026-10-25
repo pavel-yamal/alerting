@@ -310,14 +310,17 @@ class Repo:
             (limit,),
         )
 
-    def public_orders(self, limit: int) -> list[Row]:
-        """Real orders and stand-downs, newest first: what the public feed shows.
+    def public_orders(self, limit: int, *, drills: bool = False) -> list[Row]:
+        """Orders and stand-downs, newest first: what the feed shows.
 
-        Drills and canaries never leave the building this way.
+        Canaries never. Drills only when the feed is the only output (RSS-only
+        delivery) -- then a drill that is not in the feed would do nothing at all.
         """
+        drill_filter = "" if drills else " AND NOT drill"
         return self._all(
-            "SELECT * FROM orders WHERE NOT canary AND NOT drill"
-            " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
+            "SELECT * FROM orders WHERE NOT canary"
+            + drill_filter
+            + " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
             (limit,),
         )
 

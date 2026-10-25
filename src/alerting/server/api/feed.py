@@ -1,10 +1,11 @@
-"""The public RSS feed: real alerts and their stand-downs, for anyone to read.
+"""The RSS feed: alerts and their stand-downs.
 
-What goes out is what a notice board would carry -- the event, its severity, the
-instruction text and the time. Who the order was addressed to, who signed it and who
-acknowledged stay behind the signed-request gate: the audience is the roster, and
-the roster is personal data. Drills and canaries are never in the feed, so a reader
-does not have to know about them to read it right.
+What goes out is what a notice board would carry -- the event, the instruction text
+and the time. Who the order was addressed to, who signed it and who acknowledged stay
+behind the signed-request gate: the audience is the roster, and the roster is personal
+data. Canaries are never in the feed. Drills are in it only in RSS-only delivery
+(``ALERTING_DELIVERY=rss``), where the feed is the only output, and then every drill
+title starts with «УЧЕНИЕ».
 
 The feed is a view of orders that already dispatched, built per request from the
 database. It is not a delivery channel and carries no promise about latency: a
@@ -27,13 +28,6 @@ router = APIRouter(prefix="/v1", tags=["public"])
 DEFAULT_ITEMS = 50
 MAX_ITEMS = 200
 
-SEVERITY = {
-    "info": "информация",
-    "warning": "предупреждение",
-    "critical": "критическая",
-    "catastrophic": "катастрофическая",
-}
-
 
 def _describe(app: Any, scenario: str) -> str:
     rule = app.state.policy().scenario(scenario)
@@ -42,16 +36,18 @@ def _describe(app: Any, scenario: str) -> str:
 
 def _item(app: Any, row: dict[str, Any]) -> dict[str, str]:
     payload = json.loads(row["envelope_json"])["payload"]
-    severity = SEVERITY.get(row["severity"], row["severity"])
     text = payload.get("text", "")
+    # A drill is in the feed only in RSS-only mode, and it must not be mistaken for
+    # the real thing by anyone reading a headline.
+    mark = "УЧЕНИЕ. " if row["drill"] else ""
     if row["cancels"]:
         target = app.repo.order(row["cancels"])
         what = _describe(app, target["scenario"]) if target else row["cancels"]
-        title = f"ОТБОЙ: {what}"
+        title = f"{mark}ОТБОЙ: {what}"
         body = text or "Оповещение отменено."
     else:
         rule = app.state.policy().scenario(row["scenario"])
-        title = f"{_describe(app, row['scenario'])} — {severity}"
+        title = f"{mark}{_describe(app, row['scenario'])}"
         body = "\n\n".join(part for part in (text, rule.card if rule else "") if part)
     return {
         "title": title,
@@ -70,11 +66,16 @@ def render(app: Any, limit: int) -> bytes:
     for tag, value in (
         ("title", f"{settings.org_label}: оповещения"),
         ("link", "/v1/feed.rss"),
-        ("description", "Боевые оповещения и отбои. Учения в ленту не попадают."),
+        (
+            "description",
+            "Оповещения и отбои; учения помечены «УЧЕНИЕ»."
+            if settings.rss_only
+            else "Боевые оповещения и отбои. Учения в ленту не попадают.",
+        ),
         ("language", "ru"),
     ):
         ET.SubElement(channel, tag).text = value
-    rows = app.repo.public_orders(limit)
+    rows = app.repo.public_orders(limit, drills=settings.rss_only)
     if rows:
         latest = formatdate(rows[0]["dispatched_at"], usegmt=True)
         ET.SubElement(channel, "lastBuildDate").text = latest

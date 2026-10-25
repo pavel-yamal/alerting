@@ -91,9 +91,11 @@ class AppServices:
             self.connections, self.repo, settings.org_label, fanout=self.fanout
         )
         self.escalation_plan = _load_plan(settings)
-        _require_deliverable_channels(
-            self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
-        )
+        # With delivery off nothing is ever sent, so stub channels promise nothing.
+        if not settings.rss_only:
+            _require_deliverable_channels(
+                self.channels, self.escalation_plan, allow_stubs=settings.allow_stub_channels
+            )
 
         # There is no HTTP secret to configure, and so no way to start this node with
         # an open surface: every request is verified against the root-signed directory
@@ -116,7 +118,14 @@ class AppServices:
             spool_dir=settings.spool_dir,
             heads_dir=settings.heads_dir,
         )
-        self.dispatcher = Dispatcher(self.repo, self.state, self.channels, self.audit, self.clock)
+        self.dispatcher = Dispatcher(
+            self.repo,
+            self.state,
+            self.channels,
+            self.audit,
+            self.clock,
+            rss_only=settings.rss_only,
+        )
         # The leader lock keeps one process climbing ladders. It takes a connection
         # of its own because the lock is session scoped: one from the pool is handed
         # back after each statement, which would release it immediately.
@@ -302,7 +311,9 @@ def create_app(
         # Always, unlike the background workers below: receiving a hand-off is part
         # of delivering to the sockets this process holds, not a periodic job.
         services.fanout.start()
-        if start_escalation:
+        # RSS only: nothing is sent, so there is no ladder to climb, no channel to
+        # probe and no delivery path for a canary to prove.
+        if start_escalation and not resolved.rss_only:
             services.escalation.start(resolved.escalation_interval_s)
             services.heartbeat.start()
             if resolved.canary_interval_s > 0:

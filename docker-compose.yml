@@ -27,6 +27,7 @@ x-app: &app
     ALERTING_DRILL_SITES: ${ALERTING_DRILL_SITES:-}
     ALERTING_ALLOW_STUB_CHANNELS: ${ALERTING_ALLOW_STUB_CHANNELS:-0}
     ALERTING_CANARY_INTERVAL_S: ${ALERTING_CANARY_INTERVAL_S:-3600}
+    ALERTING_DELIVERY: ${ALERTING_DELIVERY:-rss}
 
 services:
   # Пароли и DSN, один раз. Повторный запуск ничего не перезаписывает.

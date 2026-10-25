@@ -38,6 +38,10 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: See ``Settings.delivery``.
+DELIVERY_MODES = frozenset({"channels", "rss"})
+
+
 @dataclass
 class Settings:
     org_id: str = "acme"
@@ -91,8 +95,24 @@ class Settings:
     #: it. Required for the demo and for tests; a production node must not set it.
     allow_stub_channels: bool = False
 
+    #: What happens to an order once its quorum is met. ``rss``: it is recorded and
+    #: published in the feed, and nothing is sent to anyone -- no sockets, push, SMS,
+    #: siren, escalation or canary; drills go to the feed too, marked. ``channels``:
+    #: the full delivery path with acknowledgements and the escalation ladder.
+    delivery: str = "channels"
+
     log_level: str = "INFO"
     log_json: bool = False
+
+    def __post_init__(self) -> None:
+        if self.delivery not in DELIVERY_MODES:
+            raise ValueError(
+                f"ALERTING_DELIVERY must be one of {sorted(DELIVERY_MODES)}, not {self.delivery!r}"
+            )
+
+    @property
+    def rss_only(self) -> bool:
+        return self.delivery == "rss"
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -116,6 +136,7 @@ class Settings:
             heartbeat_interval_s=_env_float("ALERTING_HEARTBEAT_INTERVAL_S", 60.0),
             canary_interval_s=_env_float("ALERTING_CANARY_INTERVAL_S", 3600.0),
             allow_stub_channels=_env_flag("ALERTING_ALLOW_STUB_CHANNELS"),
+            delivery=os.environ.get("ALERTING_DELIVERY", "channels") or "channels",
             log_level=os.environ.get("ALERTING_LOG_LEVEL", "INFO"),
             log_json=_env_flag("ALERTING_LOG_JSON"),
         )
