@@ -687,7 +687,13 @@ const pickRow = (name, value, title, sub, onchange) => el("label", { class: "cel
   el("div", { class: "body" }, el("div", { class: "title" }, title), sub ? el("div", { class: "sub" }, sub) : null));
 
 function fillForm() {
+  // Rebuilt when a new list of events arrives (syncMeta), possibly mid-way through
+  // filling the form: the event already picked stays picked if it is still listed.
+  const picked = document.querySelector("input[name=scenario]:checked");
+  const keep = picked ? picked.value : null;
   fill($("scenarios"), meta.scenarios.map((s) => pickRow("scenario", s.code, s.description || s.code, s.code, fillScenario)));
+  const again = keep && [...document.querySelectorAll("input[name=scenario]")].find((r) => r.value === keep);
+  if (again) again.checked = true;
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillScenario();
 }

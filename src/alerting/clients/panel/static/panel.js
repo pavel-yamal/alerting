@@ -178,10 +178,16 @@ const chosenScenario = () => {
 };
 
 function fillForm() {
+  // Rebuilt when a new list of events arrives (syncMeta), possibly mid-way through
+  // filling the form: the event already picked stays picked if it is still listed.
+  const picked = document.querySelector("input[name=scenario]:checked");
+  const keep = picked ? picked.value : null;
   $("scenarios").replaceChildren(...meta.scenarios.map((s) =>
     el("label", { class: "choice" },
       el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillScenario }),
       s.description || s.code, el("small", {}, s.code))));
+  const again = keep && [...document.querySelectorAll("input[name=scenario]")].find((r) => r.value === keep);
+  if (again) again.checked = true;
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillScenario();
 }
@@ -228,7 +234,9 @@ $("new-form").addEventListener("submit", async (event) => {
     out.replaceChildren();
     $("text").value = "";
     mode.checked = false;
-    document.querySelector("input[name=scenario]:checked").checked = false;
+    // The form may have been rebuilt while the proposal was being sent (syncMeta).
+    const picked = document.querySelector("input[name=scenario]:checked");
+    if (picked) picked.checked = false;
     fillScenario();
     await refreshLists();
     openProposal(created.order_id);
