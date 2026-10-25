@@ -399,5 +399,7 @@ docker compose exec mobile alerting-mobile end-session x-101
 `http://127.0.0.1:7070/v1/feed.rss`; снаружи она закрыта прокси (только внутренние
 сети).
 
-Откуда берутся тексты, структура записей, пример и как читать —
-[17-rss-feed.md](17-rss-feed.md).
+Внешний адрес узла для ссылки ленты на саму себя — `ALERTING_PUBLIC_URL` в
+`docker/.env` (например `https://alert.example.org`). Откуда берутся тексты,
+структура записей, связь отбоя с событием (`alerting:cancels`), пример и как
+читать — [17-rss-feed.md](17-rss-feed.md).
