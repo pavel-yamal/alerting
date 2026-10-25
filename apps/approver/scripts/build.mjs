@@ -20,7 +20,7 @@ cpSync(devicekey, join(out, "devicekey.js"));
 
 // Nothing in the page may load code from the network: the guarantee of the app is
 // that what asks the key to sign is what was reviewed and shipped.
-for (const name of ["index.html", "app.js", "logic.js", "vault.js", "devicekey.js"]) {
+for (const name of ["index.html", "app.js", "logic.js", "vault.js", "push.js", "devicekey.js"]) {
   const text = readFileSync(join(out, name), "utf8");
   if (/<script[^>]+src=["']https?:/i.test(text) || /\bimport\(\s*["']https?:/.test(text) || /\beval\(/.test(text)) {
     throw new Error(`${name}: code from the network or eval in the shipped page`);

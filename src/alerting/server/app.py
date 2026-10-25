@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI
 
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.signing import private_key_from_b64u, public_key_from_b64u
-from alerting.server.api import feed, meta, orders, proposals, ws
+from alerting.server.api import feed, meta, orders, proposals, push, ws
 from alerting.server.auth import require_signed_request
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
@@ -22,12 +22,14 @@ from alerting.server.db.leader import LeaderLock
 from alerting.server.db.pool import open_pool
 from alerting.server.db.repo import Repo
 from alerting.server.logging_config import configure as configure_logging
+from alerting.server.mobilepush import MobilePush
 from alerting.server.services.audit_service import AuditService
 from alerting.server.services.canary import CanaryService
 from alerting.server.services.dispatcher import Dispatcher
 from alerting.server.services.escalation import DEFAULT_PLAN, EscalationPlan, EscalationWorker
 from alerting.server.services.fanout import Fanout, new_process_id
 from alerting.server.services.heartbeat import HeartbeatService
+from alerting.server.services.lpr_notify import LprNotifier
 from alerting.server.services.registry import OrgState
 from alerting.wordlist import load_wordlist
 
@@ -126,6 +128,16 @@ class AppServices:
             self.clock,
             rss_only=settings.rss_only,
         )
+        # Push to the decision-makers' app. Independent of the delivery mode: in
+        # RSS-only nothing reaches executors, but the second signature still has to
+        # be asked for.
+        apns, fcm = settings.load_push()
+        self.notifier = LprNotifier(self.repo, self.state, MobilePush(apns, fcm), self.clock)
+        if self.notifier.enabled:
+            log.info(
+                "push to the app: ios %s, android %s",
+                *("on" if on else "off" for on in self.notifier.push.configured.values()),
+            )
         # The leader lock keeps one process climbing ladders. It takes a connection
         # of its own because the lock is session scoped: one from the pool is handed
         # back after each statement, which would release it immediately.
@@ -210,6 +222,10 @@ class AppServices:
 
             with contextlib.suppress(Exception):
                 await self.escalation.stop()
+
+            # Before the pool: a notification under way still records its result.
+            with contextlib.suppress(Exception):
+                await self.notifier.aclose()
         finally:
             # Steps 3 and 4 run even if the shutdown itself is cancelled. Both of the
             # awaits above can raise CancelledError, which is a BaseException and so
@@ -337,7 +353,7 @@ def create_app(
     # authenticated more strongly than this gate, so it is deliberately not
     # double-gated.
     guarded = [Depends(require_signed_request)]
-    for module in (proposals, orders, meta):
+    for module in (proposals, orders, meta, push):
         app.include_router(module.router, dependencies=guarded)
     app.include_router(meta.public_router)
     # Real alerts and stand-downs, without audience or signers: public by design.

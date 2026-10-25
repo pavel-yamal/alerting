@@ -450,3 +450,30 @@ def test_a_newly_published_list_of_events_reaches_a_session_without_logging_out(
 
     scenarios = {s["code"]: s for s in director.get("/api/meta").json()["scenarios"]}
     assert scenarios["FIRE"]["description"] == "Пожар"
+
+
+def test_the_app_registers_its_phone_for_push_through_the_panel(panel_app, server):
+    """The app talks only to the panel; the device lands on the server for the person
+    signed in, never for a person the request names."""
+    director = browser(panel_app, "p-001")
+    device = {"token": "apns-token-of-p001", "platform": "ios", "device_label": "iPhone 15"}
+    answer = director.post("/api/push/register", json=device, headers=PANEL)
+    assert answer.status_code == 200, answer.text
+    assert answer.json() == {"token": "…f-p001", "configured": False}
+
+    repo = server.app.state.alerting.repo
+    assert [r["person_id"] for r in repo.push_tokens_for(["p-001"])] == ["p-001"]
+
+    # No keys on this server: the test says so per device instead of pretending.
+    tested = director.post("/api/push/test", headers=PANEL).json()
+    assert tested["configured"] == {"ios": False, "android": False}
+    assert tested["devices"][0]["ok"] is False
+
+    viewer = browser(panel_app, "p-004")  # the duty officer has no app and signs nothing
+    assert viewer.post("/api/push/register", json=device, headers=PANEL).status_code == 403
+
+    gone = director.post(
+        "/api/push/unregister", json={"token": "apns-token-of-p001"}, headers=PANEL
+    )
+    assert gone.status_code == 200
+    assert repo.push_tokens_for(["p-001"]) == []

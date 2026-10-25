@@ -153,3 +153,52 @@ test("android: own launcher icons, not Capacitor's", () => {
   const play = readFileSync(join(app, "store", "play-icon-512.png"));
   assert.equal(play.readUInt32BE(16), 512);
 });
+
+// ---- push (docs/14-approver-app.md) -------------------------------------------------
+// Each of these breaks push silently: the build passes, the server reports delivery,
+// and nothing appears on the phone.
+
+const pushJs = read("src", "push.js");
+const channelId = (text, pattern) => (text.match(pattern) || [])[1];
+
+test("push: one channel id in the app, the manifest default and the server", () => {
+  const inApp = channelId(pushJs, /CHANNEL_ID = "([^"]+)"/);
+  const strings = read("android", "app", "src", "main", "res", "values", "strings.xml");
+  const server = readFileSync(join(app, "..", "..", "src", "alerting", "server", "mobilepush.py"), "utf8");
+  assert.ok(inApp);
+  assert.equal(channelId(strings, /name="default_notification_channel_id">([^<]+)</), inApp);
+  assert.equal(channelId(server, /ANDROID_CHANNEL_ID = "([^"]+)"/), inApp);
+  assert.match(manifest, /default_notification_channel_id"\s+android:value="@string\/default_notification_channel_id"/);
+  assert.match(manifest, /default_notification_icon"\s+android:resource="@drawable\/ic_stat_alert"/);
+  assert.match(manifest, /android\.permission\.POST_NOTIFICATIONS/, "Android 13+ asks for it explicitly");
+});
+
+test("push: shown while the app is open, not only handed to a listener", () => {
+  assert.ok(config.plugins.PushNotifications.presentationOptions.includes("alert"));
+});
+
+test("push: ios has the entitlement and forwards the APNs token to the plugin", () => {
+  const entitlements = read("ios", "App", "App", "App.entitlements");
+  assert.match(entitlements, /<key>aps-environment<\/key>\s*<string>development<\/string>/);
+  assert.equal([...pbxproj.matchAll(/CODE_SIGN_ENTITLEMENTS = App\/App\.entitlements;/g)].length, 2,
+    "both Debug and Release");
+  const delegate = read("ios", "App", "App", "AppDelegate.swift");
+  assert.match(delegate, /didRegisterForRemoteNotificationsWithDeviceToken[\s\S]*capacitorDidRegisterForRemoteNotifications/);
+  assert.match(delegate, /didFailToRegisterForRemoteNotificationsWithError[\s\S]*capacitorDidFailToRegisterForRemoteNotifications/);
+});
+
+test("push: the Firebase config stays out of git; android applies it only when present", () => {
+  assert.match(read("android", "app", ".gitignore"), /^google-services\.json$/m);
+  assert.match(appGradle, /file\('google-services\.json'\)[\s\S]*apply plugin: 'com\.google\.gms\.google-services'/);
+});
+
+test("push: the device token is never stored, and asking for permission is not automatic", () => {
+  assert.doesNotMatch(pushJs, /localStorage|sessionStorage|indexedDB/);
+  const code = read("src", "app.js");
+  // requestPermissions() only from a tap: AppPush.enable is called from click handlers.
+  const asks = [...pushJs.matchAll(/\.requestPermissions\(/g)].length;
+  assert.equal(asks, 1);
+  assert.match(pushJs.match(/async enable\([\s\S]*?\n    \},/)[0], /\.requestPermissions\(/);
+  assert.match(code, /AppPush\.sync\(registerPush\)/);
+  assert.match(code, /AppPush\.release\(unregisterPush\)/, "logout forgets this phone");
+});

@@ -4,4 +4,7 @@
     <string name="title_activity_main">Оповещение ЛПР</string>
     <string name="package_name">me.yamal.alert</string>
     <string name="custom_url_scheme">me.yamal.alert</string>
+    <!-- Push channel: the same id as CHANNEL_ID in src/push.js, which creates it,
+         and ANDROID_CHANNEL_ID on the server, which names it in every message. -->
+    <string name="default_notification_channel_id">lpr</string>
 </resources>

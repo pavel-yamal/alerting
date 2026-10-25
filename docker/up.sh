@@ -28,6 +28,8 @@ if [[ "${1:-}" == "--reset" ]]; then
 fi
 
 [[ -f "$env_file" ]] || { cp docker/.env.example "$env_file"; log "создан $env_file"; }
+# Том ключей push внешний: его не стирает --reset, и compose не создаёт его сам.
+docker volume create alerting-push-keys >/dev/null
 
 log "собираю образ"
 echo "    первая сборка качает зависимости с pypi.org — при медленной сети это минуты;"

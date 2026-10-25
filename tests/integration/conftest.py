@@ -47,6 +47,7 @@ APP_DSN = os.environ.get(
 
 #: Tables emptied between tests, children before parents so one statement suffices.
 _TABLES = (
+    "push_tokens",
     "ws_relay_result",
     "ws_relay",
     "ws_presence",

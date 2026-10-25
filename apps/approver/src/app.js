@@ -358,6 +358,14 @@ enrollForm.addEventListener("submit", async (event) => {
 $("change-panel").addEventListener("click", () => showSetup());
 
 async function logout() {
+  // The server forgets this phone first, while the session can still say whose it
+  // is: the next person signed in here must not get this one's notifications. That
+  // includes a registration still under way, which release waits for. A logout
+  // never hangs on a dead network, though.
+  await Promise.race([
+    AppPush.release(unregisterPush).catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, 15000)),
+  ]);
   await api("/api/logout", { method: "POST" }).catch(() => {});
   await showLogin();
   toast("Вы вышли");
@@ -390,6 +398,52 @@ async function start() {
   showTab("sign");
   show("main");
   await refresh();
+  // Quietly, for whoever is signed in now; the note offers it when it is off.
+  AppPush.sync(registerPush).then(renderPushNote, renderPushNote);
+  if (pendingOpen) { const target = pendingOpen; pendingOpen = null; openFromPush(target); }
+}
+
+// ---- push --------------------------------------------------------------------------
+// What a notification says is only "open the app" (docs/04-channels.md): the order
+// is read here, from the verified payload, as always.
+const registerPush = (device) => api("/api/push/register", { method: "POST", body: device });
+const unregisterPush = (token) => api("/api/push/unregister", { method: "POST", body: { token } });
+
+// A tap that arrives before sign-in waits for it: the app opens on the login screen.
+let pendingOpen = null;
+function openFromPush(target) {
+  if (!token || !meta) { pendingOpen = target; return; }
+  if (target.open === "order") openOrder(target.order_id);
+  else openProposal(target.order_id);
+}
+AppPush.onTap(openFromPush);
+
+function pushAnswerText(answer) {
+  return answer && answer.configured === false
+    ? "Телефон подключён, но сервер пока не отправляет уведомления: администратору нужно добавить ключи (docs/14-approver-app.md)."
+    : null;
+}
+
+async function enablePush() {
+  const answer = await AppPush.enable(registerPush);
+  const warning = pushAnswerText(answer);
+  toast(warning || "Уведомления включены", warning ? "warn" : "ok");
+  renderPushNote();
+}
+
+async function renderPushNote() {
+  const note = $("push-note");
+  if (!AppPush.supported() || AppPush.enabled()) { note.replaceChildren(); return; }
+  const denied = (await AppPush.permission()) === "denied";
+  const button = el("button", { type: "button", class: "btn small primary" }, "Включить");
+  button.addEventListener("click", () => busy(button, async () => {
+    try { await enablePush(); } catch (error) { toast(error.message, "warn"); }
+  }));
+  fill(note, el("div", { class: "renew" },
+    el("div", { class: "body" }, denied
+      ? "Уведомления выключены в настройках телефона — без них вы не узнаете о предложении на подпись."
+      : "Включите уведомления, чтобы узнавать о предложениях на подпись."),
+    denied ? null : button));
 }
 
 function showTab(name) {
@@ -462,6 +516,18 @@ $("account").addEventListener("click", () => {
   sheet((close) => {
     const renewBtn = el("button", { type: "button", class: "btn" }, `Продлить сеанс (${biometryName()})`);
     renewBtn.addEventListener("click", () => busy(renewBtn, async () => { await renew(); close(); }));
+    // On: send a test to every phone of this person. Off: turn on, from this tap.
+    const pushBtn = el("button", { type: "button", class: "btn" },
+      AppPush.enabled() ? "Проверить уведомления" : "Включить уведомления");
+    pushBtn.addEventListener("click", () => busy(pushBtn, async () => {
+      try {
+        if (!AppPush.enabled()) { await enablePush(); close(); return; }
+        const result = await api("/api/push/test", { method: "POST" });
+        const sent = result.devices.filter((d) => d.ok).length;
+        toast(sent ? `Отправлено: ${sent} ${L.plural(sent, "телефон", "телефона", "телефонов")}`
+          : `Не отправлено: ${(result.devices[0] && result.devices[0].error) || "нет телефонов"}`, sent ? "ok" : "warn");
+      } catch (error) { toast(error.message, "warn"); }
+    }));
     return [
       el("div", { class: "who-card" }, el("div", { class: "avatar" }, L.initials(me.name, me.person_id)),
         el("div", { class: "name" }, me.name || me.person_id),
@@ -471,6 +537,7 @@ $("account").addEventListener("click", () => {
         cell({ title: "Организация", value: config ? config.org_id : "—" }),
         me.delegation_until ? cell({ title: "Сеанс до", value: L.time(me.delegation_until) }) : null),
       me.delegation_until ? renewBtn : null,
+      AppPush.supported() ? pushBtn : null,
       privacyUrl() ? el("a", { class: "btn", href: privacyUrl(), target: "_blank", rel: "noopener" }, "Политика конфиденциальности") : null,
       el("button", { type: "button", class: "btn tinted-danger", onclick: () => { close(); logout(); } }, "Выйти"),
     ];
