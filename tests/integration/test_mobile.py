@@ -129,7 +129,7 @@ def phone(mobile_app: Any, person_id: str) -> TestClient:
 
 
 def dispatch(server: TestClient, org: Org, clock: FixedClock, **overrides: Any) -> str:
-    """Propose and sign as two real approvers, the way the panel or CLI would."""
+    """Propose and sign as two real approvers -- every order needs two."""
     body = {
         "scenario": "EVAC.BUILDING",
         "severity": "critical",
@@ -149,8 +149,6 @@ def dispatch(server: TestClient, org: Org, clock: FixedClock, **overrides: Any) 
                 "sig": sign_payload(DOMAIN_ORDER, proposal["payload"], person.private_key),
             },
         ).raise_for_status()
-        if overrides.get("severity") in ("info", "warning"):  # one signature suffices
-            break
     order_id: str = proposal["order_id"]
     return order_id
 

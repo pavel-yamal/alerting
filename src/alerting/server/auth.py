@@ -91,6 +91,7 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     ("POST", "/v1/contacts"): OPERATORS,
     ("POST", "/v1/contacts/{person_id}/deactivate"): OPERATORS,
     # The operating picture and the audit chain.
+    ("GET", "/v1/proposals"): OPERATORS,
     ("GET", "/v1/proposals/{order_id}"): OPERATORS,
     ("GET", "/v1/orders"): OPERATORS,
     ("GET", "/v1/events/active"): OPERATORS,

@@ -51,10 +51,9 @@ test("an audience other than everyone is spelled out", () => {
   assert.match(L.audienceSummary({}, false).text, /ПУСТО/);
 });
 
-test("severities follow the scenario's bounds and the policy", () => {
-  const severities = { info: {}, warning: {}, critical: {}, catastrophic: {} };
-  assert.deepEqual(L.allowedSeverities({ min_severity: "warning", max_severity: "critical" }, severities), ["warning", "critical"]);
-  assert.deepEqual(L.allowedSeverities(null, { critical: {} }), ["critical"]);
+test("no level to choose: the form has no severity field", () => {
+  const html = readFileSync(new URL("../src/index.html", import.meta.url), "utf8");
+  assert.doesNotMatch(html, /id="severity/);
 });
 
 test("every vault code has words, and an unknown one falls back to its message", () => {

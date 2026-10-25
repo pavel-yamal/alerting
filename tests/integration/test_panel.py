@@ -91,9 +91,9 @@ def browser(panel_app: Any, person_id: str) -> TestClient:
 
 
 def propose(client: TestClient, **overrides: Any) -> str:
+    # No severity: the panel takes the scenario's own level.
     body = {
         "scenario": "EVAC.BUILDING",
-        "severity": "critical",
         "drill": True,
         "groups": ["fire-wardens"],
         "text": "Задымление, 3 этаж",
@@ -202,7 +202,8 @@ def test_stand_down_is_an_order_that_is_reviewed_and_signed_too(panel_app):
     officer = browser(panel_app, "p-003")
     director = browser(panel_app, "p-001")
     order_id = propose(officer, scenario="TEST.PING", severity="info")
-    assert sign(officer, order_id)["dispatched"]
+    assert not sign(officer, order_id)["dispatched"], "a drill needs two people too"
+    assert sign(director, order_id)["dispatched"]
 
     response = director.post(
         f"/api/orders/{order_id}/cancel", json={"text": "Ложное срабатывание"}, headers=PANEL
@@ -304,7 +305,8 @@ def test_the_duty_officer_watches_but_issues_nothing(panel_app):
         f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
     )
     assert signed.status_code == 403
-    assert sign(lpr, order_id)["dispatched"]
+    sign(lpr, order_id)
+    assert sign(browser(panel_app, "p-002"), order_id)["dispatched"]
     assert officer.post(f"/api/orders/{order_id}/cancel", json={}, headers=PANEL).status_code == 403
 
 
@@ -341,10 +343,61 @@ def test_there_is_one_audience_everyone(panel_app, server):
     audience = review["payload"]["audience"]
     assert audience["groups"] == ["all"] and not audience["sites"] and not audience["persons"]
     assert review["fields"]["everyone"] is True
-    assert sign(lpr, order_id)["dispatched"]
+    sign(lpr, order_id)
+    assert sign(browser(panel_app, "p-002"), order_id)["dispatched"]
 
     status = lpr.get(f"/api/orders/{order_id}").json()
     reached = {p["person_id"] for p in status["people"]}
     roster = server.app.state.alerting.repo.contacts()
     assert reached == {r["person_id"] for r in roster if r["role"] != "canary"}
     assert "c-000" not in reached
+
+
+def test_a_proposal_reaches_every_decision_maker_on_any_panel(
+    panel_app, homes, server, clock, monotonic
+):
+    """The list lives on the server: another panel (a phone, a restarted panel)
+    sees the proposal it never created or opened."""
+    order_id = propose(browser(panel_app, "p-003"), scenario="TEST.PING")
+    other = create_panel(
+        homes=homes,
+        server_url="http://testserver",
+        transport=server._transport,
+        clock=clock,
+        monotonic=monotonic,
+    )
+    director = browser(other, "p-001")
+    listed = director.get("/api/proposals").json()["proposals"]
+    assert [p["order_id"] for p in listed] == [order_id]
+    assert sign(director, order_id)["dispatched"] is False
+    second = sign(browser(other, "p-002"), order_id)
+    assert second["dispatched"], second
+
+
+def test_no_level_to_choose_the_scenario_fixes_it(panel_app):
+    """Drill or real is the only choice; the level comes from the scenario."""
+    lpr = browser(panel_app, "p-001")
+    meta = lpr.get("/api/meta").json()
+    levels = {s["code"]: s["severity"] for s in meta["scenarios"]}
+    assert levels["EVAC.BUILDING"] == "critical" and levels["TEST.PING"] == "info"
+    rules = meta["severities"].values()
+    assert all(rule["launch"] == 2 and rule["distinct_persons"] for rule in rules)
+
+    response = lpr.post(
+        "/api/proposals", json={"scenario": "MUSTER", "drill": False}, headers=PANEL
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["required"] == 2
+    review = lpr.get(f"/api/proposals/{response.json()['order_id']}").json()
+    assert review["payload"]["severity"] == "warning"
+    unknown = lpr.post("/api/proposals", json={"scenario": "NOPE", "drill": True}, headers=PANEL)
+    assert unknown.status_code == 422
+
+
+def test_only_decision_makers_and_the_duty_officer_list_proposals(panel_app, server, org, clock):
+    propose(browser(panel_app, "p-001"), scenario="TEST.PING")
+    server.auth = signer_for(org, "x-101", clock)
+    assert server.get("/v1/proposals").status_code == 403
+    server.auth = signer_for(org, "p-004", clock)
+    listed = server.get("/v1/proposals").json()["proposals"]
+    assert len(listed) == 1 and listed[0]["status"] == "open"

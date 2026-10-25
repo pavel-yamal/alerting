@@ -263,16 +263,16 @@ async function refresh() {
   $("sign-count").classList.toggle("hidden", !open.length);
   fill($("proposals"), open.length ? open.map((p) =>
     item(() => openProposal(p.order_id), [modeTag(p.drill), p.cancels ? " Отбой: " : " ", describeScenario(p.scenario)],
-      `${L.SEVERITY[p.severity] || p.severity} · подписей: ${p.signed_by.length} · ${L.left(p.not_valid_after, now)}`))
+      `подписей: ${p.signed_by.length} · ${L.left(p.not_valid_after, now)}`))
     : el("div", { class: "empty" }, "Нет предложений на подпись."));
   fill($("events"), events.events.length ? events.events.map((e) =>
     item(() => openOrder(e.order_id), [modeTag(e.drill), " ", describeScenario(e.scenario)],
-      `${L.SEVERITY[e.severity]} · с ${L.time(e.dispatched_at)} · ` + (e.until_cancelled ? "до отбоя" : `до ${L.time(e.not_valid_after)}`)))
+      `с ${L.time(e.dispatched_at)} · ` + (e.until_cancelled ? "до отбоя" : `до ${L.time(e.not_valid_after)}`)))
     : el("div", { class: "empty" }, "Всё спокойно: действующих оповещений нет."));
   fill($("orders"), orders.orders.length ? orders.orders.map((o) =>
     item(() => openOrder(o.order_id),
       [modeTag(o.drill), o.cancels ? " Отбой: " : " ", describeScenario(o.scenario), o.cancelled_by ? el("span", { class: "tag ok" }, "отменено") : null],
-      `${L.SEVERITY[o.severity]} · ${L.time(o.dispatched_at)}`))
+      L.time(o.dispatched_at)))
     : el("div", { class: "empty" }, "Пока ничего не рассылалось."));
   renderRenewal();
 }
@@ -317,7 +317,6 @@ async function openProposal(id) {
   const rows = [
     ["Что", `${describeScenario(f.scenario)} (${f.scenario})`],
     ["Режим", f.drill ? "учение" : "БОЕВОЕ"],
-    ["Уровень", L.SEVERITY[f.severity] || f.severity],
     ["Действие", L.ACTION[f.action] || f.action],
     ["Кому", audience.text],
     ["Пояснение", f.text || "—"],
@@ -417,18 +416,15 @@ const chosenScenario = () => {
 
 function fillForm() {
   fill($("scenarios"), meta.scenarios.map((s) => el("label", { class: "choice" },
-    el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillSeverity }),
+    el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillScenario }),
     s.description || s.code, el("small", {}, s.code))));
-  $("severity").onchange = updateSummary;
   for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
-  fillSeverity();
+  fillScenario();
 }
 
-function fillSeverity() {
+// No level to choose: an event is a drill or real; the scenario fixes the rest.
+function fillScenario() {
   const s = chosenScenario();
-  const allowed = L.allowedSeverities(s, meta.severities);
-  fill($("severity"), allowed.map((level) => el("option", { value: level }, L.SEVERITY[level])));
-  $("severity-row").classList.toggle("hidden", !s || allowed.length < 2);
   const parts = [];
   if (s && s.until_cancelled) parts.push("Действует до отбоя.");
   if (s && s.card) parts.push(`Люди увидят: «${s.card}»`);
@@ -439,7 +435,7 @@ function fillSeverity() {
 function updateSummary() {
   const s = chosenScenario();
   const mode = document.querySelector("input[name=drill]:checked");
-  const rule = meta.severities[$("severity").value];
+  const rule = s && meta.severities[s.severity];
   if (!s) { fill($("summary"), el("div", { class: "hint" }, "Выберите, что случилось.")); return; }
   fill($("summary"),
     el("div", {}, `Получат: все (${meta.recipients} чел.)` + (mode && mode.value === "false" ? " и публичная RSS-лента" : "")),
@@ -456,7 +452,7 @@ $("new-form").addEventListener("submit", async (event) => {
   if (!mode) { out.replaceChildren(msg("err", "Выберите: учение или боевое.")); return; }
   try {
     const created = await api("/api/proposals", { method: "POST", body: {
-      scenario: s.code, severity: $("severity").value, drill: mode.value === "true",
+      scenario: s.code, drill: mode.value === "true",
       text: $("text").value.trim(), ttl_s: Number($("ttl").value),
     }});
     out.replaceChildren();

@@ -24,17 +24,19 @@ version: 1
 approver_roles:
   - lpr
 
+# People choose only "drill" or "real"; the level of an order comes from its scenario
+# (its min_severity, else max_severity). Every order -- drill or real, any level --
+# needs two DIFFERENT decision-makers. `m` can still be changed per level here: sign
+# and publish the policy.
 severities:
   info:
-    launch: {m: 1}
+    launch: {m: 2, distinct_persons: true, max_signature_spread_s: 300}
     cancel: {m: 1}
 
   warning:
-    launch: {m: 1}
+    launch: {m: 2, distinct_persons: true, max_signature_spread_s: 300}
     cancel: {m: 1}
 
-  # How many decision-makers must sign is `m`, per severity: change it here, sign
-  # and publish the policy. Two by default for critical and above.
   critical:
     # The two-man rule. distinct_persons counts HUMANS, not keys: one person with two
     # enrolled devices must not be able to satisfy this alone.

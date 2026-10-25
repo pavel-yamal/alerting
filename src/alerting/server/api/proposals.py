@@ -115,6 +115,41 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
     }
 
 
+#: How far back the list reaches for proposals that are no longer open. Open ones are
+#: listed whatever their age.
+RECENT_S = 24 * 3600
+
+
+@router.get("")
+async def list_proposals(request: Request) -> dict[str, Any]:
+    """Every open proposal, and the last day's closed ones, for every decision-maker.
+
+    This list used to live in the panel's memory: a proposal was visible only through
+    the panel that created it, and lost when that panel restarted -- so the second
+    decision-maker, on another device, never saw what was waiting for his signature.
+    """
+    import json
+
+    app = request.app.state.alerting
+    rows = app.repo.recent_proposals(app.clock.now() - RECENT_S)
+    signatures = app.repo.signatures_for([row["order_id"] for row in rows])
+    return {
+        "proposals": [
+            {
+                "order_id": row["order_id"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "payload": json.loads(row["payload_json"]),
+                "signatures": [
+                    {"key_id": s["key_id"], "observed_at": s["observed_at"]}
+                    for s in signatures.get(row["order_id"], [])
+                ],
+            }
+            for row in rows
+        ]
+    }
+
+
 @router.get("/{order_id}")
 async def get_proposal(order_id: str, request: Request) -> dict[str, Any]:
     app = request.app.state.alerting

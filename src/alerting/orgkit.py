@@ -118,14 +118,17 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     ),
 }
 
-#: Two decision-makers launch anything critical or above; the count is the policy's
-#: ``m`` and set per severity. Cancel quorum is deliberately at most launch: the safe
-#: direction is stopping. See docs/adr/0003-cancel-quorum.md.
+#: Two different decision-makers launch every order, drill or real, whatever its
+#: level: people choose only drill or real, and the level comes from the scenario, so
+#: a quorum that differed by level would be a difference nobody chose. Cancel quorum
+#: is deliberately at most launch: the safe direction is stopping.
+#: See docs/adr/0003-cancel-quorum.md.
+_TWO = QuorumRule(m=2, max_signature_spread_s=300, distinct_persons=True)
 DEFAULT_SEVERITIES: dict[Severity, SeverityRules] = {
-    Severity.INFO: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
-    Severity.WARNING: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
+    Severity.INFO: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
+    Severity.WARNING: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
     Severity.CRITICAL: SeverityRules(
-        launch=QuorumRule(m=2, max_signature_spread_s=300, distinct_persons=True),
+        launch=_TWO,
         cancel=QuorumRule(m=1),
     ),
     Severity.CATASTROPHIC: SeverityRules(

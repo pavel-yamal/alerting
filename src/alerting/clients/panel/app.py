@@ -152,6 +152,19 @@ class Session:
         return self.cache.policy()
 
 
+def scenario_severity(rule: Any) -> Severity:
+    """The one level an event of this scenario goes out at.
+
+    People choose only drill or real; the level still travels in the order, because
+    the escalation ladder and the SMS wording depend on it, so it comes from the
+    scenario: its floor if it has one, else its ceiling, else critical.
+    """
+    for level in (rule.min_severity, rule.max_severity):
+        if level:
+            return Severity(level)
+    return Severity.CRITICAL
+
+
 class LoginRequest(BaseModel):
     person_id: str
     passphrase: str
@@ -159,7 +172,10 @@ class LoginRequest(BaseModel):
 
 class ProposalForm(BaseModel):
     scenario: str
-    severity: Severity
+    #: Not chosen by a person any more: an event is a drill or real, nothing else. The
+    #: level is the scenario's own (``scenario_severity``); still accepted, so a client
+    #: of the previous build keeps working.
+    severity: Severity | None = None
     #: Required and without a default, as everywhere else in the stack. The form
     #: offers no preselected choice either: the operator has to click one.
     drill: bool
@@ -307,23 +323,12 @@ class Panel:
             self.pin = PinnedOrg(org_id, root_public_key, home)
             self.pin.save()
         self.server_keys = server_keys and homes is not None
-        # The server has no "list open proposals" route, so the panel remembers the
-        # ones created or opened through it. Every person using this panel sees them,
-        # which is the point: the second signer finds the first one's proposal here.
-        self.proposal_ids: list[str] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
     @property
     def device_login(self) -> bool:
         return self.pin is not None
-
-    def remember(self, order_id: str) -> None:
-        with self._lock:
-            if order_id in self.proposal_ids:
-                self.proposal_ids.remove(order_id)
-            self.proposal_ids.insert(0, order_id)
-            del self.proposal_ids[50:]
 
     def login(self, person_id: str, passphrase: str) -> tuple[str, Session]:
         """Demo mode: unlock a key held under ``--homes``."""
@@ -823,6 +828,8 @@ def create_panel(
                     "description": rule.description,
                     "min_severity": rule.min_severity,
                     "max_severity": rule.max_severity,
+                    # The level it goes out at -- fixed by the scenario, not chosen.
+                    "severity": str(scenario_severity(rule)),
                     "card": rule.card or "",
                     "until_cancelled": bool(rule.until_cancelled),
                 }
@@ -846,12 +853,16 @@ def create_panel(
     @app.post("/api/proposals")
     def propose(body: ProposalForm, session: Session = Depends(issuer)) -> dict[str, Any]:
         audience = {"groups": [EVERYONE]}
+        rule = session.policy.scenario(body.scenario)
+        if rule is None:
+            raise HTTPException(422, f"нет такого сценария: {body.scenario}")
+        severity = body.severity or scenario_severity(rule)
         result = _server(
             session.api.post,
             "/v1/proposals",
             {
                 "scenario": body.scenario,
-                "severity": str(body.severity),
+                "severity": str(severity),
                 "drill": body.drill,
                 "action": "START",
                 "audience": audience,
@@ -859,17 +870,16 @@ def create_panel(
                 "ttl_s": body.ttl_s,
             },
         )
-        panel.remember(result["order_id"])
         return {"order_id": result["order_id"], "required": result["required_signatures"]}
 
     @app.get("/api/proposals")
     def proposals(session: Session = Depends(current)) -> dict[str, Any]:
+        # From the server, not from this panel's memory: every decision-maker, on any
+        # device, sees what is waiting, and a restart loses nothing.
+        listed = _server(session.api.get, "/v1/proposals")
         items = []
-        for order_id in list(panel.proposal_ids):
-            try:
-                proposal = session.api.get(f"/v1/proposals/{order_id}")
-            except ServerError:
-                continue
+        for proposal in listed["proposals"]:
+            order_id = proposal["order_id"]
             payload = proposal["payload"]
             items.append(
                 {
@@ -889,7 +899,6 @@ def create_panel(
     def review(order_id: str, session: Session = Depends(current)) -> dict[str, Any]:
         proposal = _server(session.api.get, f"/v1/proposals/{order_id}")
         payload = proposal["payload"]
-        panel.remember(order_id)
         rule = session.policy.rule_for(
             Severity(payload["severity"]), is_cancel=bool(payload.get("cancels"))
         )
@@ -1009,7 +1018,6 @@ def create_panel(
                 "cancels": order_id,
             },
         )
-        panel.remember(proposal["order_id"])
         return {"order_id": proposal["order_id"]}
 
     # --- the directory, and what goes to the custodians ------------------------------

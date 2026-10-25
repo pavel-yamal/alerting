@@ -62,13 +62,6 @@
     return { everyone: false, text: parts.join("; ") || "ПУСТО — приказ не дойдёт ни до кого" };
   }
 
-  // The severities a scenario allows, as the panel's form offers them.
-  function allowedSeverities(scenario, severities) {
-    const lo = scenario && scenario.min_severity ? SEVERITY_ORDER.indexOf(scenario.min_severity) : 0;
-    const hi = scenario && scenario.max_severity ? SEVERITY_ORDER.indexOf(scenario.max_severity) : SEVERITY_ORDER.length - 1;
-    return SEVERITY_ORDER.filter((level, i) => i >= lo && i <= hi && severities && severities[level]);
-  }
-
   // The vault's refusals in words the person can act on. The codes come from the
   // native plugin (plugins/device-vault).
   // Shown at launch when the WebView cannot sign with Ed25519 (docs/16, docs/15).
@@ -117,7 +110,7 @@ const VAULT_ERRORS = {
 
   const api = {
     SEVERITY, SEVERITY_ORDER, ACTION, ACK, PERSON_ID, RENEW_WHEN_LEFT_S, VAULT_ERRORS, UNSUPPORTED_PHONE,
-    normalizePanelUrl, requestHeaders, needsRenewal, audienceSummary, allowedSeverities,
+    normalizePanelUrl, requestHeaders, needsRenewal, audienceSummary,
     vaultMessage, isCancel, openProposals, blockingText, time, left,
   };
   root.ApproverLogic = api;

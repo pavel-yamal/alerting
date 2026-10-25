@@ -220,6 +220,31 @@ class Repo:
     def proposal(self, order_id: str) -> Row | None:
         return self._one("SELECT * FROM proposals WHERE order_id = %s", (order_id,))
 
+    def recent_proposals(self, since: int, limit: int = 50) -> list[Row]:
+        """Open proposals, and any created since ``since``, newest first.
+
+        Open ones are listed whatever their age: a proposal waiting for its second
+        signature is exactly what the other decision-makers must find.
+        """
+        return self._all(
+            "SELECT * FROM proposals WHERE status = 'open' OR created_at >= %s"
+            " ORDER BY created_at DESC, order_id LIMIT %s",
+            (since, limit),
+        )
+
+    def signatures_for(self, order_ids: list[str]) -> dict[str, list[Row]]:
+        """Signatures of several proposals in one query (a list must not cost one each)."""
+        if not order_ids:
+            return {}
+        rows = self._all(
+            "SELECT * FROM signatures WHERE order_id = ANY(%s) ORDER BY observed_at, key_id",
+            (order_ids,),
+        )
+        out: dict[str, list[Row]] = {order_id: [] for order_id in order_ids}
+        for row in rows:
+            out[row["order_id"]].append(row)
+        return out
+
     def set_proposal_status(self, order_id: str, status: str) -> None:
         self._execute("UPDATE proposals SET status = %s WHERE order_id = %s", (status, order_id))
 

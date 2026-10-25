@@ -89,10 +89,11 @@ that enrols any device automatically.
 3. Tap "Войти" (Sign in) and confirm with Face ID.
 4. Tab "Новый" (New): choose "Технический тест канала" (TEST.PING), mode
    "Учение" (Drill), tap "Создать предложение", then open it, tick the check box
-   and tap "Подписать учение" (Sign drill), confirm with Face ID. A drill of this
-   level needs one signature and is dispatched to fictional recipients.
-   Critical scenarios need two different decision-makers and stay in
-   "На подпись" (Awaiting signature) — this is intended.
+   and tap "Подписать учение" (Sign drill), confirm with Face ID. Every order,
+   drill or real, needs two different decision-makers: after one signature it
+   stays in "На подпись" (Awaiting signature) — this is intended. To see it
+   dispatched, enrol a second device (it becomes another "Демо-ЛПР") and sign
+   the same proposal there; it is sent to fictional recipients.
 
 Face ID is required: the signing key is stored in the Keychain with
 biometryCurrentSet access control. There is no account, password or payment.
