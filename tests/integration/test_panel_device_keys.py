@@ -161,7 +161,12 @@ def test_the_demo_login_is_off(panel_app, org):
     )
     assert response.status_code == 404
     config = TestClient(panel_app).get("/api/config").json()
-    assert config == {"org_id": org.org_id, "device_login": True, "server_keys": False}
+    assert config == {
+        "org_id": org.org_id,
+        "device_login": True,
+        "server_keys": False,
+        "demo": False,
+    }
 
 
 def test_a_freshly_enrolled_browser_key_works_and_revocation_ends_it(panel_app, server, org, clock):

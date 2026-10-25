@@ -27,6 +27,7 @@ unlocked key, can renew it -- so a closed tab's session lapses on its own.
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import pathlib
 import re
@@ -50,6 +51,7 @@ from alerting import custody
 from alerting.clients.approver_cli import KNOWN_PAYLOAD_FIELDS
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import load_key
+from alerting.clients.panel.demo_enroll import DemoEnroll, add_demo_routes
 from alerting.clients.session_admin import add_admin_routes, issue_token
 from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.canonical import canonicalize
@@ -614,6 +616,9 @@ def create_panel(
     state_dir: pathlib.Path | None = None,
     server_keys: bool = True,
     app_origins: tuple[str, ...] = APP_ORIGINS,
+    demo_enroll: DemoEnroll | None = None,
+    org_label: str = "организация, эксплуатирующая систему оповещения",
+    privacy_contact: str = "служба, ответственная за систему оповещения в вашей организации",
 ) -> FastAPI:
     panel = Panel(
         homes=homes,
@@ -702,6 +707,15 @@ def create_panel(
     def devicekey_js() -> FileResponse:
         return FileResponse(STATIC_DIR / "devicekey.js", media_type="text/javascript")
 
+    @app.get("/privacy", include_in_schema=False)
+    def privacy() -> Response:
+        """The app's privacy policy, public and without login (App Store rule 5.1.1)."""
+        page = (STATIC_DIR / "privacy.html").read_text(encoding="utf-8")
+        page = page.replace("{org_label}", html.escape(org_label)).replace(
+            "{contact}", html.escape(privacy_contact)
+        )
+        return Response(page, media_type="text/html; charset=utf-8")
+
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, bool]:
         return {"ok": True}
@@ -732,7 +746,12 @@ def create_panel(
             "org_id": panel.pin.org_id if panel.pin else None,
             "device_login": panel.device_login,
             "server_keys": panel.server_keys,
+            # A demonstration stand that enrols app keys by itself (demo_enroll.py).
+            "demo": demo_enroll is not None,
         }
+
+    if demo_enroll is not None:
+        add_demo_routes(app, panel, demo_enroll, CSRF_HEADER)
 
     @app.post("/api/login")
     def login(body: LoginRequest, request: Request, response: Response) -> dict[str, Any]:

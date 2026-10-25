@@ -1,0 +1,17 @@
+# Демо-стенд для ревью App Store (docs/15-ios-review.md). Только поверх демо-организации
+# из org-init: панель получает корневой ключ ДЕМО-организации и сама вносит в справочник
+# ключ любого телефона как «Демо-ЛПР N» на 30 дней (demo_enroll.py, ADR 0016).
+#
+#   docker compose --env-file docker/.env -f docker-compose.yml -f docker/review.yml up -d panel
+#
+# На боевом сервере не применять: там корневого ключа нет и быть не должно (ADR 0013),
+# а панель с чужим корнем откажется стартовать.
+services:
+  panel:
+    environment:
+      ALERTING_PANEL_DEMO_ENROLL_ROOT_KEY: /var/lib/alerting/demo-keys/root-key.SECRET
+      ALERTING_PANEL_DEMO_ENROLL_AS: p-004
+      ALERTING_PANEL_DEMO_PASSPHRASE: demo
+      ALERTING_ORG_LABEL: "Демонстрационная организация «Акме»"
+    volumes:
+      - demo-keys:/var/lib/alerting/demo-keys:ro

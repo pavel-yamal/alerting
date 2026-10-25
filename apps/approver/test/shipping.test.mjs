@@ -10,7 +10,7 @@ const read = (...parts) => readFileSync(join(app, ...parts), "utf8");
 const config = JSON.parse(read("capacitor.config.json"));
 const pkg = JSON.parse(read("package.json"));
 
-test("the app id is frozen: me.yamal.alert, after alert.yamal.me", () => {
+test("the app id is frozen: me.yamal.alert, the publisher's shared yamal.me identifier", () => {
   // Changing it after the store release makes a different app: no update over the
   // installed one, and APNs topics of the old installs stop matching.
   assert.equal(config.appId, "me.yamal.alert");
@@ -64,4 +64,43 @@ test("the key reaches signing only through the vault, which asks for biometrics"
   assert.equal(signs, viaVault);
   assert.ok(signs >= 3, "login, renewal, order");
   assert.doesNotMatch(code, /DeviceKey\.(create|unlock)\(/, "no password-wrapped browser key in the app");
+});
+
+// ---- the iOS project, as App Store review sees it (docs/15-ios-review.md) ----
+
+const plist = read("ios", "App", "App", "Info.plist");
+const pbxproj = read("ios", "App", "App.xcodeproj", "project.pbxproj");
+const plistValue = (key) => {
+  const m = plist.match(new RegExp(`<key>${key}</key>\\s*<(string>([^<]*)</string|true|false)/?>`));
+  return m ? (m[2] ?? m[1]) : undefined;
+};
+
+test("ios: Face ID has its purpose string, or iOS refuses biometrics to the app", () => {
+  assert.ok((plistValue("NSFaceIDUsageDescription") || "").length > 10);
+});
+
+test("ios: export compliance is answered in the build (signatures only, exempt)", () => {
+  assert.equal(plistValue("ITSAppUsesNonExemptEncryption"), "false");
+});
+
+test("ios: the privacy manifest is there and is bundled as a resource", () => {
+  const manifest = read("ios", "App", "App", "PrivacyInfo.xcprivacy");
+  assert.match(manifest, /<key>NSPrivacyTracking<\/key>\s*<false\/>/);
+  assert.match(manifest, /NSPrivacyAccessedAPICategoryUserDefaults/, "the vault uses UserDefaults");
+  assert.match(pbxproj, /PrivacyInfo\.xcprivacy in Resources/);
+});
+
+test("ios: bundle id matches the app id; iPhone and iPad; iOS 17 for Ed25519 in WebCrypto", () => {
+  assert.match(pbxproj, /PRODUCT_BUNDLE_IDENTIFIER = me\.yamal\.alert;/);
+  assert.doesNotMatch(pbxproj, /PRODUCT_BUNDLE_IDENTIFIER = (?!me\.yamal\.alert;)/);
+  assert.match(pbxproj, /TARGETED_DEVICE_FAMILY = "1,2";/);
+  const targets = [...pbxproj.matchAll(/IPHONEOS_DEPLOYMENT_TARGET = ([\d.]+);/g)].map((m) => m[1]);
+  assert.ok(targets.length > 0 && targets.every((t) => t === "17.0"), targets.join(","));
+});
+
+test("ios: the store icon is 1024x1024 without an alpha channel", () => {
+  const png = readFileSync(join(app, "ios", "App", "App", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-512@2x.png"));
+  assert.equal(png.readUInt32BE(16), 1024);
+  assert.equal(png.readUInt32BE(20), 1024);
+  assert.equal(png[25], 2, "PNG colour type 2 = RGB, no alpha (Apple rejects transparency)");
 });

@@ -19,7 +19,7 @@ const L = window.ApproverLogic;
 const PANEL_KEY = "alerting.approver.panel";
 // Where the organisation's panel lives. Only a suggestion in the first screen: the
 // person can type another address, and what is used is always what they confirmed.
-const DEFAULT_PANEL = "https://alert.yamal.me";
+const DEFAULT_PANEL = "https://alert.yamal-media.ru";
 
 let panelUrl = null;
 let config = null;          // the panel's /api/config
@@ -94,8 +94,22 @@ async function withKey(keyRecord, reason, operation) {
 // ---- 1. which panel ----------------------------------------------------------------
 function showSetup(reason) {
   show("setup");
+  renderChrome();
   $("panel-url").value = panelUrl || DEFAULT_PANEL;
   $("setup-msg").replaceChildren(reason ? msg("warn", reason) : "");
+}
+
+// The privacy policy is the panel's own page, public and without login (App Store
+// rule 5.1.1). Before a panel is chosen, the organisation's default panel's.
+function privacyUrl() {
+  return (panelUrl || DEFAULT_PANEL) + "/privacy";
+}
+function renderChrome() {
+  for (const link of document.querySelectorAll(".privacy-link")) link.href = privacyUrl();
+  // A demonstration stand says so on every screen: its orders reach nobody real.
+  $("demo-banner").classList.toggle("hidden", !(config && config.demo));
+  $("enroll-person-row").classList.toggle("hidden", Boolean(config && config.demo));
+  $("enroll-person").required = !(config && config.demo);
 }
 
 $("setup-form").addEventListener("submit", async (event) => {
@@ -119,6 +133,7 @@ $("setup-form").addEventListener("submit", async (event) => {
 async function showLogin(reason) {
   token = null; me = null;
   show("login");
+  renderChrome();
   $("login-msg").replaceChildren(reason ? msg("warn", reason) : "");
   $("login-panel").textContent = `Панель: ${panelUrl}` + (config ? ` · организация ${config.org_id}` : "");
   let keys = [];
@@ -168,8 +183,9 @@ async function forget(keyRecord) {
 $("enroll-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const out = $("enroll-msg");
-  const personId = $("enroll-person").value.trim();
-  if (!L.PERSON_ID.test(personId)) { out.replaceChildren(msg("err", "Идентификатор: латиница, цифры и дефис, например p-010.")); return; }
+  const demo = Boolean(config && config.demo);
+  let personId = $("enroll-person").value.trim();
+  if (!demo && !L.PERSON_ID.test(personId)) { out.replaceChildren(msg("err", "Идентификатор: латиница, цифры и дефис, например p-010.")); return; }
   try {
     const status = await Vault.status();
     if (!status.available) {
@@ -178,12 +194,23 @@ $("enroll-form").addEventListener("submit", async (event) => {
       throw error;
     }
     const made = await DeviceKey.generate();
+    if (demo) {
+      // The demo stand enrols the key itself and says who it now is (demo_enroll.py).
+      const enrolled = await api("/api/demo/enroll", { method: "POST", body: { public_key: made.public_key } });
+      if (enrolled.key_id !== made.key_id) throw new Error("Демо-стенд внёс в справочник другой ключ.");
+      personId = enrolled.person_id;
+    }
     const keyRecord = {
       person_id: personId, org_id: config.org_id, key_id: made.key_id, public_key: made.public_key,
       panel: panelUrl, created: Math.floor(Date.now() / 1000),
     };
     await Vault.store(keyRecord, made.pkcs8, "Защитить ключ подписи вашей биометрией");
     $("enroll-person").value = "";
+    if (demo) {
+      fill(out, msg("ok", `Демо-стенд зарегистрировал этот телефон как «${personId}». Нажмите «Войти».`));
+      await showLogin();
+      return;
+    }
     fill(out,
       msg("ok", "Ключ создан и защищён биометрией. Передайте регистрирующему лично:"),
       el("div", { class: "hint" }, "Публичный ключ"), el("div", { class: "keybox" }, keyRecord.public_key),

@@ -31,14 +31,14 @@ ALERTING_PANEL_APP_ORIGINS= alerting-panel ...
 
 ## Сборка
 
-Идентификатор приложения — `me.yamal.alert` (по домену alert.yamal.me, как `me.yamal.portal` у портала); в первом экране приложение предлагает адрес панели `https://alert.yamal.me`. Нужны Node 20+, для iOS — Xcode на macOS, для Android — Android Studio / SDK.
+Идентификатор приложения — `me.yamal.alert` (общий для издателя домен yamal.me, как `me.yamal.portal` у портала; к адресу панели отношения не имеет); в первом экране приложение предлагает адрес панели `https://alert.yamal-media.ru`. Нужны Node 20+, для iOS — Xcode на macOS, для Android — Android Studio / SDK.
 
 ```bash
 cd apps/approver
 npm install
 npm test                 # правила приложения и что оно не должно содержать
 npm run build            # www/ — страница, которая уезжает внутрь приложения
-npx cap add ios          # один раз
+npx cap add ios          # уже сделано: ios/ в репозитории (docs/15)
 npx cap add android      # один раз
 npm run sync             # build + cap sync + native-setup
 npx cap open ios         # / npx cap open android — подпись сборки и выпуск
@@ -47,6 +47,12 @@ npx cap open ios         # / npx cap open android — подпись сборк�
 `native-setup` дописывает то, чего `cap sync` не делает: `NSFaceIDUsageDescription`
 в `Info.plist` (без него iOS не даёт Face ID) и `FLAG_SECURE` на Android (экран подписи
 не попадает в снимки экрана и в список приложений).
+
+Иконку и заставку рисует `python3 scripts/icons.py` (Pillow). Выпуск в App Store,
+демо-стенд для ревьюера и ответы App Store Connect — **docs/15-ios-review.md**.
+Политика конфиденциальности открыта без входа: `<панель>/privacy`, ссылка на неё —
+на экранах подключения и входа (оператор и контакт — `ALERTING_ORG_LABEL`,
+`ALERTING_PANEL_PRIVACY_CONTACT`).
 
 > ⚠️ **Live update не подключать.** Ни `@capgo/capacitor-updater`, ни `server.url`:
 > страница подписи должна быть ровно той, что прошла сборку. Тест

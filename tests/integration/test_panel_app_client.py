@@ -219,3 +219,16 @@ def test_cors_answers_only_the_app_origins(panel_app):
 def test_the_app_can_be_turned_off(server, clock, org, tmp_path):
     panel = make_panel(server, clock, org, tmp_path / "off", app_origins=())
     assert "access-control-allow-origin" not in preflight(panel, "capacitor://localhost").headers
+
+
+def test_the_privacy_policy_is_public_and_names_the_operator(server, clock, org, tmp_path):
+    panel = make_panel(
+        server, clock, org, tmp_path / "pp",
+        org_label="АНО «Ямал-Медиа»", privacy_contact="<b>dpo@example.ru</b>",
+    )  # fmt: skip
+    page = TestClient(panel).get("/privacy")
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert "АНО «Ямал-Медиа»" in page.text
+    assert "&lt;b&gt;dpo@example.ru&lt;/b&gt;" in page.text, "settings are text, not markup"
+    assert "{contact}" not in page.text and "{org_label}" not in page.text

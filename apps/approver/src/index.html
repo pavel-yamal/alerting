@@ -12,6 +12,7 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
+<div id="demo-banner" class="demo-banner hidden">ДЕМО-СТЕНД · вымышленная организация, оповещения не уходят реальным людям</div>
 
 <!-- 1. Which panel. Asked once; changing it means a new key (the key is made for an organisation). -->
 <section id="setup" class="screen hidden">
@@ -19,10 +20,11 @@
   <p class="hint">Приложение для лиц, принимающих решение: проверка и подпись приказов ключом этого телефона под Face ID или отпечатком.</p>
   <form id="setup-form">
     <label for="panel-url">Адрес панели</label>
-    <input id="panel-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" placeholder="https://alert.yamal.me" required>
+    <input id="panel-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" placeholder="https://alert.yamal-media.ru" required>
     <button class="primary" type="submit">Подключиться</button>
   </form>
   <div id="setup-msg"></div>
+  <p class="hint"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
 </section>
 
 <!-- 2. Login: unlock the key with biometrics, sign the session delegation. -->
@@ -36,13 +38,16 @@
     <summary>Зарегистрировать этот телефон</summary>
     <p class="hint">Ключ создаётся на телефоне и не покидает его. Публичную часть передайте регистрирующему лично; войти получится, когда хранители внесут ключ в справочник.</p>
     <form id="enroll-form">
-      <label for="enroll-person">Ваш идентификатор в справочнике</label>
-      <input id="enroll-person" autocomplete="off" autocapitalize="off" placeholder="p-010" required>
+      <div id="enroll-person-row">
+        <label for="enroll-person">Ваш идентификатор в справочнике</label>
+        <input id="enroll-person" autocomplete="off" autocapitalize="off" placeholder="p-010" required>
+      </div>
       <button class="primary" type="submit">Создать ключ</button>
     </form>
     <div id="enroll-msg"></div>
   </details>
   <button id="change-panel" type="button" class="link">Сменить панель</button>
+  <p class="hint"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
 </section>
 
 <!-- 3. The work: what waits for my signature, what is in force, what was sent. -->

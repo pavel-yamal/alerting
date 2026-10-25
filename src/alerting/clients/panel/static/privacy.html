@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Политика конфиденциальности — Оповещение ЛПР</title>
+<style>
+  body { max-width: 760px; margin: 0 auto; padding: 24px 16px; font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1b1f24; background: #fff; }
+  @media (prefers-color-scheme: dark) { body { color: #e6e9ed; background: #111418; } a { color: #6ea8ff; } }
+  h1 { font-size: 26px; } h2 { font-size: 19px; margin-top: 28px; }
+  .muted { color: #5d6670; }
+</style>
+</head>
+<body>
+<h1>Политика конфиденциальности приложения «Оповещение ЛПР»</h1>
+<p class="muted">Оператор: {org_label}. Редакция от 25 октября 2026 г.</p>
+
+<p>«Оповещение ЛПР» — служебное приложение для лиц, принимающих решение: в нём
+проверяют и подписывают приказы об оповещении работников. Приложение не продаётся
+и не предназначено для частных лиц; пользоваться им могут только люди, чей ключ
+внесён в справочник организации.</p>
+
+<h2>Какие данные обрабатываются</h2>
+<ul>
+  <li><b>Идентификатор и ФИО</b> из справочника организации — чтобы показать, кто
+    вошёл и кто подписал приказ.</li>
+  <li><b>Публичный ключ устройства</b> и <b>подписи</b>, поставленные им, — так
+    организация проверяет, что приказ подписал именно этот человек.</li>
+  <li><b>Содержание приказов</b> (сценарий, уровень, пояснение) и журнал действий
+    — для доведения оповещений и разбора после инцидента.</li>
+  <li>Адрес панели организации — хранится на телефоне.</li>
+</ul>
+
+<h2>Биометрия</h2>
+<p>Face ID, Touch ID и отпечатки пальцев проверяет операционная система телефона.
+Приложение не получает и не хранит биометрические данные: система лишь сообщает,
+что проверка прошла, и только после этого выдаёт ключ подписи, который хранится в
+защищённом хранилище телефона (Keychain на iOS, Keystore на Android) и не покидает
+устройство.</p>
+
+<h2>Что не делается</h2>
+<ul>
+  <li>Нет рекламы, аналитики и отслеживания; данные не передаются третьим лицам
+    для этих целей.</li>
+  <li>Местоположение, контакты, фотографии и микрофон не используются.</li>
+  <li>Данные не продаются.</li>
+</ul>
+
+<h2>Где хранятся и сколько</h2>
+<p>Данные хранятся на серверах организации-оператора. Журнал приказов хранится в
+течение срока, установленного внутренними документами организации для разбора
+инцидентов. Ключ устройства удаляется кнопкой «Удалить ключ» в приложении или
+вместе с приложением; запись о ключе в справочнике отзывает организация.</p>
+
+<h2>Права и обращения</h2>
+<p>Узнать, какие данные о вас обрабатываются, уточнить их или отозвать ключ можно,
+обратившись к оператору: {contact}.</p>
+
+<h2>In English</h2>
+<p>“Оповещение ЛПР” is an internal app for an organisation’s decision-makers to
+review and sign alert orders. It processes the person’s directory identifier and
+name, the device’s public key and the signatures it makes, and the content of
+orders. Biometric checks are performed by the operating system; the app never
+receives or stores biometric data. No advertising, analytics or tracking; no data is
+sold or shared for such purposes. Data is stored on the operating organisation’s
+servers. Contact: {contact}.</p>
+</body>
+</html>

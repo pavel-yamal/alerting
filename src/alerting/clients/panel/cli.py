@@ -65,6 +65,18 @@ def main(argv: list[str] | None = None) -> int:
         "an empty value turns the app off",
     )
     parser.add_argument(
+        "--demo-enroll-root-key",
+        type=pathlib.Path,
+        default=os.environ.get("ALERTING_PANEL_DEMO_ENROLL_ROOT_KEY") or None,
+        help="DEMO STAND ONLY: the demo org's root PRIVATE key file; the app may then "
+        "enrol its own key as a demo decision-maker (docs/adr/0016). Never on a real node",
+    )
+    parser.add_argument(
+        "--demo-enroll-as",
+        default=os.environ.get("ALERTING_PANEL_DEMO_ENROLL_AS", "p-004"),
+        help="the server-held demo key under --homes that publishes the directory",
+    )
+    parser.add_argument(
         "--host",
         default="127.0.0.1",
         help="bind address. With --server-keys it holds unlocked keys: keep it on localhost",
@@ -80,6 +92,15 @@ def main(argv: list[str] | None = None) -> int:
     import uvicorn
 
     from alerting.clients.panel.app import APP_ORIGINS, create_panel
+    from alerting.clients.panel.demo_enroll import DemoEnroll
+
+    demo = None
+    if args.demo_enroll_root_key:
+        demo = DemoEnroll.from_file(
+            args.demo_enroll_root_key,
+            args.demo_enroll_as,
+            os.environ.get("ALERTING_PANEL_DEMO_PASSPHRASE", "demo"),
+        )
 
     if bool(args.org) != bool(args.root_key):
         parser.error("device-key login needs both --org and --root-key")
@@ -95,6 +116,15 @@ def main(argv: list[str] | None = None) -> int:
         app_origins=APP_ORIGINS
         if args.app_origins is None
         else tuple(o.strip() for o in args.app_origins.split(",") if o.strip()),
+        demo_enroll=demo,
+        **{
+            key: value
+            for key, value in (
+                ("org_label", os.environ.get("ALERTING_ORG_LABEL")),
+                ("privacy_contact", os.environ.get("ALERTING_PANEL_PRIVACY_CONTACT")),
+            )
+            if value
+        },
     )
     uvicorn.run(app, host=args.host, port=args.port, log_config=None, access_log=False)
     return 0

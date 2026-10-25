@@ -2,7 +2,8 @@
 
 Подпись приказов ключом телефона под Face ID / отпечатком. Решение —
 [docs/adr/0016](../../docs/adr/0016-native-approver-app.md), сборка и работа —
-[docs/14-approver-app.md](../../docs/14-approver-app.md).
+[docs/14-approver-app.md](../../docs/14-approver-app.md), выпуск в App Store и ревью —
+[docs/15-ios-review.md](../../docs/15-ios-review.md).
 
 ```
 src/                  страница: index.html, app.js (экраны), logic.js (чистые правила), vault.js (мост к плагину)

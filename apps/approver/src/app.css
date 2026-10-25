@@ -90,3 +90,6 @@ td { word-break: break-word; -webkit-user-select: text; user-select: text; }
 .choice.real:has(input:checked) { border-color: var(--real); background: var(--real-bg); }
 .summary { margin: 18px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
 #fatal { padding: 16px; }
+.demo-banner { background: var(--warn-bg); color: var(--warn); font-weight: 700; text-align: center;
+               padding: 8px 12px; font-size: 14px; }
+a { color: var(--accent); }
