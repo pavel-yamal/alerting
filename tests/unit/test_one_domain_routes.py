@@ -47,5 +47,5 @@ def test_the_proxy_sends_v1_to_the_api_and_the_rest_to_the_panel():
 def test_login_is_rate_limited_and_health_is_not_public():
     login = location("~ ^/api/(device/begin|device/renew/begin|login)$")
     assert "limit_req zone=alerting_login" in login
-    for internal in ("= /healthz", "~ ^/v1/(healthz|readyz|metricsz)$"):
+    for internal in ("= /healthz", "~ ^/v1/(healthz|readyz|metricsz)$", "= /v1/feed.rss"):
         assert "deny all;" in location(internal)
