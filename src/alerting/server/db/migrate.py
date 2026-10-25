@@ -58,6 +58,16 @@ def expected_version() -> int:
     return found[-1][0] if found else 0
 
 
+#: Checksums an applied migration may carry besides its file's own. Only ever for an
+#: edit that changed no SQL. 0001's comment on ``proposals.status`` was edited in
+#: place (commit a29faa1) and then put back; databases created in between recorded
+#: the edited text, the ones before and after the original. Both are the same schema.
+#: Never add an entry for an edit that changes what the migration does.
+ALSO_ACCEPTED: dict[int, frozenset[str]] = {
+    1: frozenset({"84223d396e1b5fd2c9dbc139b0ad8eaf571dacdbaa2b08d4faecc571d4e7d9bd"}),
+}
+
+
 def _checksum(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -116,7 +126,7 @@ def _verify_checksums(seen: dict[int, tuple[str, str]]) -> None:
         if recorded is None:
             continue
         digest = _checksum(path.read_text(encoding="utf-8"))
-        if recorded[0] != digest:
+        if recorded[0] != digest and recorded[0] not in ALSO_ACCEPTED.get(version, ()):
             raise SchemaMismatch(
                 f"migration {path.name} has changed since it was applied "
                 f"(recorded {recorded[0][:12]}, on disk {digest[:12]}). Two nodes can now "

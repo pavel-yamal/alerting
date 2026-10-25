@@ -44,6 +44,51 @@ async def test_a_migration_edited_after_it_was_applied_is_refused(owner_conn):
         )
 
 
+async def test_a_database_that_recorded_the_comment_edit_to_0001_still_verifies(owner_conn):
+    """0001 was edited in a comment only and put back (migrate.ALSO_ACCEPTED). Stands
+    created in between recorded the edited checksum; they must keep starting, and the
+    exception must not open the door to any other checksum."""
+    original = owner_conn.execute(
+        "SELECT checksum FROM schema_migrations WHERE version = 1"
+    ).fetchone()["checksum"]
+    (edited,) = migrate.ALSO_ACCEPTED[1]
+    try:
+        owner_conn.execute(
+            "UPDATE schema_migrations SET checksum = %s WHERE version = 1", (edited,)
+        )
+        migrate.verify(owner_conn)
+        assert migrate.apply(owner_conn) == []
+        owner_conn.execute(
+            "UPDATE schema_migrations SET checksum = %s WHERE version = 1", ("1" * 64,)
+        )
+        with pytest.raises(migrate.SchemaMismatch, match="has changed since it was applied"):
+            migrate.verify(owner_conn)
+    finally:
+        owner_conn.execute(
+            "UPDATE schema_migrations SET checksum = %s WHERE version = 1", (original,)
+        )
+
+
+async def test_the_accepted_edit_of_0001_is_exactly_the_comment():
+    """What ALSO_ACCEPTED vouches for: the text it names differs from the file in that
+    one comment, and in nothing an engine would execute."""
+    import hashlib
+    import re
+
+    path = dict(migrate.discover())[1]
+    shipped = path.read_text(encoding="utf-8")
+    edited = shipped.replace(
+        "-- open | dispatched | abandoned", "-- open | dispatched | rejected (0008)"
+    )
+    assert edited != shipped
+    assert hashlib.sha256(edited.encode()).hexdigest() in migrate.ALSO_ACCEPTED[1]
+
+    def sql(text: str) -> str:
+        return re.sub(r"--[^\n]*", "", text)
+
+    assert sql(edited) == sql(shipped)
+
+
 async def test_a_node_refuses_to_start_against_the_wrong_schema_version(
     owner_conn, settings, clock
 ):
