@@ -16,14 +16,20 @@ from alerting.core.clock import FixedClock
 from alerting.core.envelope import Audience
 from alerting.core.policy import PolicyPayload
 from alerting.core.signing import DOMAIN_POLICY
-from alerting.orgkit import DEFAULT_SCENARIOS, Org, make_order, sign_bundle, sign_order
+from alerting.orgkit import Org, make_order, sign_bundle, sign_order
 from alerting.server.app import create_app
 from alerting.server.config import Settings
 from alerting.server.services.bootstrap import publish_org
-from tests.integration.conftest import signer_for
+from tests.integration.conftest import finite_muster_org, signer_for
 from tests.integration.test_e2e_ws import connect_executor
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def org():
+    # MUSTER keeps a finite life here: these tests are about that rule.
+    return finite_muster_org()
 
 
 @pytest.fixture
@@ -52,7 +58,7 @@ async def dispatch(client: TestClient, org: Org, clock: FixedClock, **kwargs: An
 def next_policy(org: Org, version: int, **scenario_changes: Any) -> dict[str, Any]:
     raw = dict(org.policy_bundle["payload"])
     raw["version"] = version
-    scenarios = {code: rule.to_payload() for code, rule in DEFAULT_SCENARIOS.items()}
+    scenarios = dict(org.policy_bundle["payload"]["scenarios"])
     scenarios.update(scenario_changes)
     raw["scenarios"] = scenarios
     return sign_bundle(PolicyPayload.model_validate(raw), DOMAIN_POLICY, org.root_private_key)
@@ -128,7 +134,7 @@ async def test_a_new_policy_does_not_revive_an_event_that_already_ended(client, 
     """Found on the stand: republishing the codebook with EVAC.BUILDING marked "until
     cancelled" brought back every old evacuation nobody had stood down. The rule in
     force at dispatch governs the event's life."""
-    old_rules = {code: rule.to_payload() for code, rule in DEFAULT_SCENARIOS.items()}
+    old_rules = dict(org.policy_bundle["payload"]["scenarios"])
     old_rules["MUSTER"].pop("until_cancelled", None)
     muster = await dispatch(client, org, clock, scenario="MUSTER", ttl_s=120)
     clock.advance(3600)
@@ -147,7 +153,7 @@ async def test_a_policy_that_would_invalidate_a_running_event_is_refused(client,
     alongside (that would be a downgrade), so a policy that drops a running event's
     scenario would leave everyone joining later unable to verify it."""
     evac = await dispatch(client, org, clock, scenario="EVAC.BUILDING")
-    rules = {code: rule.to_payload() for code, rule in DEFAULT_SCENARIOS.items()}
+    rules = dict(org.policy_bundle["payload"]["scenarios"])
 
     without = dict(rules)
     del without["EVAC.BUILDING"]

@@ -7,7 +7,7 @@ inside that boundary, behind a biometric or PIN unlock, and this module is repla
 a thin call into it.
 
 What is here is a scrypt-derived AES-GCM file, which is honest about what it is: good
-enough for a reference implementation and a demo, not good enough for a director's
+enough for a reference implementation and a demo, not good enough for a decision-maker's
 launch key.
 """
 

@@ -104,12 +104,12 @@ def test_seen_order_ids_persist(cache):
 
 def test_key_file_roundtrip_and_wrong_passphrase(tmp_path):
     private, public = generate_keypair()
-    path = save_key("p-001", private, "correct horse", role="director", directory=tmp_path)
+    path = save_key("p-001", private, "correct horse", role="lpr", directory=tmp_path)
     assert path.stat().st_mode & 0o077 == 0, "key file must not be group/world readable"
 
     loaded = load_key("p-001", "correct horse", directory=tmp_path)
     assert loaded.key_id == key_id(public)
-    assert loaded.role == "director"
+    assert loaded.role == "lpr"
 
     with pytest.raises(InvalidTag):
         load_key("p-001", "wrong", directory=tmp_path)

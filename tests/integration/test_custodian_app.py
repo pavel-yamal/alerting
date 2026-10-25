@@ -48,7 +48,7 @@ def test_from_an_empty_laptop_to_a_signed_answer(screen, tmp_path):
     request = custody.build_request(
         org_id="acme", root_public_key=public_key_to_b64u(org.root_public_key),
         directory=org.directory_bundle, policy=org.policy_bundle, revocations=None,
-        changes=[{"op": "add_key", "person_id": "p-010", "name": "Орлова", "role": "director",
+        changes=[{"op": "add_key", "person_id": "p-010", "name": "Орлова", "role": "lpr",
                   "public_key": public_key_to_b64u(public)}],
         created_by="p-003", created_at=1,
     )  # fmt: skip

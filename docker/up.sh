@@ -30,9 +30,16 @@ fi
 [[ -f "$env_file" ]] || { cp docker/.env.example "$env_file"; log "создан $env_file"; }
 
 log "собираю образ"
+echo "    первая сборка качает зависимости с pypi.org — при медленной сети это минуты;"
+echo "    дальше они берутся из кэша сборки (его не стирает и --reset)"
 build_log=$(mktemp)
+# Полный вывод — в лог, на экран — только скачиваемые пакеты: иначе на медленной сети
+# скрипт минутами молчит и выглядит зависшим. awk, а не grep: grep без совпадений
+# (всё из кэша) вернул бы 1, и pipefail принял бы это за провал сборки.
 # shellcheck disable=SC2086  # флаги сборки намеренно разбиваются на слова
-if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . >"$build_log" 2>&1; then
+if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . 2>&1 \
+    | tee "$build_log" \
+    | awk '/ Downloading / && !/\.metadata / { sub(/^#[0-9]+ [0-9.]+ +/, ""); print "    " $0; fflush() }'; then
     # Без этого видно только «exit code: 1», а причина — в выводе pip выше.
     # Сводка docker в конце одинакова при любой причине; причина — в строках pip.
     # `|| true`: под set -e и pipefail пустой grep иначе молча завершил бы скрипт.
@@ -84,8 +91,8 @@ cat <<EOF
   корневой ключ организации : ${root_key}
   пароль ключей демо-людей  : demo
 
-Панель дежурного: http://127.0.0.1:${panel_port}
-  вход: p-003 (дежурный), p-001 (директор), p-002 (заместитель); пароль demo
+Панель ЛПР: http://127.0.0.1:${panel_port}
+  вход: p-001, p-002, p-003 (ЛПР), p-004 (дежурный, временно); пароль demo
   с другой машины: ssh -L ${panel_port}:127.0.0.1:${panel_port} <сервер>
 
 Исполнитель с телефона: http://127.0.0.1:${mobile_port}
@@ -99,7 +106,7 @@ cat <<EOF
   ./docker/cli.sh alerting-approver sign <id> --yes --person p-001
   ./docker/cli.sh alerting-executor sync --person x-102
   ./docker/cli.sh alerting-executor verify <id> --person x-102
-  ./docker/cli.sh alerting-auditor verify --person a-001
+  ./docker/cli.sh alerting-auditor verify --person p-001
 
 Журнал сервера: docker compose --env-file $env_file logs -f server
 EOF

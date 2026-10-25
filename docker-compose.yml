@@ -27,6 +27,7 @@ x-app: &app
     ALERTING_DRILL_SITES: ${ALERTING_DRILL_SITES:-}
     ALERTING_ALLOW_STUB_CHANNELS: ${ALERTING_ALLOW_STUB_CHANNELS:-0}
     ALERTING_CANARY_INTERVAL_S: ${ALERTING_CANARY_INTERVAL_S:-3600}
+    ALERTING_DELIVERY: ${ALERTING_DELIVERY:-rss}
 
 services:
   # Пароли и DSN, один раз. Повторный запуск ничего не перезаписывает.
@@ -113,6 +114,8 @@ services:
       ALERTING_PANEL_SERVER: http://server:8080
       ALERTING_PANEL_HOMES: /var/lib/alerting/clients
       ALERTING_PANEL_ORG: ${ALERTING_ORG:-acme}
+      # Своё окружение панели заменяет общее целиком: подпись передаётся явно.
+      ALERTING_ORG_LABEL: ${ALERTING_ORG_LABEL:-ACME}
       ALERTING_PANEL_ROOT_PUBKEY: ${ALERTING_ROOT_PUBKEY:-}
       # Наибольшие виденные версии справочника, отзывов и политики. На томе, а не в
       # контейнере: пересоздание контейнера не должно сбрасывать защиту от отката.
@@ -146,6 +149,8 @@ services:
     environment:
       ALERTING_MOBILE_SERVER: http://server:8080
       ALERTING_MOBILE_HOMES: /var/lib/alerting/clients
+      # Токен администратора для `alerting-mobile sessions` / `end-session`.
+      ALERTING_MOBILE_STATE: /var/lib/alerting/mobile
       ALERTING_LOG_LEVEL: ${ALERTING_LOG_LEVEL:-INFO}
     volumes:
       - clients:/var/lib/alerting/clients

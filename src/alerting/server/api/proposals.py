@@ -86,8 +86,9 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         action=body.action,
         audience=body.audience,
         text=body.text,
-        requires_ack=body.requires_ack,
-        ack_deadline_s=body.ack_deadline_s,
+        # Nothing is delivered in RSS-only mode, so there is nothing to acknowledge.
+        requires_ack=False if app.settings.rss_only else body.requires_ack,
+        ack_deadline_s=0 if app.settings.rss_only else body.ack_deadline_s,
         policy_id=policy.policy_id,
         cancels=body.cancels,
     )
@@ -112,6 +113,43 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         # reimplement canonicalization and risk signing different bytes.
         "signing_input_b64u": b64u_encode(DOMAIN_ORDER + canonicalize(raw)),
         "required_signatures": rule.m if rule else None,
+    }
+
+
+#: How far back the list reaches for proposals that are no longer open. Open ones are
+#: listed whatever their age.
+RECENT_S = 24 * 3600
+
+
+@router.get("")
+async def list_proposals(request: Request) -> dict[str, Any]:
+    """Every open proposal, and the last day's closed ones, for every decision-maker.
+
+    This list used to live in the panel's memory: a proposal was visible only through
+    the panel that created it, and lost when that panel restarted -- so the second
+    decision-maker, on another device, never saw what was waiting for his signature.
+    """
+    import json
+
+    app = request.app.state.alerting
+    rows = app.repo.recent_proposals(app.clock.now() - RECENT_S)
+    signatures = app.repo.signatures_for([row["order_id"] for row in rows])
+    return {
+        # The panel and the app say "goes to the RSS feed" instead of "everyone gets it".
+        "delivery": app.settings.delivery,
+        "proposals": [
+            {
+                "order_id": row["order_id"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "payload": json.loads(row["payload_json"]),
+                "signatures": [
+                    {"key_id": s["key_id"], "observed_at": s["observed_at"]}
+                    for s in signatures.get(row["order_id"], [])
+                ],
+            }
+            for row in rows
+        ],
     }
 
 

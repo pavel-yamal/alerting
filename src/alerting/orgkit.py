@@ -77,14 +77,17 @@ class Org:
         return [p for p in self.people.values() if p.role == "executor"]
 
 
-#: Roles that may approve orders. Executors are deliberately absent: their device
-#: keys exist to sign ACKs, and counting them toward a quorum would let two executors
-#: launch a critical evacuation.
-APPROVER_ROLES: tuple[str, ...] = ("director", "deputy", "duty_officer")
+#: Roles that may approve orders: the decision-makers (ЛПР) alone. Executors are
+#: deliberately absent -- their device keys exist to sign ACKs, and counting them
+#: toward a quorum would let two executors launch a critical evacuation. So is the
+#: duty officer, who for now watches and keeps the directory but issues nothing.
+APPROVER_ROLES: tuple[str, ...] = ("lpr",)
 
 _APPROVER_ROLES = frozenset(APPROVER_ROLES)
 
 #: The codebook. The scenario code is the actionable unit; free text is advisory.
+#: Every event lasts until its stand-down (``until_cancelled``), never until a timer:
+#: an evacuation does not end because a delivery window closed.
 DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     "EVAC.BUILDING": ScenarioRule(
         min_severity=Severity.CRITICAL,
@@ -103,6 +106,7 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
         min_severity=Severity.WARNING,
         description="Сбор на пункте сбора",
         card="Прибыть на пункт сбора, доложить старшему.",
+        until_cancelled=True,
     ),
     "STAND.BY": ScenarioRule(
         max_severity=Severity.WARNING,
@@ -114,41 +118,38 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
         max_severity=Severity.INFO,
         description="Технический тест канала",
         card="Действий не требуется. Подтвердить получение.",
+        until_cancelled=True,
     ),
 }
 
-#: Cancel quorum is deliberately one below launch: the safe direction is stopping.
-#: See docs/adr/0003-cancel-quorum.md for the argument and its four guardrails.
+#: Two different decision-makers launch every order, drill or real, whatever its
+#: level: people choose only drill or real, and the level comes from the scenario, so
+#: a quorum that differed by level would be a difference nobody chose. Cancel quorum
+#: is deliberately at most launch: the safe direction is stopping.
+#: See docs/adr/0003-cancel-quorum.md.
+_TWO = QuorumRule(m=2, max_signature_spread_s=300, distinct_persons=True)
 DEFAULT_SEVERITIES: dict[Severity, SeverityRules] = {
-    Severity.INFO: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
-    Severity.WARNING: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
+    Severity.INFO: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
+    Severity.WARNING: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
     Severity.CRITICAL: SeverityRules(
-        launch=QuorumRule(m=2, max_signature_spread_s=300, distinct_persons=True),
+        launch=_TWO,
         cancel=QuorumRule(m=1),
     ),
     Severity.CATASTROPHIC: SeverityRules(
-        launch=QuorumRule(
-            m=3,
-            max_signature_spread_s=600,
-            distinct_persons=True,
-            min_from_role={"director": 1},
-        ),
+        launch=QuorumRule(m=2, max_signature_spread_s=600, distinct_persons=True),
         cancel=QuorumRule(m=2),
     ),
 }
 
 DEFAULT_ROSTER: list[tuple[str, str, str]] = [
-    ("p-001", "Смирнов А. В.", "director"),
-    ("p-002", "Кузнецова Е. П.", "deputy"),
-    ("p-003", "Орлов Д. С.", "duty_officer"),
+    ("p-001", "Смирнов А. В.", "lpr"),
+    ("p-002", "Кузнецова Е. П.", "lpr"),
+    ("p-003", "Орлов Д. С.", "lpr"),
+    # Temporary: the duty officer role is to go. Watches, issues nothing.
     ("p-004", "Белова М. И.", "duty_officer"),
     ("x-101", "Иванов И. И.", "executor"),
     ("x-102", "Петрова О. Н.", "executor"),
     ("x-103", "Сидоров П. А.", "executor"),
-    # docs/02-trust-and-approval.md §1 has listed the auditor as a directory role
-    # since the beginning; it simply had no entry. Reading the chain over HTTP is a
-    # signed request like any other, so the role had to become real.
-    ("a-001", "Ковалёва Н. Т.", "auditor"),
 ]
 
 
@@ -162,6 +163,7 @@ def build_org(
     directory_version: int = 1,
     policy_version: int = 1,
     approver_roles: tuple[str, ...] = APPROVER_ROLES,
+    scenarios: dict[str, ScenarioRule] | None = None,
 ) -> Org:
     """Create an organisation with a fresh root key and a signed directory and policy."""
     root_private, _ = generate_keypair()
@@ -208,7 +210,7 @@ def build_org(
         not_valid_after=issued_at + policy_ttl_s,
         approver_roles=approver_roles,
         severities=dict(DEFAULT_SEVERITIES),
-        scenarios=dict(DEFAULT_SCENARIOS),
+        scenarios=dict(DEFAULT_SCENARIOS if scenarios is None else scenarios),
     )
 
     return Org(

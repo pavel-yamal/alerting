@@ -76,14 +76,13 @@ DEFAULT_PLAN = EscalationPlan.from_config(
             {"at_s": 60, "channels": ["sms"]},
             {"at_s": 180, "channels": ["voice"]},
             {"at_s": 300, "notify_role": "duty_officer"},
-            {"at_s": 420, "reassign_to_group": "alternates"},
             {"at_s": 600, "channels": ["siren"]},
         ],
         "catastrophic": [
             {"at_s": 0, "channels": ["ws", "push", "sms"]},
             {"at_s": 60, "channels": ["voice"]},
             {"at_s": 120, "channels": ["siren"]},
-            {"at_s": 240, "notify_role": "director"},
+            {"at_s": 240, "notify_role": "lpr"},
         ],
     }
 )

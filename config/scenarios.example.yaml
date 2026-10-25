@@ -41,6 +41,7 @@ MUSTER:
   min_severity: warning
   description: "Сбор на пункте сбора"
   card: "Прибыть на пункт сбора, доложить старшему."
+  until_cancelled: true
 
 STAND.BY:
   max_severity: warning
@@ -52,3 +53,4 @@ TEST.PING:
   max_severity: info
   description: "Технический тест канала"
   card: "Действий не требуется. Подтвердить получение."
+  until_cancelled: true

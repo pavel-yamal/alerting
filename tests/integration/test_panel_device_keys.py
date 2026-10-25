@@ -161,7 +161,13 @@ def test_the_demo_login_is_off(panel_app, org):
     )
     assert response.status_code == 404
     config = TestClient(panel_app).get("/api/config").json()
-    assert config == {"org_id": org.org_id, "device_login": True, "server_keys": False}
+    assert config == {
+        "org_id": org.org_id,
+        "device_login": True,
+        "server_keys": False,
+        "demo": False,
+        "org_label": None,
+    }
 
 
 def test_a_freshly_enrolled_browser_key_works_and_revocation_ends_it(panel_app, server, org, clock):
@@ -171,14 +177,14 @@ def test_a_freshly_enrolled_browser_key_works_and_revocation_ends_it(panel_app, 
         server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
     )
     payload, _ = add_key(
-        current, person_id="p-010", name="Орлова Е. В.", role="director",
+        current, person_id="p-010", name="Орлова Е. В.", role="lpr",
         public_key=public_key_to_b64u(public), issued_at=clock.now(),
     )  # fmt: skip
     publish(server, org, payload)
 
     ipad = Browser(panel_app, "p-010", private)
     assert ipad.login().status_code == 200
-    assert ipad.client.get("/api/me").json()["role"] == "director"
+    assert ipad.client.get("/api/me").json()["role"] == "lpr"
 
     current = verified_current(
         server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
@@ -191,3 +197,61 @@ def test_a_freshly_enrolled_browser_key_works_and_revocation_ends_it(panel_app, 
               "groups": ["fire-wardens"]},
         headers=PANEL,
     ).status_code >= 400, "the session's requests are refused the moment the key is"  # fmt: skip
+
+
+def renew(browser: Browser, *, private_key: Any = None) -> Any:
+    """What the open page does every few hours: sign the next delegation."""
+    begun = browser.client.post("/api/device/renew/begin", headers=PANEL)
+    assert begun.status_code == 200, begun.text
+    delegation = begun.json()["delegation"]
+    assert delegation["key_id"] == browser.key_id
+    signature = sign_payload(
+        DOMAIN_SESSION_DELEGATION, delegation, private_key or browser.private_key
+    )
+    return browser.client.post(
+        "/api/device/renew/finish", json={"signature": signature}, headers=PANEL
+    )
+
+
+def test_an_open_page_keeps_the_session_past_the_delegation(panel_app, org, clock):
+    """No timeout: a page that stays open renews the 12-hour delegation, for days."""
+    director = Browser(panel_app, "p-001", org.person("p-001").private_key)
+    first = director.login().json()["delegation_until"]
+    for _ in range(4):
+        clock.advance(8 * 3600)
+        renewed = renew(director)
+        assert renewed.status_code == 200, renewed.text
+        assert renewed.json()["delegation_until"] > first
+        panel_app.state.panel.sweep()
+        # The server checks the new delegation on every request.
+        assert director.client.get("/api/meta").status_code == 200
+
+
+def test_a_closed_page_lets_its_session_lapse(panel_app, org, clock):
+    """Only the page holds the unlocked key, so only it can renew."""
+    director = Browser(panel_app, "p-001", org.person("p-001").private_key)
+    director.login()
+    clock.advance(12 * 3600 + 1)
+    panel_app.state.panel.sweep()
+    assert panel_app.state.panel.sessions == {}
+    assert director.client.get("/api/me").status_code == 401
+
+
+def test_a_renewal_signed_by_another_key_is_refused(panel_app, org):
+    director = Browser(panel_app, "p-001", org.person("p-001").private_key)
+    before = director.login().json()["delegation_until"]
+    stranger, _ = generate_keypair()
+    assert renew(director, private_key=stranger).status_code == 401
+    assert director.client.get("/api/me").json()["delegation_until"] == before
+
+
+def test_revocation_ends_a_device_session_without_another_request(panel_app, server, org, clock):
+    director = Browser(panel_app, "p-001", org.person("p-001").private_key)
+    director.login()
+    current = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    revoked, _ = revoke_keys(current, person_id="p-001", kid=None, at=clock.now(), reason="lost")
+    publish(server, org, revoked)
+    panel_app.state.panel.check_trust()
+    assert panel_app.state.panel.sessions == {}

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>Панель дежурного</title>
+<title>Оповещения</title>
 <style>
   :root {
     --bg: #f4f5f7; --panel: #ffffff; --text: #1b1f24; --muted: #5d6670; --line: #dde1e6;
@@ -27,8 +27,26 @@
            background: var(--panel); border-bottom: 1px solid var(--line); }
   header h1 { font-size: 17px; margin: 0; }
   header .who { margin-left: auto; color: var(--muted); }
-  main { display: grid; grid-template-columns: 360px 340px 1fr; gap: 16px; padding: 16px 20px; }
-  @media (max-width: 1100px) { main { grid-template-columns: 1fr; } }
+  main { display: grid; grid-template-columns: 380px 340px 1fr; gap: 16px; padding: 16px 20px; }
+  main.viewer { grid-template-columns: 380px 1fr; }
+  @media (max-width: 1100px) { main, main.viewer { grid-template-columns: 1fr; } }
+  .note { margin: 16px 20px 0; padding: 10px 14px; border-radius: 8px;
+          background: var(--drill-bg); color: var(--drill); font-weight: 600; }
+  .step { font-weight: 700; margin: 18px 0 8px; }
+  .step:first-child { margin-top: 0; }
+  .choices { display: flex; flex-direction: column; gap: 6px; }
+  .choice { display: flex; flex-direction: column; margin: 0; padding: 10px 12px; border: 2px solid var(--line);
+            border-radius: 8px; cursor: pointer; font-weight: 600; }
+  .choice small { color: var(--muted); font-weight: 400; }
+  .choice input { display: none; }
+  .choice:has(input:checked) { border-color: var(--accent); background: var(--drill-bg); }
+  .mode small { display: block; font-weight: 400; font-size: 12px; color: var(--muted); }
+  .summary { margin: 18px 0 10px; padding: 10px 12px; border-radius: 8px; background: var(--bg); }
+  .summary div { margin: 2px 0; }
+  button.wide-btn { width: 100%; padding: 12px; font-size: 16px; }
+  details.more { margin-top: 14px; }
+  details.more summary { cursor: pointer; color: var(--muted); }
+  h2.gap { margin-top: 22px; }
   section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 16px; }
   h2 { font-size: 15px; margin: 0 0 12px; }
   h3 { font-size: 14px; margin: 18px 0 8px; color: var(--muted); font-weight: 600; }
@@ -91,7 +109,7 @@
 <body>
 
 <section id="login" class="hidden">
-  <h2>Панель дежурного — вход</h2>
+  <h2>Оповещения — вход</h2>
   <div id="login-support"></div>
 
   <form id="device-form" class="hidden">
@@ -103,7 +121,7 @@
       <button class="primary" type="submit">Войти</button>
       <button type="button" id="forget-key">Удалить ключ с устройства</button>
     </div>
-    <div class="hint">Ключ хранится только в этом браузере и не покидает его: приказы подписываются здесь. Сессия закрывается после 15 минут бездействия или при перезагрузке страницы.</div>
+    <div class="hint">Ключ хранится только в этом браузере и не покидает его: приказы подписываются здесь. Сессия длится, пока вы не выйдете или её не завершит администратор; перезагрузка или закрытие страницы закрывают ключ — тогда нужно войти снова.</div>
   </form>
 
   <div class="row" id="enroll-row"><button type="button" id="enroll-open">Зарегистрировать это устройство</button></div>
@@ -133,69 +151,68 @@
 
 <div id="app" class="hidden">
   <header>
-    <h1>Панель дежурного</h1>
+    <h1>Оповещения</h1>
     <span id="org" class="hint"></span>
     <nav class="tabs">
       <button type="button" id="tab-alerts" class="active">Оповещения</button>
-      <button type="button" id="tab-directory">Справочник и ключи</button>
+      <button type="button" id="tab-directory">Люди и ключи</button>
     </nav>
     <span class="who" id="who"></span>
     <button id="logout" type="button">Выйти</button>
   </header>
+  <div id="viewer-note" class="note hidden">Режим просмотра: вы видите обстановку и ход оповещений. Приказы издают и подписывают ЛПР.</div>
   <main id="alerts-view">
-    <section>
+    <section id="compose">
       <h2>Новое оповещение</h2>
       <form id="new-form">
-        <label>Режим</label>
-        <div class="mode">
-          <label><input type="radio" name="drill" value="true"><span>УЧЕНИЕ</span></label>
-          <label><input type="radio" name="drill" value="false"><span>БОЕВОЕ</span></label>
-        </div>
-        <div class="hint">Значения по умолчанию нет — выберите явно.</div>
-
-        <label for="scenario">Сценарий</label>
-        <select id="scenario" required></select>
+        <div class="step">1. Что случилось?</div>
+        <div id="scenarios" class="choices"></div>
         <div class="hint" id="scenario-hint"></div>
 
-        <label for="severity">Важность</label>
-        <select id="severity" required></select>
-        <div class="hint" id="quorum-hint"></div>
+        <div class="step">2. Это учение или по-настоящему?</div>
+        <div class="mode">
+          <label><input type="radio" name="drill" value="true"><span>Учение</span><small>никто не должен действовать всерьёз</small></label>
+          <label><input type="radio" name="drill" value="false"><span>Боевое</span><small>реальное оповещение</small></label>
+        </div>
 
-        <label>Кому</label>
-        <div id="groups"></div>
-        <div id="sites"></div>
-
-        <label for="text">Пояснение (не заменяет сценарий)</label>
+        <div class="step">Пояснение <span class="hint">— необязательно</span></div>
         <textarea id="text" maxlength="1000" placeholder="Например: задымление, 3 этаж, корпус А"></textarea>
 
-        <label for="ttl">Действует</label>
-        <select id="ttl">
-          <option value="600">10 минут</option>
-          <option value="900" selected>15 минут</option>
-          <option value="1800">30 минут</option>
-          <option value="3600">1 час</option>
-        </select>
+        <details class="more">
+          <summary>Дополнительно</summary>
+          <label for="ttl">Сколько ждать подписей и доставки</label>
+          <select id="ttl">
+            <option value="600">10 минут</option>
+            <option value="900" selected>15 минут</option>
+            <option value="1800">30 минут</option>
+            <option value="3600">1 час</option>
+          </select>
+        </details>
 
-        <div class="row"><button class="primary" type="submit">Создать и перейти к подписи</button></div>
+        <div id="summary" class="summary"></div>
+        <button class="primary wide-btn" type="submit">Создать и перейти к подписи</button>
         <div id="new-msg"></div>
       </form>
     </section>
 
-    <section>
-      <h2>Действующие события</h2>
+    <section id="lists">
+      <h2>Сейчас действует</h2>
       <div id="events" class="list"></div>
-      <h2 style="margin-top:20px">Ожидают подписи</h2>
+      <h2 class="gap">Ждут подписи</h2>
       <div id="proposals" class="list"></div>
-      <div class="row">
-        <input id="open-id" type="text" placeholder="ID приказа">
-        <button id="open-btn" type="button">Открыть</button>
-      </div>
-      <h2 style="margin-top:20px">Разосланные</h2>
+      <h2 class="gap">История</h2>
       <div id="orders" class="list"></div>
+      <details class="more">
+        <summary>Открыть приказ по ID</summary>
+        <div class="row">
+          <input id="open-id" type="text" placeholder="ID приказа">
+          <button id="open-btn" type="button">Открыть</button>
+        </div>
+      </details>
     </section>
 
     <section id="detail">
-      <div class="empty">Выберите приказ слева или создайте новый.</div>
+      <div class="empty">Выберите оповещение в списке<span id="detail-create"> или создайте новое</span>.</div>
     </section>
   </main>
 
@@ -217,18 +234,13 @@
         <label for="add-role">Роль</label>
         <select id="add-role">
           <option value="executor">исполнитель</option>
-          <option value="duty_officer">дежурный</option>
-          <option value="deputy">заместитель</option>
-          <option value="director">директор</option>
-          <option value="auditor">аудитор</option>
+          <option value="lpr">ЛПР</option>
+          <option value="duty_officer">дежурный (временно)</option>
         </select>
         <label for="add-key">Публичный ключ — с экрана регистрации его устройства</label>
         <input id="add-key" type="text" placeholder="43 символа" required>
         <div class="hint" id="add-kid"></div>
-        <h3>Куда слать оповещения (для исполнителей)</h3>
-        <label for="add-phone">Телефон</label><input id="add-phone" type="text">
-        <label for="add-site">Площадка</label><input id="add-site" type="text">
-        <label for="add-groups">Группы через запятую</label><input id="add-groups" type="text" placeholder="fire-wardens">
+        <label for="add-phone">Телефон для SMS и звонков <span class="hint">— необязательно</span></label><input id="add-phone" type="text">
         <div class="row"><button class="primary" type="submit">В заявку</button></div>
       </form>
     </section>

@@ -4,7 +4,7 @@ Every request carries an Ed25519 signature over its own method, path, query stri
 and body, made with the caller's personal key and verified against the root-signed
 directory. That replaces a single shared secret which closed the door but could not
 say who came through it and could not be revoked for one person -- rotating it was an
-all-or-nothing event for every dispatcher, executor and auditor at once.
+all-or-nothing event for every dispatcher and executor at once.
 
 The concrete win is not convenience. ``created_by`` on a proposal used to be a string
 the client asserted about itself, written straight into an undeletable audit chain.
@@ -60,14 +60,14 @@ log = logging.getLogger("alerting.auth")
 #: doing it on every request would add a write to every read.
 PRUNE_EVERY_S = 60.0
 
-#: Roles that run the alerting operation: propose, sign, stand down, publish a head.
-#: Kept here rather than read from the policy bundle because these two ideas are not
-#: the same one: the policy says whose signature counts toward a quorum, which a
-#: person can lack while still being the one who types the proposal.
-OPERATORS = frozenset({"director", "deputy", "duty_officer"})
+#: The decision-makers (ЛПР): the only role that issues orders -- proposes, signs,
+#: stands down. Whose signature counts toward a quorum is still the policy's
+#: ``approver_roles``; this is who may call the routes at all.
+LPR = frozenset({"lpr"})
 
-#: Read the chain and the record, write nothing. docs/02-trust-and-approval.md §1.
-AUDITOR = frozenset({"auditor"})
+#: Everyone who runs the operation: the decision-makers, and for now the duty officer,
+#: who watches the picture, keeps the directory and contacts, but issues nothing.
+OPERATORS = LPR | frozenset({"duty_officer"})
 
 #: Any key the directory knows. Used only where an executor's device genuinely needs
 #: the route to do its job.
@@ -80,9 +80,9 @@ ENROLLED = frozenset({"*"})
 #: then a decision somebody has to make on purpose, which is the only way a table
 #: like this stays true a year later.
 ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
-    # Writes that start or stop an alert, and the one write an auditor must not make.
-    ("POST", "/v1/proposals"): OPERATORS,
-    ("POST", "/v1/proposals/{order_id}/signatures"): OPERATORS,
+    # Writes that start or stop an alert: decision-makers only.
+    ("POST", "/v1/proposals"): LPR,
+    ("POST", "/v1/proposals/{order_id}/signatures"): LPR,
     ("POST", "/v1/audit/head"): OPERATORS,
     # Root-signed and version-checked on the way in, so the role is a second gate,
     # not the first: whoever uploads cannot change a byte of what the root signed.
@@ -90,17 +90,18 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     # Who orders are sent to. Not who may sign or verify -- that is the directory.
     ("POST", "/v1/contacts"): OPERATORS,
     ("POST", "/v1/contacts/{person_id}/deactivate"): OPERATORS,
-    # The operating picture, plus the auditor's read-only view of it.
-    ("GET", "/v1/proposals/{order_id}"): OPERATORS | AUDITOR,
-    ("GET", "/v1/orders"): OPERATORS | AUDITOR,
-    ("GET", "/v1/events/active"): OPERATORS | AUDITOR,
-    ("GET", "/v1/orders/{order_id}/status"): OPERATORS | AUDITOR,
-    ("GET", "/v1/audit"): OPERATORS | AUDITOR,
-    ("GET", "/v1/audit/head"): OPERATORS | AUDITOR,
+    # The operating picture and the audit chain.
+    ("GET", "/v1/proposals"): OPERATORS,
+    ("GET", "/v1/proposals/{order_id}"): OPERATORS,
+    ("GET", "/v1/orders"): OPERATORS,
+    ("GET", "/v1/events/active"): OPERATORS,
+    ("GET", "/v1/orders/{order_id}/status"): OPERATORS,
+    ("GET", "/v1/audit"): OPERATORS,
+    ("GET", "/v1/audit/head"): OPERATORS,
     # The roster is personal data and statusz names who is currently connected --
     # its own docstring calls that a roster leak. Executors lose both, which is a
     # tightening: they never needed them.
-    ("GET", "/v1/roster"): OPERATORS | AUDITOR,
+    ("GET", "/v1/roster"): OPERATORS,
     ("GET", "/v1/statusz"): OPERATORS,
     ("GET", "/v1/channels/health"): OPERATORS,
     # What an executor's device needs: fetch the order it was told about, send the

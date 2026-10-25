@@ -99,7 +99,7 @@ def test_a_weak_vault_is_refused(org, passes, names):
 def test_an_enrolment_request_becomes_the_next_signed_directory(org):
     vault, private = vault_for(org)
     _, public = generate_keypair()
-    enrol = {"op": "add_key", "person_id": "p-010", "name": "Орлова", "role": "director",
+    enrol = {"op": "add_key", "person_id": "p-010", "name": "Орлова", "role": "lpr",
              "public_key": public_key_to_b64u(public)}  # fmt: skip
     req = request(org, [enrol])
     seen = custody.review(req, vault)
@@ -112,7 +112,7 @@ def test_an_enrolment_request_becomes_the_next_signed_directory(org):
         answer["bundles"]["directory"], root_public_key=org.root_public_key, org_id=org.org_id,
         min_version=2,
     )  # fmt: skip
-    assert directory.lookup(key_id(public)).role == "director"
+    assert directory.lookup(key_id(public)).role == "lpr"
 
 
 def test_a_tampered_request_is_refused_before_anything_is_shown(org):
@@ -203,7 +203,7 @@ def test_dropping_a_revocation_key_can_keep_its_revocations(org):
 
 def test_a_request_with_an_unknown_or_malformed_change_is_refused(org):
     for bad in [{"op": "make_me_director"}, {"op": "retire"},
-                {"op": "add_key", "person_id": "P!", "name": "x", "role": "director",
+                {"op": "add_key", "person_id": "P!", "name": "x", "role": "lpr",
                  "public_key": "x" * 43}]:  # fmt: skip
         with pytest.raises(CustodyError):
             request(org, [bad])

@@ -96,7 +96,8 @@ config/                политика кворума, кодовая книг�
 src/alerting/
   core/                ЧИСТОЕ ядро: без I/O, без сети, без чтения часов
   server/              FastAPI, PostgreSQL, каналы, эскалация, аудит
-  clients/             CLI ЛПР, исполнителя и аудитора
+  clients/             CLI ЛПР, исполнителя и проверки журнала
+apps/approver/         приложение ЛПР (Capacitor): подпись ключом под биометрией
 tests/unit/            ядро в изоляции
 tests/integration/     сервер, клиенты, сквозные сценарии
 scripts/               org_init.py, demo_e2e.py
@@ -118,6 +119,8 @@ scripts/               org_init.py, demo_e2e.py
 | `integration/test_audit_integration.py` | Отказ журнала не блокирует оповещение; в цепочке нет персональных данных |
 | `unit/test_verify.py` | Что отвергается, а что лишь помечается предупреждением |
 | `unit/test_canonical.py` | Соответствие RFC 8785 и сужения схемой |
+| `integration/test_panel_app_client.py` | Приложение ЛПР входит токеном, а не cookie; CORS только для origin'ов приложения; дежурному отказ |
+| `unit/test_approver_app_js.py` | Приложение не грузит код с сервера, без live update, токен нигде не сохраняется, каждая подпись — через хранилище под биометрией; iOS-проект готов к ревью (Face ID, шифрование, манифест приватности, иконка, iPad, iOS 17), Android — без резервных копий, Android 11+, свои иконки, подпись релиза вне git |
 
 ## Статус
 

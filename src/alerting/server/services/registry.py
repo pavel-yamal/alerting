@@ -12,7 +12,7 @@ from typing import Any
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from alerting.core.directory import Directory
-from alerting.core.envelope import OrderPayload
+from alerting.core.envelope import EVERYONE, OrderPayload
 from alerting.core.policy import Policy
 from alerting.core.signing import b64u_decode
 from alerting.server.channels.base import Recipient
@@ -77,17 +77,20 @@ class OrgState:
         """Resolve the audience to people.
 
         Over-inclusion is the safe direction here: a person matched by site, group, or
-        name all get the order once.
+        name all get the order once. The group ``EVERYONE`` matches every active
+        recipient -- except the canary's, which is not a person.
         """
         wanted_sites = set(order.audience.sites)
         wanted_groups = set(order.audience.groups)
         wanted_persons = set(order.audience.persons)
+        everyone = EVERYONE in wanted_groups
 
         out: list[Recipient] = []
         for row in self.repo.contacts():
             groups = tuple(g for g in row["groups_csv"].split(",") if g)
             matched = (
-                row["person_id"] in wanted_persons
+                (everyone and row["role"] != "canary")
+                or row["person_id"] in wanted_persons
                 or (row["site"] and row["site"] in wanted_sites)
                 or bool(wanted_groups & set(groups))
             )

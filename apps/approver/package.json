@@ -1,0 +1,21 @@
+{
+  "name": "alerting-approver",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Приложение ЛПР: подпись приказов ключом устройства под биометрией (docs/adr/0016)",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "native:setup": "node scripts/native-setup.mjs",
+    "sync": "node scripts/build.mjs && npx cap sync && node scripts/native-setup.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.5.0",
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
+    "alerting-device-vault": "file:./plugins/device-vault"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0"
+  }
+}

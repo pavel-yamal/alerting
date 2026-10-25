@@ -16,11 +16,18 @@ passphrases, or controls this process, can sign. Off unless enabled.
 Either way the panel re-derives what is signed from the payload itself and refuses
 unless the person approved *those* bytes (see :func:`sign_proposal`), and the server
 never sees a device key.
+
+A session has no idle timeout and no lifetime of its own. It ends when the person
+logs out, when their key is revoked, or when an administrator ends it
+(:mod:`alerting.clients.session_admin`). A device-key session also needs its page:
+the delegation lasts at most 12 hours and only the open page, which holds the
+unlocked key, can renew it -- so a closed tab's session lapses on its own.
 """
 
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import pathlib
 import re
@@ -36,6 +43,7 @@ import yaml
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -43,43 +51,55 @@ from alerting import custody
 from alerting.clients.approver_cli import KNOWN_PAYLOAD_FIELDS
 from alerting.clients.bundles import BundleCache, PinnedOrg
 from alerting.clients.keystore import load_key
+from alerting.clients.panel.demo_enroll import DemoEnroll, add_demo_routes
+from alerting.clients.session_admin import add_admin_routes, issue_token
 from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.canonical import canonicalize
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
-from alerting.core.envelope import Severity
+from alerting.core.envelope import EVERYONE, Severity
 from alerting.core.http_auth import MAX_DELEGATION_S, delegation_payload, encode_delegation
 from alerting.core.policy import Policy
 from alerting.core.signing import (
     DOMAIN_ORDER,
+    DOMAIN_SESSION_DELEGATION,
     generate_keypair,
     public_key_to_b64u,
     sign_payload,
     verify_signature,
 )
 from alerting.orgadmin import next_revocations
-from alerting.server.auth import OPERATORS
+from alerting.server.auth import LPR, OPERATORS
 
 log = logging.getLogger("alerting.panel")
 
 COOKIE = "alerting_panel"
 
 #: Mutating requests must carry this header. A cross-site form or image cannot set a
-#: custom header without a CORS preflight, and this app answers no preflight -- so a
-#: page on another origin cannot make the panel sign on the operator's behalf.
+#: custom header without a CORS preflight, and this app answers a preflight only for
+#: the native app's own origins (``APP_ORIGINS``) -- so a page on another origin
+#: cannot make the panel sign on the operator's behalf.
 CSRF_HEADER = "X-Alerting-Panel"
 
-#: An unattended panel with an unlocked key is a signing machine for whoever walks
-#: past. Fifteen minutes of inactivity ends the session; the key is dropped with it.
-IDLE_TIMEOUT_S = 15 * 60
+#: The decision-makers' native app (docs/adr/0016) says so with this header on
+#: ``/api/device/finish`` and gets its session token in the body instead of a cookie:
+#: its page is served from the app bundle, not from this origin, and a WebView does
+#: not send this origin's cookies from there.
+APP_HEADER = "X-Alerting-Client"
+APP_CLIENT = "app"
 
-#: Sent by the page on requests a person caused (a click, a submit). Only those count
-#: as activity. The page also polls every few seconds, and if polling counted, a tab
-#: left open on an unattended desk would keep its key unlocked forever.
-ACTIVITY_HEADER = "X-Alerting-Activity"
+#: Where a Capacitor WebView serves the bundled page from: Android at
+#: ``https://localhost``, iOS at ``capacitor://localhost``. Only these get a CORS
+#: answer. Credentials are not allowed cross-origin: the app sends its token in
+#: ``Authorization``, which no other page can make a browser attach.
+APP_ORIGINS = ("capacitor://localhost", "https://localhost")
 
-#: How often expired sessions are swept even if nobody calls the panel at all -- a
-#: closed tab never sends the request that would have noticed its session expired.
+#: The privacy page's operator line when the installation names no organisation.
+PRIVACY_OPERATOR = "организация, эксплуатирующая систему оповещения"
+
+#: How often every session is checked even if nobody calls the panel at all: a
+#: revoked key or a lapsed delegation must end the session without waiting for a
+#: request from a tab that may be closed.
 SWEEP_INTERVAL_S = 30
 
 #: Person ids become path components of the key store. Anything else is refused
@@ -90,8 +110,8 @@ KEY_ID = re.compile(r"^ed25519:[A-Za-z0-9_-]{22}$")
 #: How long a browser has to sign the delegation it was handed.
 CHALLENGE_TTL_S = 120
 
-#: The delegation's own lifetime. The session idles out after 15 minutes anyway and
-#: drops the session key; this caps what a key leaked from this process is worth.
+#: The delegation's own lifetime. The open page renews it well before it runs out
+#: (panel.js); this caps what a session key leaked from this process is worth.
 DELEGATION_S = MAX_DELEGATION_S
 
 STATIC_DIR = pathlib.Path(__file__).parent / "static"
@@ -113,7 +133,15 @@ class Session:
     #: allowed in at all: the server lets every operator create and watch proposals,
     #: and an organisation may keep duty officers out of ``approver_roles`` on purpose.
     can_sign: bool
-    last_seen: float
+    #: Wall-clock time of the login, for the administrator's list.
+    since: int
+    #: The request signer, kept so a renewed delegation can be swapped in.
+    auth: SignedRequests | None = None
+    #: Device-key sessions: the session key the delegation names, when the current
+    #: delegation runs out, and a renewal handed to the page and not yet signed.
+    session_public: str | None = None
+    delegation_until: int | None = None
+    pending_renewal: dict[str, Any] | None = None
 
     @property
     def directory(self) -> Directory:
@@ -124,6 +152,19 @@ class Session:
         return self.cache.policy()
 
 
+def scenario_severity(rule: Any) -> Severity:
+    """The one level an event of this scenario goes out at.
+
+    People choose only drill or real; the level still travels in the order, because
+    the escalation ladder and the SMS wording depend on it, so it comes from the
+    scenario: its floor if it has one, else its ceiling, else critical.
+    """
+    for level in (rule.min_severity, rule.max_severity):
+        if level:
+            return Severity(level)
+    return Severity.CRITICAL
+
+
 class LoginRequest(BaseModel):
     person_id: str
     passphrase: str
@@ -131,13 +172,15 @@ class LoginRequest(BaseModel):
 
 class ProposalForm(BaseModel):
     scenario: str
-    severity: Severity
+    #: Not chosen by a person any more: an event is a drill or real, nothing else. The
+    #: level is the scenario's own (``scenario_severity``); still accepted, so a client
+    #: of the previous build keeps working.
+    severity: Severity | None = None
     #: Required and without a default, as everywhere else in the stack. The form
     #: offers no preselected choice either: the operator has to click one.
     drill: bool
-    groups: list[str] = Field(default_factory=list)
-    sites: list[str] = Field(default_factory=list)
-    persons: list[str] = Field(default_factory=list)
+    #: No audience: the organisation has one, everyone (``EVERYONE``), and real
+    #: alerts to it are also on the public RSS feed.
     text: str = Field(default="", max_length=1000)
     ttl_s: int = Field(default=900, ge=60, le=86400)
 
@@ -190,6 +233,10 @@ class DeviceFinish(BaseModel):
     signature: str
 
 
+class RenewFinish(BaseModel):
+    signature: str
+
+
 @dataclass
 class Challenge:
     person_id: str
@@ -226,6 +273,10 @@ def describe_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "groups": list(audience.get("groups") or []),
             "persons": list(audience.get("persons") or []),
         },
+        # The usual audience. Anything else is shown as a warning on the review screen.
+        "everyone": list(audience.get("groups") or []) == [EVERYONE]
+        and not audience.get("sites")
+        and not audience.get("persons"),
         "text": payload.get("text", ""),
         "issued_at": payload["issued_at"],
         "not_valid_after": payload["not_valid_after"],
@@ -259,7 +310,7 @@ class Panel:
         self.server_url = server_url
         self.transport = transport
         self.clock = clock or SystemClock()
-        # Idle time is measured on a monotonic clock, injected so a test can advance it.
+        # Login challenges age on a monotonic clock, injected so a test can advance it.
         self.monotonic = monotonic
         self.sessions: dict[str, Session] = {}
         self.challenges: dict[str, Challenge] = {}
@@ -272,23 +323,12 @@ class Panel:
             self.pin = PinnedOrg(org_id, root_public_key, home)
             self.pin.save()
         self.server_keys = server_keys and homes is not None
-        # The server has no "list open proposals" route, so the panel remembers the
-        # ones created or opened through it. Every person using this panel sees them,
-        # which is the point: the second signer finds the first one's proposal here.
-        self.proposal_ids: list[str] = []
         self._lock = threading.Lock()
         self._stop = threading.Event()
 
     @property
     def device_login(self) -> bool:
         return self.pin is not None
-
-    def remember(self, order_id: str) -> None:
-        with self._lock:
-            if order_id in self.proposal_ids:
-                self.proposal_ids.remove(order_id)
-            self.proposal_ids.insert(0, order_id)
-            del self.proposal_ids[50:]
 
     def login(self, person_id: str, passphrase: str) -> tuple[str, Session]:
         """Demo mode: unlock a key held under ``--homes``."""
@@ -306,18 +346,15 @@ class Panel:
             # One message for both: which person ids exist is not the panel's to say.
             raise HTTPException(401, "неверный идентификатор или пароль") from None
 
-        api = Api(
-            self.server_url,
-            auth=SignedRequests(
-                org_id=pin.org_id,
-                key_id=stored.key_id,
-                person_id=stored.person_id,
-                private_key=stored.private_key,
-                clock=self.clock,
-            ),
-            transport=self.transport,
+        auth = SignedRequests(
+            org_id=pin.org_id,
+            key_id=stored.key_id,
+            person_id=stored.person_id,
+            private_key=stored.private_key,
+            clock=self.clock,
         )
-        return self._open(api, pin, stored.person_id, stored.key_id, stored.private_key)
+        api = Api(self.server_url, auth=auth, transport=self.transport)
+        return self._open(api, auth, pin, stored.person_id, stored.key_id, stored.private_key)
 
     def begin_device_login(self, person_id: str, key_id: str) -> tuple[str, dict[str, Any]]:
         """Hand the browser a delegation to sign for a session key made here."""
@@ -351,23 +388,57 @@ class Panel:
         if pending is None or self.monotonic() - pending.created > CHALLENGE_TTL_S:
             raise HTTPException(401, "вход устарел — начните заново")
         assert self.pin is not None
-        api = Api(
-            self.server_url,
-            auth=SignedRequests(
-                org_id=self.pin.org_id,
-                key_id=pending.key_id,
-                person_id=pending.person_id,
-                private_key=pending.session_key,
-                clock=self.clock,
-                delegation=encode_delegation(pending.payload, signature),
-            ),
-            transport=self.transport,
+        auth = SignedRequests(
+            org_id=self.pin.org_id,
+            key_id=pending.key_id,
+            person_id=pending.person_id,
+            private_key=pending.session_key,
+            clock=self.clock,
+            delegation=encode_delegation(pending.payload, signature),
         )
-        return self._open(api, self.pin, pending.person_id, pending.key_id, None)
+        api = Api(self.server_url, auth=auth, transport=self.transport)
+        token, session = self._open(api, auth, self.pin, pending.person_id, pending.key_id, None)
+        session.session_public = pending.payload["session_key"]
+        session.delegation_until = pending.payload["not_after"]
+        return token, session
+
+    def begin_renewal(self, session: Session) -> dict[str, Any]:
+        """A fresh delegation for the session key this session already signs with.
+
+        Only the page can sign it -- the device key is there, not here -- so a
+        session lasts exactly as long as some page keeps renewing it.
+        """
+        if session.session_public is None or self.pin is None:
+            raise HTTPException(409, "сессия не на ключе устройства — продлевать нечего")
+        now = self.clock.now()
+        payload = delegation_payload(
+            org_id=self.pin.org_id,
+            key_id=session.key_id,
+            person_id=session.person_id,
+            session_key=session.session_public,
+            not_before=now,
+            not_after=now + DELEGATION_S,
+        )
+        session.pending_renewal = payload
+        return payload
+
+    def finish_renewal(self, session: Session, signature: str) -> None:
+        payload, session.pending_renewal = session.pending_renewal, None
+        entry = session.directory.lookup(session.key_id)
+        if payload is None or entry is None or session.auth is None:
+            raise HTTPException(409, "продление не начато — начните заново")
+        # Checked here, before the swap: a bad signature must not replace a working
+        # delegation with one the server will refuse.
+        if not verify_signature(DOMAIN_SESSION_DELEGATION, payload, signature, entry.public()):
+            raise HTTPException(401, "подпись доверенности не сходится")
+        session.auth.delegation = encode_delegation(payload, signature)
+        session.delegation_until = payload["not_after"]
+        log.info("panel session renewed: %s", session.person_id)
 
     def _open(
         self,
         api: Api,
+        auth: SignedRequests,
         pin: PinnedOrg,
         person_id: str,
         key_id: str,
@@ -416,7 +487,8 @@ class Panel:
             entry.name,
             entry.role,
             can_sign=entry.role in policy.approver_roles,
-            last_seen=self.monotonic(),
+            since=self.clock.now(),
+            auth=auth,
         )
         with self._lock:
             self.sessions[token] = session
@@ -428,39 +500,98 @@ class Panel:
         )
         return token, session
 
-    def session(self, token: str | None, *, activity: bool) -> Session:
-        """The live session for ``token``. Only ``activity`` extends it."""
+    def session(self, token: str | None) -> Session:
+        """The live session for ``token``."""
         self.sweep()
         with self._lock:
             session = self.sessions.get(token or "")
             if session is None:
-                raise HTTPException(401, "сессия истекла или не начата — войдите")
-            if activity:
-                session.last_seen = self.monotonic()
+                raise HTTPException(401, "сессия завершена или не начата — войдите")
             return session
 
+    def refresh_trust(self, session: Session) -> bool:
+        """Re-fetch the bundles; ``False`` once the server no longer admits this key.
+
+        A failed fetch for any other reason -- the server down, a bundle that does
+        not verify -- keeps the session on what it holds: the person is not signed
+        out by an outage.
+        """
+        try:
+            session.cache.accept("directory", session.api.get("/v1/directory"))
+            session.cache.accept("revocations", session.api.get("/v1/revocations"))
+            session.cache.accept("policy", session.api.get("/v1/policy"))
+        except ServerError as exc:
+            if str(exc).startswith(("401", "403")):
+                return False
+            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        except Exception as exc:
+            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        directory = session.directory
+        entry = directory.lookup(session.key_id)
+        return entry is not None and not directory.is_revoked(session.key_id)
+
     def sweep(self) -> None:
-        """Drop every session idle past the timeout, and its unlocked key with it."""
-        now = self.monotonic()
+        """End every device-key session whose delegation lapsed: its page is gone."""
+        now = self.clock.now()
         with self._lock:
-            expired = [t for t, s in self.sessions.items() if now - s.last_seen > IDLE_TIMEOUT_S]
-            dropped = [self.sessions.pop(t) for t in expired]
-        for session in dropped:
-            session.api.close()
-            log.info("panel session expired: %s", session.person_id)
+            lapsed = [
+                t
+                for t, s in self.sessions.items()
+                if s.delegation_until is not None and now > s.delegation_until
+            ]
+        for token in lapsed:
+            self._end(token, "доверенность не продлена")
+
+    def check_trust(self) -> None:
+        """End every session whose key the server or the directory no longer admits."""
+        with self._lock:
+            sessions = list(self.sessions.items())
+        for token, session in sessions:
+            if not self.refresh_trust(session):
+                self._end(token, "ключ отозван")
 
     def start_sweeper(self) -> None:
         def run() -> None:
             while not self._stop.wait(SWEEP_INTERVAL_S):
                 self.sweep()
+                self.check_trust()
 
         threading.Thread(target=run, name="panel-session-sweeper", daemon=True).start()
 
-    def logout(self, token: str | None) -> None:
+    def _end(self, token: str, why: str) -> None:
         with self._lock:
-            session = self.sessions.pop(token or "", None)
+            session = self.sessions.pop(token, None)
         if session is not None:
             session.api.close()
+            log.info("panel session ended (%s): %s", why, session.person_id)
+
+    def logout(self, token: str | None) -> None:
+        self._end(token or "", "выход")
+
+    # --- the administrator ----------------------------------------------------
+    def list_sessions(self) -> list[dict[str, Any]]:
+        with self._lock:
+            sessions = list(self.sessions.values())
+        return [
+            {
+                "person_id": s.person_id,
+                "name": s.name,
+                "role": s.role,
+                "since": s.since,
+                "kind": "device key" if s.signer is None else "server-held key",
+            }
+            for s in sorted(sessions, key=lambda s: s.since)
+        ]
+
+    def end_sessions(self, person_id: str | None) -> int:
+        """End one person's sessions, or every session with ``None``."""
+        with self._lock:
+            tokens = [
+                t for t, s in self.sessions.items() if person_id is None or s.person_id == person_id
+            ]
+        for token in tokens:
+            self._end(token, "администратор")
+        return len(tokens)
 
 
 def _server(call: Any, *args: Any, **kwargs: Any) -> Any:
@@ -471,6 +602,14 @@ def _server(call: Any, *args: Any, **kwargs: Any) -> Any:
         text = str(exc)
         status = 404 if text.startswith("404") else 409 if text.startswith("409") else 502
         raise HTTPException(status, text) from None
+
+
+def session_token(request: Request) -> str | None:
+    """The session token: ``Authorization: Bearer`` from the app, the cookie otherwise."""
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        return header[len("Bearer ") :].strip() or None
+    return request.cookies.get(COOKIE)
 
 
 def create_panel(
@@ -484,6 +623,10 @@ def create_panel(
     root_public_key: str | None = None,
     state_dir: pathlib.Path | None = None,
     server_keys: bool = True,
+    app_origins: tuple[str, ...] = APP_ORIGINS,
+    demo_enroll: DemoEnroll | None = None,
+    org_label: str | None = None,
+    privacy_contact: str = "служба, ответственная за систему оповещения в вашей организации",
 ) -> FastAPI:
     panel = Panel(
         homes=homes,
@@ -499,17 +642,37 @@ def create_panel(
     panel.start_sweeper()
     app = FastAPI(title="alerting panel", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.panel = panel
+    if state_dir is not None:
+        add_admin_routes(
+            app,
+            issue_token(state_dir),
+            list_sessions=panel.list_sessions,
+            end_sessions=panel.end_sessions,
+        )
+
+    if app_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(app_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", CSRF_HEADER, APP_HEADER],
+            max_age=600,
+        )
 
     def current(request: Request) -> Session:
-        return panel.session(
-            request.cookies.get(COOKIE), activity=request.headers.get(ACTIVITY_HEADER) == "1"
-        )
+        return panel.session(session_token(request))
 
     def guarded(request: Request) -> Session:
         if request.headers.get(CSRF_HEADER) != "1":
             raise HTTPException(403, "запрос не из панели")
-        # A state-changing request is always a person acting.
-        return panel.session(request.cookies.get(COOKIE), activity=True)
+        return current(request)
+
+    def issuer(session: Session = Depends(guarded)) -> Session:
+        # The server refuses it anyway; this says why in words the page can show.
+        if session.role not in LPR:
+            raise HTTPException(403, "приказы издают только ЛПР")
+        return session
 
     def names(session: Session) -> dict[str, str]:
         return {entry.person_id: entry.name for entry in session.directory.payload.keys}
@@ -552,6 +715,15 @@ def create_panel(
     def devicekey_js() -> FileResponse:
         return FileResponse(STATIC_DIR / "devicekey.js", media_type="text/javascript")
 
+    @app.get("/privacy", include_in_schema=False)
+    def privacy() -> Response:
+        """The app's privacy policy, public and without login (App Store rule 5.1.1)."""
+        page = (STATIC_DIR / "privacy.html").read_text(encoding="utf-8")
+        page = page.replace("{org_label}", html.escape(org_label or PRIVACY_OPERATOR)).replace(
+            "{contact}", html.escape(privacy_contact)
+        )
+        return Response(page, media_type="text/html; charset=utf-8")
+
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict[str, bool]:
         return {"ok": True}
@@ -563,8 +735,12 @@ def create_panel(
             "name": session.name,
             "role": session.role,
             "can_sign": session.can_sign,
+            # Only decision-makers propose and stand down; the duty officer watches.
+            "can_issue": session.role in LPR,
             # The page signs orders itself when the key lives in the browser.
             "device_key": session.signer is None,
+            # And renews the delegation before this; ``None`` for a server-held key.
+            "delegation_until": session.delegation_until,
         }
 
     def require_csrf(request: Request) -> None:
@@ -578,7 +754,15 @@ def create_panel(
             "org_id": panel.pin.org_id if panel.pin else None,
             "device_login": panel.device_login,
             "server_keys": panel.server_keys,
+            # A demonstration stand that enrols app keys by itself (demo_enroll.py).
+            "demo": demo_enroll is not None,
+            # What people call the organisation (ALERTING_ORG_LABEL); the id stays
+            # the technical key in signatures. None when unset: screens show the id.
+            "org_label": org_label,
         }
+
+    if demo_enroll is not None:
+        add_demo_routes(app, panel, demo_enroll, CSRF_HEADER)
 
     @app.post("/api/login")
     def login(body: LoginRequest, request: Request, response: Response) -> dict[str, Any]:
@@ -597,12 +781,28 @@ def create_panel(
     def device_finish(body: DeviceFinish, request: Request, response: Response) -> dict[str, Any]:
         require_csrf(request)
         token, session = panel.finish_device_login(body.challenge, body.signature)
+        if request.headers.get(APP_HEADER) == APP_CLIENT:
+            # The app is the decision-makers' signing device and nothing else: the
+            # duty officer keeps the panel, where the directory and contacts live.
+            if session.role not in LPR:
+                panel.logout(token)
+                raise HTTPException(403, "приложение — только для ЛПР; дежурный работает в панели")
+            return {**who(session), "token": token}
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
+        return who(session)
+
+    @app.post("/api/device/renew/begin")
+    def renew_begin(session: Session = Depends(guarded)) -> dict[str, Any]:
+        return {"delegation": panel.begin_renewal(session)}
+
+    @app.post("/api/device/renew/finish")
+    def renew_finish(body: RenewFinish, session: Session = Depends(guarded)) -> dict[str, Any]:
+        panel.finish_renewal(session, body.signature)
         return who(session)
 
     @app.post("/api/logout")
     def logout(request: Request, response: Response) -> dict[str, bool]:
-        panel.logout(request.cookies.get(COOKIE))
+        panel.logout(session_token(request))
         response.delete_cookie(COOKIE, path="/")
         return {"ok": True}
 
@@ -611,16 +811,13 @@ def create_panel(
         return who(session)
 
     @app.get("/api/meta")
-    def meta(session: Session = Depends(current)) -> dict[str, Any]:
+    def meta(request: Request, session: Session = Depends(current)) -> dict[str, Any]:
         # Re-synced here rather than trusted from login: a newly published policy --
         # a new event in the codebook, a changed quorum -- shows up without anyone
         # logging out. Verified and version-checked like at login.
-        try:
-            session.cache.accept("directory", session.api.get("/v1/directory"))
-            session.cache.accept("revocations", session.api.get("/v1/revocations"))
-            session.cache.accept("policy", session.api.get("/v1/policy"))
-        except Exception as exc:
-            log.warning("bundle refresh failed for %s: %s", session.person_id, exc)
+        if not panel.refresh_trust(session):
+            panel.logout(session_token(request))
+            raise HTTPException(401, "ключ отозван — сессия завершена")
         policy = session.policy.payload
         roster = _server(session.api.get, "/v1/roster")["people"]
         return {
@@ -631,6 +828,8 @@ def create_panel(
                     "description": rule.description,
                     "min_severity": rule.min_severity,
                     "max_severity": rule.max_severity,
+                    # The level it goes out at -- fixed by the scenario, not chosen.
+                    "severity": str(scenario_severity(rule)),
                     "card": rule.card or "",
                     "until_cancelled": bool(rule.until_cancelled),
                 }
@@ -647,27 +846,26 @@ def create_panel(
                 }
                 for level, rules in policy.severities.items()
             },
-            "groups": sorted({g for person in roster for g in person["groups"]}),
-            "sites": sorted({person["site"] for person in roster if person["site"]}),
+            # Who "everyone" is right now, for the form to say so.
+            "recipients": sum(1 for person in roster if person.get("role") != "canary"),
+            # "rss": the order goes to the RSS feed and to nobody else. Asked of the
+            # server, which is what decides it (ALERTING_DELIVERY).
+            "delivery": _server(session.api.get, "/v1/proposals").get("delivery", "channels"),
         }
 
     @app.post("/api/proposals")
-    def propose(body: ProposalForm, session: Session = Depends(guarded)) -> dict[str, Any]:
-        audience = {
-            key: value
-            for key, value in (
-                ("sites", body.sites),
-                ("groups", body.groups),
-                ("persons", body.persons),
-            )
-            if value
-        }
+    def propose(body: ProposalForm, session: Session = Depends(issuer)) -> dict[str, Any]:
+        audience = {"groups": [EVERYONE]}
+        rule = session.policy.scenario(body.scenario)
+        if rule is None:
+            raise HTTPException(422, f"нет такого сценария: {body.scenario}")
+        severity = body.severity or scenario_severity(rule)
         result = _server(
             session.api.post,
             "/v1/proposals",
             {
                 "scenario": body.scenario,
-                "severity": str(body.severity),
+                "severity": str(severity),
                 "drill": body.drill,
                 "action": "START",
                 "audience": audience,
@@ -675,17 +873,16 @@ def create_panel(
                 "ttl_s": body.ttl_s,
             },
         )
-        panel.remember(result["order_id"])
         return {"order_id": result["order_id"], "required": result["required_signatures"]}
 
     @app.get("/api/proposals")
     def proposals(session: Session = Depends(current)) -> dict[str, Any]:
+        # From the server, not from this panel's memory: every decision-maker, on any
+        # device, sees what is waiting, and a restart loses nothing.
+        listed = _server(session.api.get, "/v1/proposals")
         items = []
-        for order_id in list(panel.proposal_ids):
-            try:
-                proposal = session.api.get(f"/v1/proposals/{order_id}")
-            except ServerError:
-                continue
+        for proposal in listed["proposals"]:
+            order_id = proposal["order_id"]
             payload = proposal["payload"]
             items.append(
                 {
@@ -705,7 +902,6 @@ def create_panel(
     def review(order_id: str, session: Session = Depends(current)) -> dict[str, Any]:
         proposal = _server(session.api.get, f"/v1/proposals/{order_id}")
         payload = proposal["payload"]
-        panel.remember(order_id)
         rule = session.policy.rule_for(
             Severity(payload["severity"]), is_cancel=bool(payload.get("cancels"))
         )
@@ -799,12 +995,15 @@ def create_panel(
         known = names(session)
         for person in status["people"]:
             person["name"] = known.get(person["person_id"], "")
+        # Who signed it: the envelope's own signatures, named from the directory.
+        envelope = _server(session.api.get, f"/v1/orders/{order_id}")
+        status["signed_by"] = signer_names(session, envelope.get("signatures", []))
         status["now"] = session_now(panel)
         return status
 
     @app.post("/api/orders/{order_id}/cancel")
     def cancel(
-        order_id: str, body: CancelForm, session: Session = Depends(guarded)
+        order_id: str, body: CancelForm, session: Session = Depends(issuer)
     ) -> dict[str, Any]:
         """Create the stand-down proposal. Signing it is the same review-and-sign step
         as any other order -- a cancel is an order too."""
@@ -825,7 +1024,6 @@ def create_panel(
                 "cancels": order_id,
             },
         )
-        panel.remember(proposal["order_id"])
         return {"order_id": proposal["order_id"]}
 
     # --- the directory, and what goes to the custodians ------------------------------

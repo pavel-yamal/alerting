@@ -20,14 +20,17 @@ from fastapi.testclient import TestClient
 
 from alerting.clients.bundles import PinnedOrg
 from alerting.clients.keystore import save_key
-from alerting.clients.mobile.app import CSRF_HEADER, SESSION_LIFETIME_S, create_mobile
+from alerting.clients.mobile.app import CSRF_HEADER, create_mobile
+from alerting.clients.session_admin import ADMIN_HEADER, TOKEN_FILE
 from alerting.core.clock import FixedClock
 from alerting.core.signing import DOMAIN_ORDER, public_key_to_b64u, sign_payload
+from alerting.orgadmin import revoke_keys, verified_current
 from alerting.orgkit import Org
 from alerting.server.app import create_app
 from alerting.server.config import Settings
 from alerting.server.services.bootstrap import publish_org
 from tests.integration.conftest import signer_for
+from tests.integration.test_enrollment import publish
 
 PASSPHRASE = "demo"
 MOBILE = {CSRF_HEADER: "1"}
@@ -126,7 +129,7 @@ def phone(mobile_app: Any, person_id: str) -> TestClient:
 
 
 def dispatch(server: TestClient, org: Org, clock: FixedClock, **overrides: Any) -> str:
-    """Propose and sign as two real approvers, the way the panel or CLI would."""
+    """Propose and sign as two real approvers -- every order needs two."""
     body = {
         "scenario": "EVAC.BUILDING",
         "severity": "critical",
@@ -146,8 +149,6 @@ def dispatch(server: TestClient, org: Org, clock: FixedClock, **overrides: Any) 
                 "sig": sign_payload(DOMAIN_ORDER, proposal["payload"], person.private_key),
             },
         ).raise_for_status()
-        if overrides.get("severity") in ("info", "warning"):  # one signature suffices
-            break
     order_id: str = proposal["order_id"]
     return order_id
 
@@ -290,14 +291,16 @@ def test_only_executors_log_in(mobile_app):
     assert login("x-101", "wrong") == 401
     assert login("../x-101") == 400
     assert login("p-003") == 403
-    assert login("a-001") == 403
+    assert login("p-004") == 403  # the duty officer works in the panel
 
 
-def test_a_session_lasts_one_shift(mobile_app, monotonic):
+def test_a_session_has_no_lifetime(mobile_app, clock, monotonic):
     executor = phone(mobile_app, "x-101")
-    monotonic.now += SESSION_LIFETIME_S + 1
-    assert executor.get("/api/inbox").status_code == 401
-    assert mobile_app.state.mobile.sessions == {}
+    for _ in range(3):
+        clock.advance(24 * 3600)
+        monotonic.now += 24 * 3600
+        mobile_app.state.mobile.sweep()  # what the background sweeper does every 30 s
+        assert executor.get("/api/inbox").status_code == 200
 
 
 def test_an_ack_needs_the_app_header(mobile_app, server, org, clock):
@@ -346,18 +349,52 @@ def test_an_older_unanswered_order_stays_answerable(mobile_app, server, org, clo
     assert "x-101" not in status_of(server, org, clock, first)["outstanding"]
 
 
-def test_a_closed_page_does_not_keep_the_listener_past_the_shift(mobile_app, monotonic):
-    """The deadline cannot wait for a request: a closed page sends none, and its
-    listener would keep the key, reconnect and receive orders indefinitely."""
+def test_revocation_stops_a_closed_pages_listener(mobile_app, server, org, clock, monotonic):
+    """The sweeper cannot wait for a request: a closed page sends none, and its
+    listener would keep a revoked key, reconnect and receive orders indefinitely."""
     phone(mobile_app, "x-101")
     mobile = mobile_app.state.mobile
     session = next(iter(mobile.sessions.values()))
-    monotonic.now += SESSION_LIFETIME_S + 1
-    mobile.sweep()  # what the background sweeper does every 30 s
+    server.auth = signer_for(org, "p-001", clock)
+    current = verified_current(
+        server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
+    )
+    revoked, _ = revoke_keys(current, person_id="x-101", kid=None, at=clock.now(), reason="lost")
+    publish(server, org, revoked)
+    monotonic.now += 60  # past the trust-refresh interval
+    mobile.sweep()
     assert mobile.sessions == {}
     assert session.stop.is_set()
     session.thread.join(5)
     assert not session.thread.is_alive()
+
+
+def test_the_administrator_ends_a_session(homes, server, clock, monotonic, tmp_path):
+    state = tmp_path / "mobile-state"
+    app = create_mobile(
+        homes=homes,
+        server_url="http://testserver",
+        transport=server._transport,
+        connector=lambda url: InProcessSocket(server, "/v1/stream"),
+        clock=clock,
+        monotonic=monotonic,
+        state_dir=state,
+    )
+    try:
+        executor = phone(app, "x-101")
+        session = next(iter(app.state.mobile.sessions.values()))
+        admin = TestClient(app)
+        assert admin.post("/admin/sessions/end", json={"all": True}).status_code == 403
+        admin.headers[ADMIN_HEADER] = (state / TOKEN_FILE).read_text()
+        listed = admin.get("/admin/sessions").json()["sessions"]
+        assert [s["person_id"] for s in listed] == ["x-101"]
+        ended = admin.post("/admin/sessions/end", json={"person_id": "x-101"})
+        assert ended.json() == {"ended": 1}
+        assert executor.get("/api/inbox").status_code == 401
+        session.thread.join(5)
+        assert not session.thread.is_alive()
+    finally:
+        app.state.mobile.shutdown()
 
 
 def test_an_event_in_force_reaches_a_phone_that_logs_in_later(mobile_app, server, org, clock):

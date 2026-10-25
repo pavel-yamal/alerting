@@ -53,7 +53,8 @@ def test_the_shipped_examples_build_a_valid_policy():
     assert set(payload.scenarios) >= {"EVAC.BUILDING", "SHELTER.IN.PLACE", "TEST.PING"}
     evac = payload.scenarios["EVAC.BUILDING"]
     assert evac.until_cancelled is True and evac.card
-    assert payload.scenarios["TEST.PING"].until_cancelled is None
+    # Every shipped event lasts until a stand-down.
+    assert all(rule.until_cancelled for rule in payload.scenarios.values())
     assert payload.severities["critical"].launch.m == 2
 
 
@@ -61,7 +62,7 @@ def test_a_signed_policy_verifies_like_a_client_verifies_it(org):
     bundle = sign_bundle(example_policy(), DOMAIN_POLICY, org.root_private_key)
     policy = Policy.load(bundle, root_public_key=org.root_public_key, org_id="acme", min_version=2)
     assert policy.lasts_until_cancelled("EVAC.BUILDING")
-    assert not policy.lasts_until_cancelled("MUSTER")
+    assert policy.lasts_until_cancelled("MUSTER")
     assert not policy.lasts_until_cancelled("NO.SUCH")
 
 

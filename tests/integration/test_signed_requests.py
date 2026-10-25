@@ -29,7 +29,7 @@ pytestmark = pytest.mark.asyncio
 #: Reachable without a signature, by design, and restricted by IP in nginx instead.
 #: Metrics are here only because they are aggregates: no person_id, no name, no phone
 #: number, no roster. `test_metrics.py` holds that to account.
-PUBLIC_PATHS = {"/v1/healthz", "/v1/readyz", "/v1/metricsz"}
+PUBLIC_PATHS = {"/v1/healthz", "/v1/readyz", "/v1/metricsz", "/v1/feed.rss"}
 
 
 def guarded_routes(app: Any) -> list[tuple[str, str]]:
@@ -133,9 +133,9 @@ async def test_a_tampered_body_is_refused(settings, clock, org):
 
 
 async def test_a_tampered_query_string_is_refused(settings, clock, org):
-    """The auditor pages the chain with ?from_idx=…&limit=…; an unsigned query is a
+    """The audit chain is paged with ?from_idx=…&limit=…; an unsigned query is a
     query an attacker rewrites."""
-    with signing_client(settings, clock, org, "a-001") as client:
+    with signing_client(settings, clock, org, "p-001") as client:
         headers = sign_once(client, "GET", "/v1/audit", params={"from_idx": 0, "limit": 5})
         client.auth = None
         assert client.get("/v1/audit?from_idx=0&limit=500", headers=headers).status_code == 403
@@ -276,9 +276,14 @@ async def test_an_executor_can_still_do_its_own_job(executor_client):
     assert executor_client.get("/v1/policy").status_code == 200
 
 
-async def test_an_auditor_reads_the_chain_and_writes_nothing(auditor_client):
-    assert auditor_client.get("/v1/audit").status_code == 200
-    assert auditor_client.post("/v1/audit/head").status_code == 403
+async def test_the_duty_officer_watches_but_issues_nothing(duty_client):
+    """Only decision-makers propose and sign; the duty officer sees the picture."""
+    assert duty_client.get("/v1/audit").status_code == 200
+    assert duty_client.get("/v1/orders").status_code == 200
+    body = {"scenario": "TEST.PING", "severity": "info", "drill": True, "audience": {}}
+    assert duty_client.post("/v1/proposals", json=body).status_code == 403
+    signature = "/v1/proposals/00000000-0000-0000-0000-000000000000/signatures"
+    assert duty_client.post(signature, json={}).status_code == 403
 
 
 # --- the point of the whole exercise ----------------------------------------

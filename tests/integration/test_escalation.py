@@ -11,8 +11,15 @@ import pytest
 from alerting.core.envelope import AckStatus, Audience
 from alerting.core.receipts import build_ack
 from alerting.orgkit import make_order, sign_order
+from tests.integration.conftest import finite_muster_org
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.fixture
+def org():
+    # MUSTER keeps a finite life here: these tests are about that rule.
+    return finite_muster_org()
 
 
 async def dispatch(services, org, clock, **kwargs):
