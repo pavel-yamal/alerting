@@ -17,7 +17,7 @@ entry_hash = sha256(b"alerting.audit.v1\x00" + JCS(entry))
 
 ### События
 
-`proposal.created`, `proposal.signed`, `quorum.met`, `order.dispatched`,
+`proposal.created`, `proposal.signed`, `proposal.rejected`, `quorum.met`, `order.dispatched`,
 `channel.attempted`, `channel.receipt`, `ack.received`, `ack.rejected`,
 `cancel.issued`, `escalation.rung_fired`, `directory.published`, `policy.published`,
 `key.enrolled`, `key.revoked`, `drill.window.opened`, `manual.backfill`,

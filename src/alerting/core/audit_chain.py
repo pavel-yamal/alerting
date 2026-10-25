@@ -32,6 +32,8 @@ class Event(StrEnum):
 
     PROPOSAL_CREATED = "proposal.created"
     PROPOSAL_SIGNED = "proposal.signed"
+    #: A decision-maker closed a proposal unsigned; it can never become an order.
+    PROPOSAL_REJECTED = "proposal.rejected"
     QUORUM_MET = "quorum.met"
     ORDER_DISPATCHED = "order.dispatched"
     DISPATCH_NO_RECIPIENTS = "dispatch.no_recipients"

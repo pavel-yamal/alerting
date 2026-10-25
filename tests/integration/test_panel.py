@@ -406,3 +406,27 @@ def test_only_decision_makers_and_the_duty_officer_list_proposals(panel_app, ser
     server.auth = signer_for(org, "p-004", clock)
     listed = server.get("/v1/proposals").json()["proposals"]
     assert len(listed) == 1 and listed[0]["status"] == "open"
+
+
+def test_a_decision_maker_rejects_a_proposal_from_the_panel(panel_app):
+    officer = browser(panel_app, "p-003")
+    director = browser(panel_app, "p-001")
+    order_id = propose(officer)
+    sign(officer, order_id)
+
+    viewer = browser(panel_app, "p-004")  # the duty officer issues nothing
+    refused = viewer.post(f"/api/proposals/{order_id}/reject", headers=PANEL)
+    assert refused.status_code == 403
+
+    assert director.post(f"/api/proposals/{order_id}/reject", headers=PANEL).status_code == 200
+    review = director.get(f"/api/proposals/{order_id}").json()
+    assert review["status"] == "rejected"
+    assert review["rejected_by"] == "Смирнов А. В."
+    assert review["created_at"] and review["rejected_at"]
+    listed = director.get("/api/proposals").json()["proposals"]
+    assert next(p for p in listed if p["order_id"] == order_id)["status"] == "rejected"
+
+    late = director.post(
+        f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
+    )
+    assert late.status_code == 409

@@ -891,7 +891,9 @@ def create_panel(
                     "scenario": payload["scenario"],
                     "severity": payload["severity"],
                     "cancels": payload.get("cancels"),
-                    "not_valid_after": payload["not_valid_after"],
+                    # When it was proposed: it waits without a deadline, so how long it
+                    # has been waiting is what the list says.
+                    "created_at": proposal.get("created_at"),
                     "signed_by": signer_names(session, proposal["signatures"]),
                 }
             )
@@ -904,9 +906,13 @@ def create_panel(
         rule = session.policy.rule_for(
             Severity(payload["severity"]), is_cancel=bool(payload.get("cancels"))
         )
+        rejected_by = proposal.get("rejected_by")
         return {
             "order_id": order_id,
             "status": proposal["status"],
+            "created_at": proposal.get("created_at"),
+            "rejected_by": names(session).get(rejected_by, rejected_by) if rejected_by else None,
+            "rejected_at": proposal.get("rejected_at"),
             "fields": describe_payload(payload),
             # The raw payload, for a page that signs in the browser: it renders the
             # review from this very object and signs the same object, so what the
@@ -971,6 +977,14 @@ def create_panel(
             "blocking": result.get("blocking", []),
             "warnings": result.get("warnings", []),
         }
+
+    @app.post("/api/proposals/{order_id}/reject")
+    def reject_proposal(order_id: str, session: Session = Depends(issuer)) -> dict[str, Any]:
+        """Close a proposal unsigned. No digest: nothing is signed, and whatever the
+        payload says, a rejected proposal can never become an order."""
+        _server(session.api.post, f"/v1/proposals/{order_id}/reject", {})
+        log.info("panel: %s rejected %s", session.person_id, order_id)
+        return {"status": "rejected"}
 
     @app.get("/api/orders")
     def orders(session: Session = Depends(current)) -> dict[str, Any]:

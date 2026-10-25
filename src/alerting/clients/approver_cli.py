@@ -75,10 +75,19 @@ def cmd_propose(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     return 0
 
 
+def cmd_reject(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
+    """Close a proposal unsigned: it can never become an order."""
+    api.post(f"/v1/proposals/{args.order_id}/reject", {})
+    print(f"proposal {args.order_id} rejected")
+    return 0
+
+
 def cmd_show(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     proposal = api.get(f"/v1/proposals/{args.order_id}")
     payload = proposal["payload"]
     print(f"proposal {args.order_id}  [{proposal['status']}]")
+    if proposal.get("rejected_by"):
+        print(f"  rejected by {proposal['rejected_by']} at {proposal['rejected_at']}")
     print(
         f"  {'УЧЕНИЕ' if payload['drill'] else 'БОЕВОЕ'}  {payload['scenario']}"
         f"  severity={payload['severity']}  action={payload['action']}"
@@ -268,6 +277,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", parents=[shared], help="inspect a proposal")
     show.add_argument("order_id")
     show.set_defaults(func=cmd_show)
+
+    reject = sub.add_parser("reject", parents=[shared], help="close a proposal unsigned")
+    reject.add_argument("order_id")
+    reject.set_defaults(func=cmd_reject)
 
     sign_cmd = sub.add_parser("sign", parents=[shared], help="sign a proposal")
     sign_cmd.add_argument("order_id")
