@@ -395,7 +395,7 @@ async function refresh() {
   fill($("proposals"), open.length ? group(open.map((p) => cell({
     lead: leadIcon("sign", p.drill ? "" : "real"),
     title: [modeTag(p.drill), p.cancels ? "Отбой: " : "", describeScenario(p.scenario)],
-    sub: `${p.signed_by.length} ${L.plural(p.signed_by.length, "подпись", "подписи", "подписей")} · ${L.left(p.not_valid_after, now)}`,
+    sub: `${p.signed_by.length} ${L.plural(p.signed_by.length, "подпись", "подписи", "подписей")} · ${L.ago(p.created_at, now)}`,
     onclick: () => openProposal(p.order_id),
   }))) : empty("sign", "Нечего подписывать", "Новые предложения появятся здесь."));
   fill($("events"), events.events.length ? group(events.events.map((e) => cell({
@@ -484,10 +484,10 @@ async function openProposal(id) {
       ? kv("Куда", "RSS-лента" + (f.drill ? " (с пометкой «УЧЕНИЕ»)" : ""))
       : kv("Кому", audience.text, audience.everyone ? "" : "alert"),
     kv("Пояснение", f.text || "—"),
-    // Two different times: how long the event lasts, and how long this proposal
-    // waits for its signatures. They used to share one line, "Действует до 21:44".
     f.cancels ? null : kv("Действует", untilCancelled(f.scenario) ? "до отбоя" : `до ${L.time(f.not_valid_after)}`),
-    kv("Ждёт подписей", `до ${L.time(f.not_valid_after)} (${L.left(f.not_valid_after, now)})`),
+    // It waits for its signatures without a deadline; how long it has been waiting is
+    // what tells a fresh proposal from a forgotten one.
+    kv("Создано", `${L.time(view.created_at)} · ${L.ago(view.created_at, now)}`),
     f.cancels ? kv("Отменяет приказ", f.cancels) : null,
     kv("Сценарий", f.scenario),
   ];
@@ -496,7 +496,8 @@ async function openProposal(id) {
     kv("Поток / номер", f.stream), kv("Организация / политика", `${f.org_id} / ${f.policy_id}`),
   ];
 
-  const blocked = f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign || problems.length > 0;
+  const rejected = view.status === "rejected";
+  const blocked = rejected || f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign || problems.length > 0;
   const check = el("input", { type: "checkbox", class: "switch", "aria-label": "Я проверил все поля приказа" });
   const signBtn = el("button", { class: "btn " + (f.drill ? "primary" : "danger"), type: "button", disabled: "" },
     f.drill ? "Подписать учение" : "Подписать БОЕВОЙ приказ");
@@ -530,7 +531,7 @@ async function openProposal(id) {
     }
   });
 
-  const signable = view.can_sign && !view.signed_by_me;
+  const signable = view.can_sign && !view.signed_by_me && !rejected;
   const required = view.required ?? "?";
   const dots = Number.isInteger(view.required) && view.required <= 6
     ? el("div", { class: "dots" }, Array.from({ length: view.required }, (_, i) => el("i", { class: i < view.signed_by.length ? "on" : "" })))
@@ -539,7 +540,8 @@ async function openProposal(id) {
     el("div", { class: "hero-card " + (f.drill ? "drill" : "real") },
       el("div", { class: "mode" }, (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — РЕАЛЬНОЕ ОПОВЕЩЕНИЕ")),
       el("div", { class: "what" }, describeScenario(f.scenario)),
-      el("div", { class: "meta" }, view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР")),
+      el("div", { class: "meta" }, rejected ? "Предложение отклонено" : view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР")),
+    rejected ? msg("warn", el("b", {}, `Отклонил${view.rejected_by ? ": " + view.rejected_by : "и"}`), `, ${L.time(view.rejected_at)}. Подписать нельзя; если оно нужно — создайте новое.`) : null,
     audience.everyone || rssOnly() ? null : msg("err", el("b", {}, "Необычные получатели: "), audience.text, ". Проверьте, прежде чем подписывать."),
     f.unexpected_fields.length ? msg("err", el("b", {}, "В приказе есть поля, которые экран не показывает: "), f.unexpected_fields.join(", "), ". Не подписывайте.") : null,
     problems.length ? msg("err", el("b", {}, "Подписать нельзя: "), problems.join("; "), ".") : null,
@@ -556,7 +558,32 @@ async function openProposal(id) {
       el("label", { class: "confirm" }, el("span", {}, "Я проверил все поля приказа"), check),
       signBtn,
       el("div", { class: "hint" }, `Подпись ставит ключ этого телефона после ${biometryName()} — над показанными полями.`)) : null,
+    me.can_issue && !rejected ? el("div", { class: "list-gap" },
+      el("button", { type: "button", class: "btn tinted-danger", onclick: () => askReject(id) }, "Отклонить предложение…")) : null,
   );
+}
+
+// Closing a proposal unsigned: one decision-maker is enough, it stops something.
+function askReject(id) {
+  sheet((close) => {
+    const out = el("div");
+    const go = el("button", { type: "button", class: "btn danger" }, "Отклонить");
+    go.addEventListener("click", () => busy(go, async () => {
+      try {
+        await api(`/api/proposals/${encodeURIComponent(id)}/reject`, { method: "POST" });
+        close();
+        toast("Предложение отклонено");
+        refresh().catch(() => {});
+        openProposal(id);
+      } catch (error) { out.replaceChildren(msg("err", errorText(error))); }
+    }));
+    return [
+      el("h2", {}, "Отклонить предложение?"),
+      el("p", { class: "sheet-text" }, "Подписать его больше не сможет никто. Если оно всё-таки нужно — создайте новое."),
+      out, go,
+      el("button", { type: "button", class: "btn", onclick: close }, "Отмена"),
+    ];
+  });
 }
 
 async function openOrder(id) {

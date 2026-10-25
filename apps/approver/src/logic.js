@@ -101,10 +101,15 @@ const VAULT_ERRORS = {
   function time(ts) {
     return ts ? new Date(ts * 1000).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" }) : "—";
   }
-  function left(until, now) {
-    const s = until - now;
-    if (s <= 0) return "истёк";
-    return s >= 60 ? `ещё ${Math.floor(s / 60)} мин` : `ещё ${s} с`;
+  // How long ago: a proposal waits for its signatures without a deadline, so its age
+  // is what tells a fresh one from one left over from last week.
+  function ago(ts, now) {
+    if (!ts) return "—";
+    const s = Math.max(0, now - ts);
+    if (s < 60) return "только что";
+    if (s < 3600) return `${Math.floor(s / 60)} мин назад`;
+    if (s < 86400) return `${Math.floor(s / 3600)} ч назад`;
+    return `${Math.floor(s / 86400)} дн. назад`;
   }
 
   // ---- how things read on screen ------------------------------------------------
@@ -137,7 +142,7 @@ const VAULT_ERRORS = {
   const api = {
     SEVERITY, SEVERITY_ORDER, ACTION, ACK, PERSON_ID, RENEW_WHEN_LEFT_S, VAULT_ERRORS, UNSUPPORTED_PHONE,
     normalizePanelUrl, requestHeaders, needsRenewal, audienceSummary,
-    vaultMessage, isCancel, openProposals, blockingText, time, left,
+    vaultMessage, isCancel, openProposals, blockingText, time, ago,
     keyShort, initials, plural, ackTone,
   };
   root.ApproverLogic = api;

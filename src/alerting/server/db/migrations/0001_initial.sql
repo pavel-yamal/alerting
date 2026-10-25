@@ -46,7 +46,7 @@ CREATE TABLE proposals (
     payload_json text   NOT NULL,
     created_at   bigint NOT NULL,
     created_by   text   NOT NULL,
-    status       text   NOT NULL DEFAULT 'open',  -- open | dispatched | abandoned
+    status       text   NOT NULL DEFAULT 'open',  -- open | dispatched | rejected (0008)
     UNIQUE (stream_id, seq)
 );
 

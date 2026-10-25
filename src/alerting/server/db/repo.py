@@ -248,6 +248,34 @@ class Repo:
     def set_proposal_status(self, order_id: str, status: str) -> None:
         self._execute("UPDATE proposals SET status = %s WHERE order_id = %s", (status, order_id))
 
+    def claim_proposal(self, order_id: str) -> bool:
+        """Open -> dispatched in one statement, before the order goes out.
+
+        False if it is not open any more: rejected a moment ago, or claimed by the
+        other last signature arriving at the same time. Checking the status first and
+        updating it after the dispatch would let a rejection land in between and be
+        reported as done for an order that went out anyway.
+        """
+        return (
+            self._execute(
+                "UPDATE proposals SET status = 'dispatched'"
+                " WHERE order_id = %s AND status = 'open'",
+                (order_id,),
+            )
+            == 1
+        )
+
+    def reject_proposal(self, order_id: str, person_id: str, at: int) -> bool:
+        """Open -> rejected in one statement; False if it is not open any more."""
+        return (
+            self._execute(
+                "UPDATE proposals SET status = 'rejected', rejected_by = %s, rejected_at = %s"
+                " WHERE order_id = %s AND status = 'open'",
+                (person_id, at, order_id),
+            )
+            == 1
+        )
+
     def add_signature(self, order_id: str, key_id: str, sig: str, observed_at: int) -> None:
         self._execute(
             "INSERT INTO signatures (order_id, key_id, sig, observed_at)"

@@ -150,6 +150,8 @@ async def list_proposals(request: Request) -> dict[str, Any]:
                 "order_id": row["order_id"],
                 "status": row["status"],
                 "created_at": row["created_at"],
+                "rejected_by": row["rejected_by"],
+                "rejected_at": row["rejected_at"],
                 "payload": json.loads(row["payload_json"]),
                 "signatures": [
                     {"key_id": s["key_id"], "observed_at": s["observed_at"]}
@@ -173,6 +175,9 @@ async def get_proposal(order_id: str, request: Request) -> dict[str, Any]:
     return {
         "order_id": order_id,
         "status": row["status"],
+        "created_at": row["created_at"],
+        "rejected_by": row["rejected_by"],
+        "rejected_at": row["rejected_at"],
         "payload": json.loads(row["payload_json"]),
         "signatures": [
             {"key_id": s["key_id"], "observed_at": s["observed_at"]} for s in signatures
@@ -226,8 +231,17 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
             "blocking": [str(r) for r in decision.reasons],
         }
 
-    result = await app.dispatcher.dispatch(envelope)
-    app.repo.set_proposal_status(order_id, "dispatched")
+    # Claimed before it goes out, in one statement: a rejection or the other last
+    # signature arriving at the same moment finds it no longer open.
+    if not app.repo.claim_proposal(order_id):
+        now_row = app.repo.proposal(order_id)
+        raise HTTPException(409, f"proposal is {now_row['status'] if now_row else 'gone'}")
+    try:
+        result = await app.dispatcher.dispatch(envelope)
+    except BaseException:
+        # Nothing went out: it is open again, for the next signature to retry.
+        app.repo.set_proposal_status(order_id, "open")
+        raise
     warnings = [str(w) for w in decision.warnings]
     if result.reached_nobody:
         warnings.append("reached_nobody")
@@ -241,3 +255,20 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
         "reached_nobody": result.reached_nobody,
         "warnings": warnings,
     }
+
+
+@router.post("/{order_id}/reject")
+async def reject_proposal(order_id: str, request: Request) -> dict[str, Any]:
+    """Close a proposal unsigned. Any decision-maker may: a proposal waits for its
+    signatures without a deadline, so one nobody wants must be closable rather than
+    left one careless signature away from going out."""
+    app = request.app.state.alerting
+    if app.repo.proposal(order_id) is None:
+        raise HTTPException(404, "no such proposal")
+    person_id = request.state.principal.person_id
+    now = app.clock.now()
+    if not app.repo.reject_proposal(order_id, person_id, now):
+        row = app.repo.proposal(order_id)
+        raise HTTPException(409, f"proposal is {row['status'] if row else 'gone'}")
+    app.audit.append(Event.PROPOSAL_REJECTED, {"order_id": order_id, "rejected_by": person_id})
+    return {"order_id": order_id, "status": "rejected", "rejected_by": person_id}

@@ -34,10 +34,15 @@ const $ = (id) => document.getElementById(id);
 // `condition ? node : null`, so they are filtered out here.
 const fill = (node, ...kids) => node.replaceChildren(...kids.flat().filter((k) => k != null && k !== false));
 const time = (ts) => ts ? new Date(ts * 1000).toLocaleTimeString("ru-RU") : "—";
-const left = (until) => {
-  const s = until - now;
-  if (s <= 0) return "истёк";
-  return s >= 60 ? `ещё ${Math.floor(s / 60)} мин` : `ещё ${s} с`;
+// How long ago: a proposal waits for its signatures without a deadline, so its age
+// is what tells a fresh one from one left over from last week.
+const ago = (ts) => {
+  if (!ts) return "—";
+  const s = Math.max(0, now - ts);
+  if (s < 60) return "только что";
+  if (s < 3600) return `${Math.floor(s / 60)} мин назад`;
+  if (s < 86400) return `${Math.floor(s / 3600)} ч назад`;
+  return `${Math.floor(s / 86400)} дн. назад`;
 };
 const modeTag = (drill) => el("span", { class: "tag " + (drill ? "drill" : "real") }, drill ? "УЧЕНИЕ" : "БОЕВОЕ");
 const msg = (kind, text) => el("div", { class: "msg " + kind }, text);
@@ -247,7 +252,7 @@ async function refreshLists() {
   const open = proposals.proposals.filter((p) => p.status === "open");
   $("proposals").replaceChildren(...(open.length ? open.map((p) =>
     item(p.order_id, () => openProposal(p.order_id), [modeTag(p.drill), p.cancels ? "Отбой: " : "", describe(p.scenario)],
-      `подписей: ${p.signed_by.length} · ${left(p.not_valid_after)}`))
+      `подписей: ${p.signed_by.length} · создано ${ago(p.created_at)}`))
     : [el("div", { class: "empty" }, "Нет.")]));
   $("orders").replaceChildren(...(orders.orders.length ? orders.orders.map((o) =>
     item(o.order_id, () => openOrder(o.order_id),
@@ -295,7 +300,7 @@ async function openProposal(id) {
       : ["Кому", everyone ? `все${f.drill ? "" : " и публичная RSS-лента"}` : unusual],
     ["Пояснение", f.text || "—"],
     f.cancels ? null : ["Действует", (meta.scenarios.find((x) => x.code === f.scenario) || {}).until_cancelled ? "до отбоя" : `до ${time(f.not_valid_after)}`],
-    ["Ждёт подписей", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
+    ["Создано", `${time(view.created_at)} (${ago(view.created_at)}) — ждёт подписей без срока`],
     f.cancels ? ["Отменяет приказ", f.cancels] : null,
   ].filter(Boolean);
   // Still every signed field -- just the technical ones folded away.
@@ -308,7 +313,21 @@ async function openProposal(id) {
   const check = el("input", { type: "checkbox", id: "reviewed" });
   const signBtn = el("button", { class: f.drill ? "primary" : "danger", type: "button", disabled: "" }, "Подписать");
   const out = el("div");
-  const blocked = f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign || problems.length > 0;
+  const rejected = view.status === "rejected";
+  const blocked = rejected || f.unexpected_fields.length > 0 || view.signed_by_me || !view.can_sign || problems.length > 0;
+  const rejectBtn = el("button", { type: "button", class: "danger-outline" }, "Отклонить");
+  rejectBtn.addEventListener("click", async () => {
+    if (!confirm("Отклонить предложение? Подписать его больше будет нельзя никому. Если оно всё-таки нужно — создайте новое.")) return;
+    rejectBtn.disabled = true;
+    try {
+      await api(`/api/proposals/${encodeURIComponent(id)}/reject`, { method: "POST" });
+      await refreshLists();
+      openProposal(id);
+    } catch (error) {
+      out.replaceChildren(msg("err", error.message));
+      rejectBtn.disabled = false;
+    }
+  });
   check.addEventListener("change", () => { signBtn.disabled = !check.checked || blocked; });
   signBtn.addEventListener("click", async () => {
     signBtn.disabled = true;
@@ -336,7 +355,8 @@ async function openProposal(id) {
   fill(detail,
     el("div", { class: "banner " + (f.drill ? "drill" : "real") },
       (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — реальное оповещение")),
-    el("h2", {}, view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР"),
+    el("h2", {}, rejected ? "Предложение отклонено" : view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР"),
+    rejected ? msg("warn", `Отклонил${view.rejected_by ? ": " + view.rejected_by : "и"}, ${time(view.rejected_at)}. Подписать его нельзя; если оно нужно — создайте новое.`) : null,
     everyone ? null : msg("err", `Необычные получатели: ${unusual}. Панель так не делает — проверьте, прежде чем подписывать.`),
     table(rows),
     el("details", { class: "more" }, el("summary", {}, "Технические поля"), table(technical)),
@@ -346,9 +366,10 @@ async function openProposal(id) {
     el("h3", {}, `Подписи: ${view.signed_by.length} из ${view.required ?? "?"}`),
     view.signed_by.length ? el("ul", {}, view.signed_by.map((s) => el("li", {}, s))) : el("div", { class: "empty" }, "Пока никто не подписал."),
     view.signed_by_me ? msg("warn", "Вы уже подписали этот приказ. Нужна подпись другого человека.") : null,
-    view.can_sign && !view.signed_by_me ? el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")) : null,
-    el("div", { class: "row" }, view.can_sign && !view.signed_by_me ? signBtn : null,
-      el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить")),
+    view.can_sign && !view.signed_by_me && !rejected ? el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")) : null,
+    el("div", { class: "row" }, view.can_sign && !view.signed_by_me && !rejected ? signBtn : null,
+      el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить"),
+      me.can_issue && !rejected ? rejectBtn : null),
     el("div", { class: "hint" }, "ID: ", el("code", {}, id)),
     out,
   );
