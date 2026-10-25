@@ -39,7 +39,7 @@ npm install
 npm test                 # правила приложения и что оно не должно содержать
 npm run build            # www/ — страница, которая уезжает внутрь приложения
 npx cap add ios          # уже сделано: ios/ в репозитории (docs/15)
-npx cap add android      # один раз
+npx cap add android      # уже сделано: android/ в репозитории (docs/16)
 npm run sync             # build + cap sync + native-setup
 npx cap open ios         # / npx cap open android — подпись сборки и выпуск
 ```
@@ -49,7 +49,8 @@ npx cap open ios         # / npx cap open android — подпись сборк�
 не попадает в снимки экрана и в список приложений).
 
 Иконку и заставку рисует `python3 scripts/icons.py` (Pillow). Выпуск в App Store,
-демо-стенд для ревьюера и ответы App Store Connect — **docs/15-ios-review.md**.
+демо-стенд для ревьюера и ответы App Store Connect — **docs/15-ios-review.md**,
+выпуск в Google Play — **docs/16-android-release.md**.
 Политика конфиденциальности открыта без входа: `<панель>/privacy`, ссылка на неё —
 на экранах подключения и входа (оператор и контакт — `ALERTING_ORG_LABEL`,
 `ALERTING_PANEL_PRIVACY_CONTACT`).
@@ -59,7 +60,7 @@ npx cap open ios         # / npx cap open android — подпись сборк�
 > `test/shipping.test.mjs` это проверяет.
 
 > ⚠️ **Перед выпуском проверить на устройстве**, а не только в эмуляторе: WebCrypto
-> Ed25519 в WebView (iOS 17+, свежий Android System WebView), запрос Face ID без
+> Ed25519 в WebView (iOS 17+, Android 11+ со свежим Android System WebView), запрос Face ID без
 > кнопки «Ввести пароль», недоступность ключа после добавления отпечатка.
 
 ## Регистрация телефона ЛПР

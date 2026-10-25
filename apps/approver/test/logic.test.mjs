@@ -110,3 +110,9 @@ test("a key generated for the vault signs after the round trip, and only signs",
   const sig = await D.sign(key, "order", payload);
   assert.equal(await D.verify(made.public_key, "order", payload, sig), true);
 });
+
+test("an unsupported phone is told what to update, not which browser to install", () => {
+  assert.match(L.UNSUPPORTED_PHONE, /iOS 17/);
+  assert.match(L.UNSUPPORTED_PHONE, /Android System WebView/);
+  assert.doesNotMatch(L.UNSUPPORTED_PHONE, /браузер/);
+});

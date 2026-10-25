@@ -481,7 +481,8 @@ document.addEventListener("visibilitychange", () => {
 
 // ---- boot --------------------------------------------------------------------------
 (async () => {
-  const problem = await DeviceKey.supported();
+  // The panel's wording speaks of browsers; inside the app the cure is the phone's.
+  const problem = (await DeviceKey.supported()) && L.UNSUPPORTED_PHONE;
   if (problem) {
     fill($("fatal"), msg("err", problem));
     $("fatal").classList.remove("hidden");

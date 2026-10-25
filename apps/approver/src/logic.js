@@ -71,7 +71,12 @@
 
   // The vault's refusals in words the person can act on. The codes come from the
   // native plugin (plugins/device-vault).
-  const VAULT_ERRORS = {
+  // Shown at launch when the WebView cannot sign with Ed25519 (docs/16, docs/15).
+const UNSUPPORTED_PHONE =
+  "Этот телефон не умеет подписи Ed25519. Нужен iOS 17 и новее либо Android 11 и новее " +
+  "со свежим Android System WebView — обновите его в Google Play и откройте приложение снова.";
+
+const VAULT_ERRORS = {
     cancelled: "Подтверждение отменено — ничего не подписано.",
     failed: "Биометрия не подтверждена.",
     locked: "Биометрия заблокирована после неудачных попыток. Разблокируйте телефон код-паролем и попробуйте снова.",
@@ -111,7 +116,7 @@
   }
 
   const api = {
-    SEVERITY, SEVERITY_ORDER, ACTION, ACK, PERSON_ID, RENEW_WHEN_LEFT_S, VAULT_ERRORS,
+    SEVERITY, SEVERITY_ORDER, ACTION, ACK, PERSON_ID, RENEW_WHEN_LEFT_S, VAULT_ERRORS, UNSUPPORTED_PHONE,
     normalizePanelUrl, requestHeaders, needsRenewal, audienceSummary, allowedSeverities,
     vaultMessage, isCancel, openProposals, blockingText, time, left,
   };

@@ -112,3 +112,44 @@ test("no panel address is built in: the person types the one their organisation 
     assert.doesNotMatch(read("src", file), /https:\/\/[a-z0-9-]+\.[a-z0-9.-]+/i, file);
   }
 });
+
+// ---- the Android project, as Google Play sees it (docs/16-android-release.md) ----
+
+const manifest = read("android", "app", "src", "main", "AndroidManifest.xml");
+const appGradle = read("android", "app", "build.gradle");
+const variables = read("android", "variables.gradle");
+
+test("android: application id matches the app id", () => {
+  assert.match(appGradle, /applicationId "me\.yamal\.alert"/);
+  assert.match(appGradle, /namespace = "me\.yamal\.alert"/);
+});
+
+test("android: nothing goes to backups or to a new phone", () => {
+  assert.match(manifest, /android:allowBackup="false"/);
+  assert.match(manifest, /android:dataExtractionRules="@xml\/data_extraction_rules"/);
+  const rules = read("android", "app", "src", "main", "res", "xml", "data_extraction_rules.xml");
+  assert.match(rules, /<cloud-backup>[\s\S]*<exclude domain="sharedpref"/);
+  assert.match(rules, /<device-transfer>[\s\S]*<exclude domain="sharedpref"/);
+});
+
+test("android: Android 11+, where the key is always bound to strong biometrics per use", () => {
+  assert.equal(Number(variables.match(/minSdkVersion = (\d+)/)[1]), 30);
+});
+
+test("android: screenshots of the signing screen are blocked", () => {
+  assert.match(read("android", "app", "src", "main", "java", "me", "yamal", "alert", "MainActivity.java"), /FLAG_SECURE/);
+});
+
+test("android: the release is signed only from a keystore outside git", () => {
+  assert.match(appGradle, /rootProject\.file\('keystore\.properties'\)/);
+  assert.match(read("android", ".gitignore"), /^keystore\.properties$/m);
+  assert.doesNotMatch(appGradle, /storePassword ['"]/, "no password in the build file");
+});
+
+test("android: own launcher icons, not Capacitor's", () => {
+  const png = readFileSync(join(app, "android", "app", "src", "main", "res", "mipmap-xxxhdpi", "ic_launcher_foreground.png"));
+  assert.equal(png.readUInt32BE(16), 432, "108 dp at xxxhdpi");
+  assert.equal(png[25], 6, "adaptive foreground has an alpha channel");
+  const play = readFileSync(join(app, "store", "play-icon-512.png"));
+  assert.equal(play.readUInt32BE(16), 512);
+});

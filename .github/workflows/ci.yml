@@ -91,6 +91,32 @@ jobs:
           ALERTING_DSN_FILE=/tmp/dsn-owner deploy/backup/alerting-backup.sh
           deploy/backup/alerting-restore-drill.sh "$(ls -d /tmp/alerting-backups/*/ | head -1)"
 
+  # The approver app's native side for Android: the Keystore/biometrics plugin must
+  # compile against the Capacitor it ships with (docs/16-android-release.md).
+  # ubuntu-latest carries the Android SDK. The iOS side needs macOS and Xcode.
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/approver
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/approver/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: npm ci
+      - run: npm test
+      - run: npm run build && npx cap sync android
+      - name: Build and lint
+        working-directory: apps/approver/android
+        run: ./gradlew --no-daemon assembleDebug bundleRelease lint
+
   audit-deps:
     runs-on: ubuntu-latest
     steps:
