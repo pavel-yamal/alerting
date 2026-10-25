@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
 <!-- The page is the app's own bundle and nothing else runs here: no inline script,
      no script from the network, no eval (docs/adr/0016). It talks only to the panel
      the person entered, over https. -->
@@ -12,99 +13,150 @@
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
-<div id="demo-banner" class="demo-banner hidden">ДЕМО-СТЕНД · вымышленная организация, оповещения не уходят реальным людям</div>
+<div id="demo-banner" class="demo-banner hidden"><b>ДЕМО-СТЕНД</b> · оповещения не уходят реальным людям</div>
 
 <!-- 1. Which panel. Asked once; changing it means a new key (the key is made for an organisation). -->
-<section id="setup" class="screen hidden">
-  <h1>Оповещение ЛПР</h1>
-  <p class="hint">Приложение для лиц, принимающих решение: проверка и подпись приказов ключом этого телефона под Face ID или отпечатком.</p>
+<section id="setup" class="screen onboarding hidden">
+  <div class="hero">
+    <svg class="logo" viewBox="0 0 100 100" aria-hidden="true"><use href="#logo"/></svg>
+    <h1>Оповещение ЛПР</h1>
+    <p class="lead">Проверка и подпись приказов ключом этого телефона под Face ID или отпечатком.</p>
+  </div>
   <form id="setup-form">
-    <label for="panel-url">Адрес панели</label>
-    <input id="panel-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" placeholder="https://" required>
-    <button class="primary" type="submit">Подключиться</button>
+    <div class="group">
+      <label class="field" for="panel-url"><span>Адрес панели</span>
+        <input id="panel-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="panel.организация.ru" required>
+      </label>
+    </div>
+    <p class="footnote">Адрес даёт ваша организация. Приложение работает только по https.</p>
+    <div id="setup-msg"></div>
+    <div class="bottom-actions"><button class="btn primary" type="submit">Подключиться</button></div>
   </form>
-  <div id="setup-msg"></div>
-  <p class="hint"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
+  <p class="footnote center"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
 </section>
 
 <!-- 2. Login: unlock the key with biometrics, sign the session delegation. -->
-<section id="login" class="screen hidden">
-  <h1>Вход</h1>
-  <div class="hint" id="login-panel"></div>
-  <div id="login-keys"></div>
+<section id="login" class="screen onboarding hidden">
+  <div class="hero compact">
+    <svg class="logo small" viewBox="0 0 100 100" aria-hidden="true"><use href="#logo"/></svg>
+    <h1>Вход</h1>
+    <p class="lead" id="login-panel"></p>
+  </div>
   <div id="login-msg"></div>
-
-  <details id="enroll" class="more">
-    <summary>Зарегистрировать этот телефон</summary>
-    <p class="hint">Ключ создаётся на телефоне и не покидает его. Публичную часть передайте регистрирующему лично; войти получится, когда хранители внесут ключ в справочник.</p>
-    <form id="enroll-form">
-      <div id="enroll-person-row">
-        <label for="enroll-person">Ваш идентификатор в справочнике</label>
-        <input id="enroll-person" autocomplete="off" autocapitalize="off" placeholder="p-010" required>
-      </div>
-      <button class="primary" type="submit">Создать ключ</button>
-    </form>
-    <div id="enroll-msg"></div>
-  </details>
-  <button id="change-panel" type="button" class="link">Сменить панель</button>
-  <p class="hint"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
+  <div id="login-keys"></div>
+  <div id="enroll-entry"></div>
+  <div id="enroll-msg"></div>
+  <div class="footer-links">
+    <button id="change-panel" type="button" class="btn plain">Сменить панель</button>
+    <p class="footnote center"><a class="privacy-link" target="_blank" rel="noopener">Политика конфиденциальности</a></p>
+  </div>
 </section>
 
 <!-- 3. The work: what waits for my signature, what is in force, what was sent. -->
-<section id="main" class="screen hidden">
-  <header>
-    <div>
-      <div id="who" class="who"></div>
-      <div id="renew-note"></div>
-    </div>
-    <button id="logout" type="button">Выйти</button>
+<section id="main" class="screen tabbed hidden">
+  <header class="largebar">
+    <h1 id="tab-title">На подпись</h1>
+    <button id="account" type="button" class="avatar" aria-label="Аккаунт"></button>
   </header>
-  <nav class="tabs">
-    <button type="button" data-tab="sign" class="active">На подпись <span id="sign-count" class="count hidden"></span></button>
-    <button type="button" data-tab="events">Действуют</button>
-    <button type="button" data-tab="orders">Разосланные</button>
-    <button type="button" data-tab="new">Новый</button>
-  </nav>
-  <div id="tab-sign" class="tab"><div id="proposals" class="list"></div></div>
-  <div id="tab-events" class="tab hidden"><div id="events" class="list"></div></div>
-  <div id="tab-orders" class="tab hidden"><div id="orders" class="list"></div></div>
+  <div id="renew-note"></div>
+  <div id="tab-sign" class="tab"><div id="proposals"></div></div>
+  <div id="tab-events" class="tab hidden"><div id="events"></div></div>
+  <div id="tab-orders" class="tab hidden"><div id="orders"></div></div>
   <div id="tab-new" class="tab hidden">
     <form id="new-form">
-      <h2>Что случилось</h2>
-      <div id="scenarios" class="choices"></div>
-      <div id="scenario-hint" class="hint"></div>
-      <h2>Режим</h2>
-      <div class="choices two">
-        <label class="choice"><input type="radio" name="drill" value="true">Учение</label>
-        <label class="choice real"><input type="radio" name="drill" value="false">Боевое</label>
+      <div class="section-title">Что случилось</div>
+      <div id="scenarios" class="group"></div>
+      <p id="scenario-hint" class="footnote"></p>
+      <div class="section-title">Режим</div>
+      <div class="segmented">
+        <label><input type="radio" name="drill" value="true"><span>Учение</span></label>
+        <label class="real"><input type="radio" name="drill" value="false"><span>Боевое</span></label>
       </div>
       <div id="severity-row">
-        <label for="severity">Уровень</label>
-        <select id="severity"></select>
+        <div class="section-title">Уровень</div>
+        <div id="severity" class="group"></div>
       </div>
-      <label for="text">Пояснение для людей</label>
-      <textarea id="text" maxlength="1000" rows="3" placeholder="Без персональных данных: боевые оповещения попадают в публичную RSS-ленту"></textarea>
-      <label for="ttl">Предложение ждёт подписей</label>
-      <select id="ttl">
-        <option value="600">10 минут</option>
-        <option value="900" selected>15 минут</option>
-        <option value="1800">30 минут</option>
-        <option value="3600">1 час</option>
-      </select>
+      <div class="section-title">Пояснение для людей</div>
+      <div class="group"><textarea id="text" maxlength="1000" rows="3" placeholder="Что происходит и что делать"></textarea></div>
+      <p class="footnote">Без персональных данных: боевые оповещения попадают в публичную RSS-ленту.</p>
+      <div class="section-title">Предложение ждёт подписей</div>
+      <div id="ttl" class="segmented">
+        <label><input type="radio" name="ttl" value="600"><span>10 мин</span></label>
+        <label><input type="radio" name="ttl" value="900" checked><span>15 мин</span></label>
+        <label><input type="radio" name="ttl" value="1800"><span>30 мин</span></label>
+        <label><input type="radio" name="ttl" value="3600"><span>1 час</span></label>
+      </div>
       <div id="summary" class="summary"></div>
-      <button class="primary" type="submit">Создать предложение</button>
       <div id="new-msg"></div>
+      <div class="sticky-actions"><button class="btn primary" type="submit">Создать предложение</button></div>
     </form>
   </div>
+  <nav class="tabbar">
+    <button type="button" data-tab="sign" class="active">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6.5 15.5 16 6a2.1 2.1 0 0 1 3 3l-9.5 9.5L5 19.5l1.5-4Z"/></svg>
+      <span>На подпись</span><b id="sign-count" class="badge hidden"></b>
+    </button>
+    <button type="button" data-tab="events">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 10a6 6 0 0 1 12 0c0 5 2 6.5 2 6.5H4S6 15 6 10ZM10 20a2.2 2.2 0 0 0 4 0"/></svg>
+      <span>Действуют</span>
+    </button>
+    <button type="button" data-tab="orders">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+      <span>История</span>
+    </button>
+    <button type="button" data-tab="new">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 8v8M8 12h8"/></svg>
+      <span>Создать</span>
+    </button>
+  </nav>
 </section>
 
 <!-- 4. One proposal or order, full screen over the tabs. -->
 <section id="detail" class="screen hidden">
-  <button id="back" type="button" class="link">‹ Назад</button>
+  <div class="navbar">
+    <button id="back" type="button" class="back">Назад</button>
+    <div id="detail-title" class="navtitle"></div>
+  </div>
   <div id="detail-body"></div>
 </section>
 
+<!-- Parked here while no sheet shows it: the enrolment form, opened from the login screen. -->
+<div id="parked" class="hidden">
+  <form id="enroll-form">
+    <h2>Регистрация телефона</h2>
+    <p class="sheet-text">Ключ создаётся на телефоне и не покидает его. Публичную часть вы передадите регистрирующему лично; войти получится, когда хранители внесут ключ в справочник.</p>
+    <div id="enroll-person-row" class="group">
+      <label class="field" for="enroll-person"><span>Ваш идентификатор в справочнике</span>
+        <input id="enroll-person" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="p-010" required>
+      </label>
+    </div>
+    <div id="enroll-err"></div>
+    <button class="btn primary" type="submit">Создать ключ</button>
+  </form>
+</div>
+
 <div id="fatal" class="hidden"></div>
+
+<!-- Icons the script clones for empty lists and warnings; and the logo. -->
+<svg class="sprite" aria-hidden="true">
+  <symbol id="logo" viewBox="0 0 100 100">
+    <defs>
+      <linearGradient id="logo-bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ff5f57"/><stop offset="1" stop-color="#d62034"/></linearGradient>
+    </defs>
+    <rect width="100" height="100" rx="22.5" fill="url(#logo-bg)"/>
+    <path d="M50 20.5c-7 3.5-15.5 5.8-23 6.4v18.7c0 14.3 9.2 24.2 23 30 13.8-5.8 23-15.7 23-30V26.9c-7.5-.6-16-2.9-23-6.4Z" fill="#fff"/>
+    <rect x="45.9" y="33" width="8.2" height="23" rx="4.1" fill="#e0303f"/>
+    <circle cx="50" cy="65" r="4.8" fill="#e0303f"/>
+  </symbol>
+</svg>
+<template id="icons">
+  <svg data-icon="sign" viewBox="0 0 24 24"><path d="M4 20h16M6.5 15.5 16 6a2.1 2.1 0 0 1 3 3l-9.5 9.5L5 19.5l1.5-4Z"/></svg>
+  <svg data-icon="calm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-4.9"/></svg>
+  <svg data-icon="history" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+  <svg data-icon="alert" viewBox="0 0 24 24"><path d="M10.3 4.6 3.2 17a2 2 0 0 0 1.7 3h14.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0ZM12 9.5v4M12 16.8v.1"/></svg>
+  <svg data-icon="key" viewBox="0 0 24 24"><circle cx="8" cy="14" r="4"/><path d="m11 11 8.5-8.5M16 6l2.5 2.5M14 8l2 2"/></svg>
+  <svg data-icon="phone" viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>
+</template>
 
 <script src="devicekey.js"></script>
 <script src="logic.js"></script>

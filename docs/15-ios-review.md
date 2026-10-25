@@ -12,7 +12,7 @@
 | Строка назначения Face ID (`NSFaceIDUsageDescription`) | `ios/App/App/Info.plist` | `test/shipping.test.mjs` |
 | Ответ про шифрование в сборке (`ITSAppUsesNonExemptEncryption = NO`) | там же | там же |
 | Манифест приватности `PrivacyInfo.xcprivacy`: без отслеживания, UserID/Name/контент — для работы приложения; UserDefaults, причина `CA92.1` | `ios/App/App/PrivacyInfo.xcprivacy`, в ресурсах цели | там же |
-| Иконка 1024×1024 без прозрачности, своя заставка | `scripts/icons.py` → `Assets.xcassets`, `store/icon-1024.png` | там же |
+| Иконка 1024×1024 без прозрачности (плюс тёмная и tinted для iOS 18), своя заставка | `scripts/icons.py` → `Assets.xcassets`, `store/icon-1024.png` | там же |
 | iPhone и iPad (`TARGETED_DEVICE_FAMILY = "1,2"`) | `project.pbxproj` | там же |
 | iOS 17+ (Ed25519 в WebCrypto) | `IPHONEOS_DEPLOYMENT_TARGET = 17.0` | там же |
 | Bundle ID `me.yamal.alert` | `capacitor.config.json`, `project.pbxproj` | там же |
@@ -71,7 +71,7 @@ TLS снимает обратный прокси) и открыть `/privacy` �
   Биометрию приложение **не собирает** — её проверяет система. Ответы обязаны
   совпадать с `PrivacyInfo.xcprivacy` и с `/privacy`.
 - **Скриншоты:** iPhone 6,9″ (1320×2868) и iPad 13″ (2064×2752) — экраны входа,
-  «На подпись», карточка учебного приказа, «Новый». Делать на демо-стенде: полоса
+  «На подпись», карточка учебного приказа, «Создать». Делать на демо-стенде: полоса
   «Демо-стенд» на снимке допустима и честна.
 
 ### Review notes (вставить как есть)
@@ -86,10 +86,11 @@ that enrols any device automatically.
    then tap "Подключиться" (Connect).
 2. Open "Зарегистрировать этот телефон" (Register this phone) and tap
    "Создать ключ" (Create key). The stand enrols the phone as "Демо-ЛПР N".
-3. Tap "Войти" (Sign in) and confirm with Face ID.
-4. Tab "Новый" (New): choose "Технический тест канала" (TEST.PING), mode
-   "Учение" (Drill), tap "Создать предложение", then open it, tick the check box
-   and tap "Подписать учение" (Sign drill), confirm with Face ID. A drill of this
+3. Tap "Войти с Face ID" (Sign in) and confirm with Face ID.
+4. Tab "Создать" (Create): choose "Технический тест канала" (TEST.PING), mode
+   "Учение" (Drill), tap "Создать предложение". The proposal opens: turn on the
+   switch "Я проверил все поля приказа" (I have checked all fields) and tap
+   "Подписать учение" (Sign drill), confirm with Face ID. A drill of this
    level needs one signature and is dispatched to fictional recipients.
    Critical scenarios need two different decision-makers and stay in
    "На подпись" (Awaiting signature) — this is intended.
@@ -97,7 +98,7 @@ that enrols any device automatically.
 Face ID is required: the signing key is stored in the Keychain with
 biometryCurrentSet access control. There is no account, password or payment.
 Privacy policy: https://alert-review.<domain>/privacy
-The banner "Демо-стенд" at the top marks the demonstration stand.
+The banner "ДЕМО-СТЕНД" at the top marks the demonstration stand.
 ```
 
 ## Сборка для загрузки
@@ -126,5 +127,5 @@ npx cap open ios        # Xcode
 | 3.2 / 4.2 «нет пользы для публики» | приложение для сотрудников | *Unlisted*-распространение либо пояснение: служебный инструмент организации |
 | 4.2 «это сайт в обёртке» | Capacitor | страница вшита в сборку, ключ под Face ID в Keychain, подпись на устройстве — сайт этого не может |
 | 5.1.1 Privacy | нет политики / расхождение с App Privacy | `/privacy` открыта без входа, ответы совпадают с манифестом |
-| 5.1.1(v) удаление учётной записи | — | учётных записей нет; ключ удаляется кнопкой «Удалить ключ», запись в справочнике отзывает организация (сказано в политике) |
+| 5.1.1(v) удаление учётной записи | — | учётных записей нет; ключ удаляется кнопкой «⋯» → «Удалить ключ с телефона», запись в справочнике отзывает организация (сказано в политике) |
 | 2.5.1 / guideline про шифрование | экспорт | `ITSAppUsesNonExemptEncryption = NO`, см. выше |

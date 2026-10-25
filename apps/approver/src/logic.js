@@ -110,10 +110,38 @@
     return s >= 60 ? `ещё ${Math.floor(s / 60)} мин` : `ещё ${s} с`;
   }
 
+  // ---- how things read on screen ------------------------------------------------
+  // The short form of a key id people compare by eye: what follows "ed25519:".
+  const keyShort = (keyId) => String(keyId || "").replace(/^ed25519:/, "").slice(0, 8) + "…";
+
+  // Two letters for the account button: from the name, else from the id.
+  function initials(name, personId) {
+    const words = String(name || "").trim().split(/\s+/).filter(Boolean);
+    const letters = words.length ? words.slice(0, 2).map((w) => w[0]) : [String(personId || "?").replace(/[^a-z0-9]/gi, "")[0] || "?"];
+    return letters.join("").toUpperCase();
+  }
+
+  // Russian plural: plural(5, "получатель", "получателя", "получателей").
+  function plural(n, one, few, many) {
+    const d = Math.abs(n) % 100, u = d % 10;
+    if (d > 10 && d < 20) return many;
+    if (u === 1) return one;
+    return u >= 2 && u <= 4 ? few : many;
+  }
+
+  // The colour of one person's answer: a forged receipt and "cannot comply" are
+  // alarms, a delivery without an answer is not yet one.
+  function ackTone(person) {
+    if (person.ack_valid === false || person.ack_status === "cannot_comply") return "bad";
+    if (!person.ack_status) return "none";
+    return person.ack_status === "received" ? "warn" : "ok";
+  }
+
   const api = {
     SEVERITY, SEVERITY_ORDER, ACTION, ACK, PERSON_ID, RENEW_WHEN_LEFT_S, VAULT_ERRORS,
     normalizePanelUrl, requestHeaders, needsRenewal, audienceSummary, allowedSeverities,
     vaultMessage, isCancel, openProposals, blockingText, time, left,
+    keyShort, initials, plural, ackTone,
   };
   root.ApproverLogic = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
