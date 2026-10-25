@@ -84,8 +84,8 @@ cat <<EOF
   корневой ключ организации : ${root_key}
   пароль ключей демо-людей  : demo
 
-Панель дежурного: http://127.0.0.1:${panel_port}
-  вход: p-003 (дежурный), p-001 (директор), p-002 (заместитель); пароль demo
+Панель ЛПР: http://127.0.0.1:${panel_port}
+  вход: p-001, p-002, p-003 (ЛПР), p-004 (дежурный, временно); пароль demo
   с другой машины: ssh -L ${panel_port}:127.0.0.1:${panel_port} <сервер>
 
 Исполнитель с телефона: http://127.0.0.1:${mobile_port}
@@ -99,7 +99,7 @@ cat <<EOF
   ./docker/cli.sh alerting-approver sign <id> --yes --person p-001
   ./docker/cli.sh alerting-executor sync --person x-102
   ./docker/cli.sh alerting-executor verify <id> --person x-102
-  ./docker/cli.sh alerting-auditor verify --person a-001
+  ./docker/cli.sh alerting-auditor verify --person p-001
 
 Журнал сервера: docker compose --env-file $env_file logs -f server
 EOF

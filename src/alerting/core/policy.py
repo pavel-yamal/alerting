@@ -28,7 +28,7 @@ class QuorumRule(CanonicalModel):
     #: Stops one human with two enrolled devices from satisfying a 2-of-N alone.
     distinct_persons: StrictBool = True
 
-    #: e.g. {"director": 1} — at least one signature from someone in that role.
+    #: e.g. {"lpr": 1} — at least one signature from someone in that role.
     min_from_role: dict[str, StrictInt] = Field(default_factory=dict)
 
 

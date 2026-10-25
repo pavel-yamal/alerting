@@ -285,6 +285,17 @@ class Repo:
             (limit,),
         )
 
+    def public_orders(self, limit: int) -> list[Row]:
+        """Real orders and stand-downs, newest first: what the public feed shows.
+
+        Drills and canaries never leave the building this way.
+        """
+        return self._all(
+            "SELECT * FROM orders WHERE NOT canary AND NOT drill"
+            " ORDER BY dispatched_at DESC, order_id DESC LIMIT %s",
+            (limit,),
+        )
+
     def active_candidates(self, finite_since: int) -> list[Row]:
         """Orders that may still be in force, with no row limit.
 

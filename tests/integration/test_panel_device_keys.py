@@ -171,14 +171,14 @@ def test_a_freshly_enrolled_browser_key_works_and_revocation_ends_it(panel_app, 
         server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)
     )
     payload, _ = add_key(
-        current, person_id="p-010", name="Орлова Е. В.", role="director",
+        current, person_id="p-010", name="Орлова Е. В.", role="lpr",
         public_key=public_key_to_b64u(public), issued_at=clock.now(),
     )  # fmt: skip
     publish(server, org, payload)
 
     ipad = Browser(panel_app, "p-010", private)
     assert ipad.login().status_code == 200
-    assert ipad.client.get("/api/me").json()["role"] == "director"
+    assert ipad.client.get("/api/me").json()["role"] == "lpr"
 
     current = verified_current(
         server.get("/v1/directory").json(), public_key_to_b64u(org.root_public_key)

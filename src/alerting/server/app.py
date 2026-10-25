@@ -12,7 +12,7 @@ from fastapi import Depends, FastAPI
 
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.signing import private_key_from_b64u, public_key_from_b64u
-from alerting.server.api import meta, orders, proposals, ws
+from alerting.server.api import feed, meta, orders, proposals, ws
 from alerting.server.auth import require_signed_request
 from alerting.server.channels.registry import ChannelRegistry, default_registry
 from alerting.server.channels.websocket import ConnectionRegistry
@@ -320,13 +320,16 @@ def create_app(
     )
     app.state.alerting = services
 
-    # Every route behind a per-person signature, except liveness and readiness, which
-    # nginx restricts to the load balancer by IP. The WebSocket carries its own
-    # Ed25519 challenge-response with a server-chosen nonce and is authenticated more
-    # strongly than this gate, so it is deliberately not double-gated.
+    # Every route behind a per-person signature, except the public feed, and liveness
+    # and readiness, which nginx restricts to the load balancer by IP. The WebSocket
+    # carries its own Ed25519 challenge-response with a server-chosen nonce and is
+    # authenticated more strongly than this gate, so it is deliberately not
+    # double-gated.
     guarded = [Depends(require_signed_request)]
     for module in (proposals, orders, meta):
         app.include_router(module.router, dependencies=guarded)
     app.include_router(meta.public_router)
+    # Real alerts and stand-downs, without audience or signers: public by design.
+    app.include_router(feed.router)
     app.include_router(ws.router)
     return app

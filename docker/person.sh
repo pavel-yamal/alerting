@@ -3,7 +3,7 @@
 #
 #   ./docker/person.sh add x-104 "Новиков П. С." fire-wardens      # исполнитель
 #   ROLE=duty_officer SITE=HQ ./docker/person.sh add p-004 "Орлова Е. В."
-#   ROLE=director PUBLIC_KEY=<с экрана регистрации панели> ./docker/person.sh add p-010 "Орлова Е. В."
+#   ROLE=lpr PUBLIC_KEY=<с экрана регистрации панели> ./docker/person.sh add p-010 "Орлова Е. В."
 #   ./docker/person.sh retire x-104                 # уволился: прежние подписи в силе
 #   ./docker/person.sh revoke x-104 "утерян телефон" # ключом отзыва смены, за секунды
 #   ./docker/person.sh show

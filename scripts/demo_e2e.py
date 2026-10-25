@@ -261,7 +261,7 @@ async def main() -> int:
     forged_sk, forged_pk = generate_keypair()
     from alerting.orgkit import Person
 
-    attacker = Person("evil", "Атакующий", "director", forged_sk, key_id(forged_pk))
+    attacker = Person("evil", "Атакующий", "lpr", forged_sk, key_id(forged_pk))
     forged = sign_order(make_order(org, issued_at=clock.now(), seq=900), [attacker])
     verdict = verify_envelope(
         forged,
@@ -297,7 +297,7 @@ async def main() -> int:
                     public_key=_pk(forged_pk),
                     person_id="evil",
                     name="Атакующий",
-                    role="director",
+                    role="lpr",
                     valid_from=AT - 3600,
                 ),
             ),

@@ -314,7 +314,7 @@ def _publish_revocations(app: Any, bundle: dict[str, Any], request: Request) -> 
 
 #: Roles a contact may carry. The directory decides what a key may *sign*; this only
 #: says how the person is addressed, so it is checked for typos, not for authority.
-CONTACT_ROLES = frozenset({"executor", "duty_officer", "deputy", "director", "auditor"})
+CONTACT_ROLES = frozenset({"executor", "duty_officer", "lpr"})
 
 
 class ContactUpload(BaseModel):

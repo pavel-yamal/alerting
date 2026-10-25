@@ -40,7 +40,7 @@ def attacker():
     return Person(
         person_id="evil-1",
         name="Компрометированный сервер",
-        role="director",
+        role="lpr",
         private_key=private,
         key_id=key_id(public),
     ), public
@@ -54,7 +54,7 @@ def evil_directory(org, attacker_person, attacker_public, version=99):
         public_key=public_key_to_b64u(attacker_public),
         person_id=attacker_person.person_id,
         name=attacker_person.name,
-        role="director",
+        role="lpr",
         valid_from=ISSUED_AT - 3600,
     )
     widened = payload.model_copy(update={"version": version, "keys": (*payload.keys, injected)})

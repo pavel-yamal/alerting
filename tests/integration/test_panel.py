@@ -8,7 +8,6 @@ behind the transport -- so what is checked is the panel's behaviour, not a mock'
 
 from __future__ import annotations
 
-import dataclasses
 import pathlib
 from collections.abc import Iterator
 from typing import Any
@@ -23,7 +22,7 @@ from alerting.clients.session_admin import ADMIN_HEADER, TOKEN_FILE
 from alerting.core.clock import FixedClock
 from alerting.core.signing import public_key_to_b64u
 from alerting.orgadmin import revoke_keys, verified_current
-from alerting.orgkit import Org, build_org
+from alerting.orgkit import Org
 from alerting.server.app import create_app
 from alerting.server.config import Settings
 from alerting.server.services.bootstrap import publish_org
@@ -126,7 +125,7 @@ def test_a_critical_order_needs_two_people_and_then_goes_out(panel_app):
     # The second signer finds the proposal in the shared list, not by being told its id.
     listed = director.get("/api/proposals").json()["proposals"]
     assert [p["order_id"] for p in listed] == [order_id]
-    assert listed[0]["signed_by"] == ["Орлов Д. С. (duty_officer)"]
+    assert listed[0]["signed_by"] == ["Орлов Д. С. (lpr)"]
 
     second = sign(director, order_id)
     assert second["dispatched"] and second["recipients"] > 0
@@ -279,44 +278,34 @@ def test_the_administrator_ends_a_session(homes, server, clock, monotonic, tmp_p
     assert director.get("/api/me").status_code == 401
 
 
-def test_an_operator_outside_the_quorum_roles_may_propose_but_not_sign(
-    tmp_path, settings, clock, monotonic
-):
-    """Who may use the panel follows the server's operator gate; whose signature
-    counts follows the policy. An organisation may keep duty officers out of the
-    quorum and still have them type the proposal."""
-    org = build_org(issued_at=clock.now() - 5, approver_roles=("director", "deputy"))
-    homes = tmp_path / "homes"
-    for person in org.people.values():
-        home = homes / person.person_id
-        save_key(person.person_id, person.private_key, PASSPHRASE, role=person.role, directory=home)
-        PinnedOrg(org.org_id, public_key_to_b64u(org.root_public_key), home).save()
-    own_root = dataclasses.replace(
-        settings, root_public_key=public_key_to_b64u(org.root_public_key)
+def test_the_duty_officer_watches_but_issues_nothing(panel_app):
+    """Only decision-makers (ЛПР) propose, sign and stand down. The duty officer --
+    a temporary role -- signs in to watch."""
+    lpr = browser(panel_app, "p-001")
+    order_id = propose(lpr, scenario="TEST.PING", severity="info")
+
+    officer = browser(panel_app, "p-004")
+    me = officer.get("/api/me").json()
+    assert me["can_issue"] is False and me["can_sign"] is False
+    refused = officer.post(
+        "/api/proposals",
+        json={
+            "scenario": "TEST.PING",
+            "severity": "info",
+            "drill": True,
+            "groups": ["fire-wardens"],
+        },
+        headers=PANEL,
     )
-    server_app = create_app(own_root, clock, start_escalation=False)
-    publish_org(server_app.state.alerting.repo, org, audit=server_app.state.alerting.audit)
-    with TestClient(server_app) as server:
-        app = create_panel(
-            homes=homes,
-            server_url="http://testserver",
-            transport=server._transport,
-            clock=clock,
-            monotonic=monotonic,
-        )
-        officer = browser(app, "p-003")
-        assert officer.get("/api/me").json()["can_sign"] is False
-
-        order_id = propose(officer, scenario="TEST.PING", severity="info")
-        review = officer.get(f"/api/proposals/{order_id}").json()
-        assert review["can_sign"] is False
-        refused = officer.post(
-            f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
-        )
-        assert refused.status_code == 403
-
-        director = browser(app, "p-001")
-        assert sign(director, order_id)["dispatched"]
+    assert refused.status_code == 403
+    review = officer.get(f"/api/proposals/{order_id}").json()
+    assert review["can_sign"] is False
+    signed = officer.post(
+        f"/api/proposals/{order_id}/sign", json={"digest": review["digest"]}, headers=PANEL
+    )
+    assert signed.status_code == 403
+    assert sign(lpr, order_id)["dispatched"]
+    assert officer.post(f"/api/orders/{order_id}/cancel", json={}, headers=PANEL).status_code == 403
 
 
 def test_active_events_and_their_stand_down_are_linked(panel_app):

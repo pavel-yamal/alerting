@@ -77,10 +77,11 @@ class Org:
         return [p for p in self.people.values() if p.role == "executor"]
 
 
-#: Roles that may approve orders. Executors are deliberately absent: their device
-#: keys exist to sign ACKs, and counting them toward a quorum would let two executors
-#: launch a critical evacuation.
-APPROVER_ROLES: tuple[str, ...] = ("director", "deputy", "duty_officer")
+#: Roles that may approve orders: the decision-makers (ЛПР) alone. Executors are
+#: deliberately absent -- their device keys exist to sign ACKs, and counting them
+#: toward a quorum would let two executors launch a critical evacuation. So is the
+#: duty officer, who for now watches and keeps the directory but issues nothing.
+APPROVER_ROLES: tuple[str, ...] = ("lpr",)
 
 _APPROVER_ROLES = frozenset(APPROVER_ROLES)
 
@@ -117,8 +118,9 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     ),
 }
 
-#: Cancel quorum is deliberately one below launch: the safe direction is stopping.
-#: See docs/adr/0003-cancel-quorum.md for the argument and its four guardrails.
+#: Two decision-makers launch anything critical or above; the count is the policy's
+#: ``m`` and set per severity. Cancel quorum is deliberately at most launch: the safe
+#: direction is stopping. See docs/adr/0003-cancel-quorum.md.
 DEFAULT_SEVERITIES: dict[Severity, SeverityRules] = {
     Severity.INFO: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
     Severity.WARNING: SeverityRules(launch=QuorumRule(m=1), cancel=QuorumRule(m=1)),
@@ -127,28 +129,20 @@ DEFAULT_SEVERITIES: dict[Severity, SeverityRules] = {
         cancel=QuorumRule(m=1),
     ),
     Severity.CATASTROPHIC: SeverityRules(
-        launch=QuorumRule(
-            m=3,
-            max_signature_spread_s=600,
-            distinct_persons=True,
-            min_from_role={"director": 1},
-        ),
+        launch=QuorumRule(m=2, max_signature_spread_s=600, distinct_persons=True),
         cancel=QuorumRule(m=2),
     ),
 }
 
 DEFAULT_ROSTER: list[tuple[str, str, str]] = [
-    ("p-001", "Смирнов А. В.", "director"),
-    ("p-002", "Кузнецова Е. П.", "deputy"),
-    ("p-003", "Орлов Д. С.", "duty_officer"),
+    ("p-001", "Смирнов А. В.", "lpr"),
+    ("p-002", "Кузнецова Е. П.", "lpr"),
+    ("p-003", "Орлов Д. С.", "lpr"),
+    # Temporary: the duty officer role is to go. Watches, issues nothing.
     ("p-004", "Белова М. И.", "duty_officer"),
     ("x-101", "Иванов И. И.", "executor"),
     ("x-102", "Петрова О. Н.", "executor"),
     ("x-103", "Сидоров П. А.", "executor"),
-    # docs/02-trust-and-approval.md §1 has listed the auditor as a directory role
-    # since the beginning; it simply had no entry. Reading the chain over HTTP is a
-    # signed request like any other, so the role had to become real.
-    ("a-001", "Ковалёва Н. Т.", "auditor"),
 ]
 
 

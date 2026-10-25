@@ -73,7 +73,7 @@ SCRYPT_P = 1
 MIN_PASSPHRASE = 12
 HKDF_INFO = b"alerting.root-vault.v1"
 
-ROLES = ("executor", "duty_officer", "deputy", "director", "auditor")
+ROLES = ("executor", "duty_officer", "lpr")
 
 
 class CustodyError(ValueError):
@@ -212,7 +212,7 @@ class AddKey(_Change):
     op: Literal["add_key"]
     person_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
     name: str = Field(min_length=1, max_length=200)
-    role: Literal["executor", "duty_officer", "deputy", "director", "auditor"]
+    role: Literal["executor", "duty_officer", "lpr"]
     public_key: str = Field(min_length=40, max_length=64)
     valid_days: int | None = Field(default=None, ge=1, le=3650)
 

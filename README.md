@@ -96,7 +96,7 @@ config/                политика кворума, кодовая книг�
 src/alerting/
   core/                ЧИСТОЕ ядро: без I/O, без сети, без чтения часов
   server/              FastAPI, PostgreSQL, каналы, эскалация, аудит
-  clients/             CLI ЛПР, исполнителя и аудитора
+  clients/             CLI ЛПР, исполнителя и проверки журнала
 tests/unit/            ядро в изоляции
 tests/integration/     сервер, клиенты, сквозные сценарии
 scripts/               org_init.py, demo_e2e.py

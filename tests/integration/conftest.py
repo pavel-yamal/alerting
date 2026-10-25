@@ -228,9 +228,9 @@ def executor_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator
 
 
 @pytest.fixture
-def auditor_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
-    """Reads the chain, writes nothing. docs/02-trust-and-approval.md §1."""
-    with signing_client(settings, clock, org, "a-001") as test_client:
+def duty_client(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClient]:
+    """The duty officer (a temporary role): watches and reads the chain, issues nothing."""
+    with signing_client(settings, clock, org, "p-004") as test_client:
         yield test_client
 
 

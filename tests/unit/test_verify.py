@@ -135,14 +135,14 @@ def test_scenario_above_its_maximum_severity_is_rejected(org, verify_kwargs):
     assert Reason.SEVERITY_ABOVE_SCENARIO_MAXIMUM in decision.reasons
 
 
-def test_catastrophic_needs_three_signatures_including_a_director(org, verify_kwargs):
+def test_catastrophic_needs_two_decision_makers(org, verify_kwargs):
+    """Only ЛПР issue orders: the duty officer's signature does not count."""
     order = make_order(org, scenario="SHELTER.IN.PLACE", severity=Severity.CATASTROPHIC)
-    no_director = [org.person("p-002"), org.person("p-003"), org.person("p-004")]
-    decision = verify_envelope(sign_order(order, no_director), **verify_kwargs)
-    assert Reason.ROLE_REQUIREMENT_UNMET in decision.reasons
+    with_duty_officer = [org.person("p-001"), org.person("p-004")]
+    assert not verify_envelope(sign_order(order, with_duty_officer), **verify_kwargs).accepted
 
-    with_director = [org.person("p-001"), org.person("p-002"), org.person("p-003")]
-    assert verify_envelope(sign_order(order, with_director), **verify_kwargs).accepted
+    two_lpr = [org.person("p-001"), org.person("p-002")]
+    assert verify_envelope(sign_order(order, two_lpr), **verify_kwargs).accepted
 
 
 def test_replayed_order_is_rejected(org, verify_kwargs):

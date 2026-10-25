@@ -402,7 +402,7 @@ function renderOrder(s) {
     s.cancelled_by ? el("div", { class: "row" },
       el("button", { type: "button", onclick: () => openOrder(s.cancelled_by) }, "открыть отбой")) : null,
     !s.cancels && !s.cancelled_by ? el("h3", {}, s.until_cancelled ? "Действует до отбоя" : `Действует до ${time(s.not_valid_after)}`) : null,
-    !s.cancels && !s.cancelled_by ? el("div", { class: "row" }, cancelText, cancelBtn) : null,
+    me.can_issue && !s.cancels && !s.cancelled_by ? el("div", { class: "row" }, cancelText, cancelBtn) : null,
     el("div", { class: "hint" }, "ID: ", el("code", {}, s.order_id)),
     out,
   );
@@ -447,8 +447,7 @@ setInterval(() => { renewDelegation().catch(() => { /* retried next minute */ })
 // a request file for the custodians' offline laptop; their signed answer is uploaded
 // back and published. Only revocation is immediate: the duty shift's revocation key,
 // kept in this browser, signs the next revocation list.
-const ROLE = { executor: "исполнитель", duty_officer: "дежурный", deputy: "заместитель",
-               director: "директор", auditor: "аудитор" };
+const ROLE = { executor: "исполнитель", duty_officer: "дежурный", lpr: "ЛПР" };
 let dir = null;
 let codebookDirty = false;
 let pending = [];
@@ -718,9 +717,11 @@ async function start() {
     return;
   }
   meta = await api("/api/meta");
-  $("who").textContent = `${me.name} · ${me.role} · ${me.person_id}` + (me.device_key ? " · ключ устройства" : " · демо-ключ на сервере");
+  $("who").textContent = `${me.name} · ${ROLE[me.role] || me.role} · ${me.person_id}` + (me.device_key ? " · ключ устройства" : " · демо-ключ на сервере");
   $("org").textContent = `организация ${meta.org_id}`;
   fillForm();
+  // Orders are issued by decision-makers only; the duty officer watches.
+  $("new-form").closest("section").classList.toggle("hidden", !me.can_issue);
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   await refreshLists();

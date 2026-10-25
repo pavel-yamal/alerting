@@ -17,13 +17,12 @@ version: 1
 # same reason the drill flag has none: a policy that does not say who may approve must
 # be unusable, not permissive.
 #
-# Executors are deliberately absent. Their device keys are in the same directory, but
-# they exist only to sign acknowledgements — counting them would let two executors
-# launch a critical evacuation and one stand it down.
+# Only the decision-makers (ЛПР) issue orders. Executors are deliberately absent:
+# their device keys exist only to sign acknowledgements — counting them would let two
+# executors launch a critical evacuation and one stand it down. So is the duty
+# officer (a temporary role): watches, keeps the directory, signs nothing.
 approver_roles:
-  - director
-  - deputy
-  - duty_officer
+  - lpr
 
 severities:
   info:
@@ -34,6 +33,8 @@ severities:
     launch: {m: 1}
     cancel: {m: 1}
 
+  # How many decision-makers must sign is `m`, per severity: change it here, sign
+  # and publish the policy. Two by default for critical and above.
   critical:
     # The two-man rule. distinct_persons counts HUMANS, not keys: one person with two
     # enrolled devices must not be able to satisfy this alone.
@@ -51,9 +52,8 @@ severities:
 
   catastrophic:
     launch:
-      m: 3
+      m: 2
       distinct_persons: true
       max_signature_spread_s: 600
-      min_from_role: {director: 1}
     # Stays at 2: a suppressed top-severity alert costs more than a slow stand-down.
     cancel: {m: 2}

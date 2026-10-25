@@ -293,7 +293,7 @@ def test_only_executors_log_in(mobile_app):
     assert login("x-101", "wrong") == 401
     assert login("../x-101") == 400
     assert login("p-003") == 403
-    assert login("a-001") == 403
+    assert login("p-004") == 403  # the duty officer works in the panel
 
 
 def test_a_session_has_no_lifetime(mobile_app, clock, monotonic):

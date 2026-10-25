@@ -66,7 +66,7 @@ from alerting.core.signing import (
     verify_signature,
 )
 from alerting.orgadmin import next_revocations
-from alerting.server.auth import OPERATORS
+from alerting.server.auth import LPR, OPERATORS
 
 log = logging.getLogger("alerting.panel")
 
@@ -618,6 +618,12 @@ def create_panel(
             raise HTTPException(403, "запрос не из панели")
         return current(request)
 
+    def issuer(session: Session = Depends(guarded)) -> Session:
+        # The server refuses it anyway; this says why in words the page can show.
+        if session.role not in LPR:
+            raise HTTPException(403, "приказы издают только ЛПР")
+        return session
+
     def names(session: Session) -> dict[str, str]:
         return {entry.person_id: entry.name for entry in session.directory.payload.keys}
 
@@ -670,6 +676,8 @@ def create_panel(
             "name": session.name,
             "role": session.role,
             "can_sign": session.can_sign,
+            # Only decision-makers propose and stand down; the duty officer watches.
+            "can_issue": session.role in LPR,
             # The page signs orders itself when the key lives in the browser.
             "device_key": session.signer is None,
             # And renews the delegation before this; ``None`` for a server-held key.
@@ -767,7 +775,7 @@ def create_panel(
         }
 
     @app.post("/api/proposals")
-    def propose(body: ProposalForm, session: Session = Depends(guarded)) -> dict[str, Any]:
+    def propose(body: ProposalForm, session: Session = Depends(issuer)) -> dict[str, Any]:
         audience = {
             key: value
             for key, value in (
@@ -919,7 +927,7 @@ def create_panel(
 
     @app.post("/api/orders/{order_id}/cancel")
     def cancel(
-        order_id: str, body: CancelForm, session: Session = Depends(guarded)
+        order_id: str, body: CancelForm, session: Session = Depends(issuer)
     ) -> dict[str, Any]:
         """Create the stand-down proposal. Signing it is the same review-and-sign step
         as any other order -- a cancel is an order too."""

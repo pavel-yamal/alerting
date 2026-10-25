@@ -236,7 +236,7 @@ def retire_keys(
 ) -> tuple[DirectoryPayload, list[KeyEntry]]:
     """End a key's validity now: someone leaves, or replaces their device.
 
-    Orders signed before ``at`` keep verifying -- an evacuation the departing director
+    Orders signed before ``at`` keep verifying -- an evacuation the departing decision-maker
     signed this morning is still a genuine order -- but nothing signed after counts,
     and the key no longer authenticates to the server.
     """
@@ -721,9 +721,7 @@ def build_parser() -> argparse.ArgumentParser:
     signing_args(add)
     add.add_argument("--person", required=True)
     add.add_argument("--name", required=True)
-    add.add_argument(
-        "--role", required=True, help="executor, duty_officer, deputy, director, auditor"
-    )
+    add.add_argument("--role", required=True, help="lpr, duty_officer, executor")
     add.add_argument("--public-key", required=True, help="as the device printed it at enrollment")
     add.add_argument("--valid-days", type=int, help="expire the key after this many days")
     add.set_defaults(func=cmd_directory_add)

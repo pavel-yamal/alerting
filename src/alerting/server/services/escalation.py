@@ -83,7 +83,7 @@ DEFAULT_PLAN = EscalationPlan.from_config(
             {"at_s": 0, "channels": ["ws", "push", "sms"]},
             {"at_s": 60, "channels": ["voice"]},
             {"at_s": 120, "channels": ["siren"]},
-            {"at_s": 240, "notify_role": "director"},
+            {"at_s": 240, "notify_role": "lpr"},
         ],
     }
 )
