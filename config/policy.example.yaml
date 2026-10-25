@@ -25,37 +25,28 @@ approver_roles:
   - lpr
 
 # People choose only "drill" or "real"; the level of an order comes from its scenario
-# (its min_severity, else max_severity). Every order -- drill or real, any level --
-# needs two DIFFERENT decision-makers. `m` can still be changed per level here: sign
-# and publish the policy.
+# (its min_severity, else max_severity). Every order AND every stand-down -- drill or
+# real, any level -- needs two DIFFERENT decision-makers (docs/adr/0003-cancel-quorum.md).
+# `m` can still be changed per level here: sign and publish the policy.
+#
+# distinct_persons counts HUMANS, not keys: one person with two enrolled devices must
+# not be able to satisfy 2-of-N alone.
+#
+# There is no time limit on collecting signatures: a proposal waits until the second
+# decision-maker signs it, and every decision-maker sees it waiting.
 severities:
   info:
-    launch: {m: 2, distinct_persons: true, max_signature_spread_s: 300}
-    cancel: {m: 1}
+    launch: {m: 2, distinct_persons: true}
+    cancel: {m: 2, distinct_persons: true}
 
   warning:
-    launch: {m: 2, distinct_persons: true, max_signature_spread_s: 300}
-    cancel: {m: 1}
+    launch: {m: 2, distinct_persons: true}
+    cancel: {m: 2, distinct_persons: true}
 
   critical:
-    # The two-man rule. distinct_persons counts HUMANS, not keys: one person with two
-    # enrolled devices must not be able to satisfy this alone.
-    launch:
-      m: 2
-      distinct_persons: true
-      # Bounds how long a half-approved proposal may sit collecting its last
-      # signature. Enforced server-side only — signature entries carry no
-      # self-asserted timestamp, so clients cannot check it. See ADR 0003 and
-      # docs/03-envelope-spec.md.
-      max_signature_spread_s: 300
-    # Deliberately one below launch: the safe direction is stopping.
-    # docs/adr/0003-cancel-quorum.md has the argument and the four guardrails.
-    cancel: {m: 1}
+    launch: {m: 2, distinct_persons: true}
+    cancel: {m: 2, distinct_persons: true}
 
   catastrophic:
-    launch:
-      m: 2
-      distinct_persons: true
-      max_signature_spread_s: 600
-    # Stays at 2: a suppressed top-severity alert costs more than a slow stand-down.
-    cancel: {m: 2}
+    launch: {m: 2, distinct_persons: true}
+    cancel: {m: 2, distinct_persons: true}

@@ -155,7 +155,11 @@ def test_rule_lookup_distinguishes_launch_from_cancel(org):
     from alerting.core.envelope import Severity
 
     assert policy.rule_for(Severity.CRITICAL, is_cancel=False).m == 2
-    assert policy.rule_for(Severity.CRITICAL, is_cancel=True).m == 1
+    # Equal now (ADR 0003), so what is told apart is which rule object comes back.
+    assert (
+        policy.rule_for(Severity.CRITICAL, is_cancel=True)
+        is policy.payload.severities[Severity.CRITICAL].cancel
+    )
 
 
 def test_scenario_lookup(org):

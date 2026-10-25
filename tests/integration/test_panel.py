@@ -215,7 +215,8 @@ def test_stand_down_is_an_order_that_is_reviewed_and_signed_too(panel_app):
     assert review["fields"]["cancels"] == order_id
     assert review["fields"]["action"] == "STOP"
     assert review["fields"]["drill"] is True
-    assert sign(director, cancel_id)["dispatched"]
+    assert not sign(director, cancel_id)["dispatched"], "a stand-down needs two people too"
+    assert sign(officer, cancel_id)["dispatched"]
 
 
 def test_meta_comes_from_the_verified_policy(panel_app):
@@ -330,7 +331,8 @@ def test_active_events_and_their_stand_down_are_linked(panel_app):
     cancel_id = officer.post(
         f"/api/orders/{order_id}/cancel", json={"text": "Отбой"}, headers=PANEL
     ).json()["order_id"]
-    assert sign(officer, cancel_id)["dispatched"]
+    assert not sign(officer, cancel_id)["dispatched"]
+    assert sign(director, cancel_id)["dispatched"]
 
     assert officer.get("/api/events/active").json()["events"] == []
     status = officer.get(f"/api/orders/{order_id}").json()

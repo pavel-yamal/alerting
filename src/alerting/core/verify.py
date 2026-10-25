@@ -155,7 +155,6 @@ def verify_envelope(
         quorum = evaluate_quorum(
             valid_entries,
             rule,
-            issued_at=payload.issued_at,
             approver_roles=policy.approver_roles,
         )
         if not quorum.met:
@@ -176,7 +175,11 @@ def verify_envelope(
         reasons.append(Reason.NOT_YET_VALID)
     elif payload.issued_at > now:
         warnings.append(Reason.W_CLOCK_SKEW)
-    if now > payload.not_valid_after + SKEW_TOLERANCE_S:
+    # An event that lasts until its stand-down does not expire when its delivery
+    # window closes, and neither does the stand-down: both wait for their signatures
+    # without a deadline, so "expired, confirm by voice" would tell the wrong thing.
+    lasting = payload.is_cancel or policy.lasts_until_cancelled(payload.scenario)
+    if not lasting and now > payload.not_valid_after + SKEW_TOLERANCE_S:
         # Degrade OPEN: show it with a loud banner, let the human verify by voice.
         warnings.append(Reason.W_EXPIRED)
 

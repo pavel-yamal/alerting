@@ -8,7 +8,7 @@ property we are building.
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 
 from alerting.core.directory import KeyEntry
@@ -29,9 +29,7 @@ def evaluate_quorum(
     valid_signers: Sequence[KeyEntry],
     rule: QuorumRule,
     *,
-    issued_at: int,
     approver_roles: Collection[str],
-    observed_at: Mapping[str, int] | None = None,
 ) -> QuorumResult:
     """Decide whether these verified signers satisfy the rule.
 
@@ -43,14 +41,10 @@ def evaluate_quorum(
     Args:
         valid_signers: directory entries whose signatures already verified.
         rule: the launch or cancel rule for this severity.
-        issued_at: the payload's issue time, shared by every signer.
         approver_roles: roles permitted to approve, from the root-signed policy.
-        observed_at: when the server *saw* each signature arrive, keyed by ``key_id``.
-            Only the server has this. Signature entries carry no self-asserted
-            timestamp (it would be forgeable), so ``max_signature_spread_s`` can only
-            be enforced where an independent observation exists. Clients pass ``None``
-            and rely on the payload TTL instead; this is documented in
-            docs/03-envelope-spec.md rather than silently skipped.
+
+    There is no time limit between the signatures: a proposal waits for its quorum
+    however long that takes, in plain view of every decision-maker.
 
     Returns:
         A ``QuorumResult``. ``met=False`` always carries at least one reason.
@@ -86,11 +80,6 @@ def evaluate_quorum(
         if len(holders) < required:
             reasons.append(Reason.ROLE_REQUIREMENT_UNMET)
             break
-
-    if rule.max_signature_spread_s is not None and observed_at:
-        times = [observed_at[k] for k in key_ids if k in observed_at]
-        if times and max(times) - issued_at > rule.max_signature_spread_s:
-            reasons.append(Reason.SIGNATURE_SPREAD_EXCEEDED)
 
     if dropped_unauthorized and reasons:
         reasons.append(Reason.UNAUTHORIZED_SIGNER_ROLE)

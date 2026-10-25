@@ -1,8 +1,7 @@
 """Stand-down («отбой»).
 
-Cancel quorum is deliberately one below launch: the safe direction is stopping. The
-compensating guardrails are attribution, an un-erased original, executor training, and
-re-issue at full quorum — see docs/adr/0003-cancel-quorum.md.
+A stand-down is an order like any other and needs the same two different
+decision-makers as the launch, at every level -- see docs/adr/0003-cancel-quorum.md.
 """
 
 from __future__ import annotations
@@ -16,17 +15,37 @@ from alerting.core.verify import verify_envelope
 from alerting.orgkit import make_order, sign_order
 
 
-def test_cancel_needs_only_one_signature_where_launch_needs_two(org, verify_kwargs):
-    launch = make_order(org, seq=1)
-    assert verify_envelope(sign_order(launch, [org.person("p-001")]), **verify_kwargs).rejected
+@pytest.mark.parametrize(
+    ("severity", "scenario"),
+    [
+        (Severity.INFO, "TEST.PING"),
+        (Severity.WARNING, "MUSTER"),
+        (Severity.CRITICAL, "EVAC.BUILDING"),
+        (Severity.CATASTROPHIC, "SHELTER.IN.PLACE"),
+    ],
+)
+def test_a_cancel_needs_two_decision_makers_like_the_launch(org, verify_kwargs, severity, scenario):
+    launch = make_order(org, seq=1, severity=severity, scenario=scenario)
+    cancel = make_order(
+        org,
+        seq=2,
+        severity=severity,
+        scenario=scenario,
+        order_type="cancel",
+        cancels=launch.order_id,
+        action="STOP",
+    )
+    one = verify_envelope(
+        sign_order(cancel, [org.person("p-001")]), cancel_target=launch, **verify_kwargs
+    )
+    assert Reason.QUORUM_NOT_MET in one.reasons
 
-    cancel = make_order(org, seq=2, order_type="cancel", cancels=launch.order_id, action="STOP")
-    decision = verify_envelope(
-        sign_order(cancel, [org.person("p-001")]),
+    two = verify_envelope(
+        sign_order(cancel, [org.person("p-001"), org.person("p-002")]),
         cancel_target=launch,
         **verify_kwargs,
     )
-    assert decision.accepted, decision.reasons
+    assert two.accepted, two.reasons
 
 
 def test_a_drill_cancel_cannot_stand_down_a_real_order(org, verify_kwargs):
@@ -60,33 +79,10 @@ def test_cancel_for_an_unknown_order_warns_rather_than_failing(org, verify_kwarg
     """If we never saw the original there is nothing to stand down, but we also cannot
     cross-check the drill flag, so the operator is told."""
     cancel = make_order(org, order_type="cancel", cancels="never-seen", action="STOP")
-    decision = verify_envelope(sign_order(cancel, [org.person("p-001")]), **verify_kwargs)
+    signers = [org.person("p-001"), org.person("p-002")]
+    decision = verify_envelope(sign_order(cancel, signers), **verify_kwargs)
     assert decision.accepted
     assert Reason.CANCEL_TARGET_MISSING in decision.warnings
-
-
-def test_catastrophic_cancel_still_needs_two_signatures(org, verify_kwargs):
-    launch = make_order(org, severity=Severity.CATASTROPHIC, scenario="SHELTER.IN.PLACE")
-    cancel = make_order(
-        org,
-        seq=2,
-        severity=Severity.CATASTROPHIC,
-        scenario="SHELTER.IN.PLACE",
-        order_type="cancel",
-        cancels=launch.order_id,
-        action="STOP",
-    )
-    one = verify_envelope(
-        sign_order(cancel, [org.person("p-001")]), cancel_target=launch, **verify_kwargs
-    )
-    assert Reason.QUORUM_NOT_MET in one.reasons
-
-    two = verify_envelope(
-        sign_order(cancel, [org.person("p-001"), org.person("p-002")]),
-        cancel_target=launch,
-        **verify_kwargs,
-    )
-    assert two.accepted, two.reasons
 
 
 def test_a_cancel_must_name_its_target(org):

@@ -28,6 +28,12 @@ from alerting.core.signing import ALG_ED25519, DOMAIN_ORDER, b64u_encode
 
 router = APIRouter(prefix="/v1/proposals", tags=["proposals"])
 
+#: The order's delivery window (``not_valid_after - issued_at``). Not chosen by anyone:
+#: a proposal waits for its signatures however long that takes, and an event lasts
+#: until its stand-down (ADR 0010), so the window no longer ends anything a person
+#: would notice. It stays in the signed format, which every client verifies.
+DELIVERY_WINDOW_S = 900
+
 
 class ProposalRequest(BaseModel):
     scenario: str
@@ -40,11 +46,13 @@ class ProposalRequest(BaseModel):
     #: rather than surfacing as a successfully dispatched no-op.
     audience: Audience
     text: str = ""
-    ttl_s: int = Field(default=900, ge=60, le=86400)
     stream_id: str = "primary"
     requires_ack: bool = True
     ack_deadline_s: int = Field(default=120, ge=0, le=86400)
     cancels: str | None = None
+
+    #: There is no ``ttl_s`` any more: a proposal waits for its signatures without a
+    #: deadline. A client of the previous build still sends one; it is ignored.
 
     #: There is deliberately no ``created_by``. It used to be a string the client
     #: asserted about itself, written straight into an undeletable audit chain --
@@ -79,7 +87,7 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
         seq=seq,
         nonce=secrets.token_urlsafe(16),
         issued_at=now,
-        not_valid_after=now + body.ttl_s,
+        not_valid_after=now + DELIVERY_WINDOW_S,
         severity=body.severity,
         drill=body.drill,
         scenario=body.scenario,
@@ -208,8 +216,7 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
             Signature(key_id=s["key_id"], alg=ALG_ED25519, sig=s["sig"]) for s in stored
         ),
     )
-    observed = {s["key_id"]: s["observed_at"] for s in stored}
-    decision = app.dispatcher.check(envelope, observed)
+    decision = app.dispatcher.check(envelope)
 
     if not decision.accepted:
         return {
@@ -219,7 +226,7 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
             "blocking": [str(r) for r in decision.reasons],
         }
 
-    result = await app.dispatcher.dispatch(envelope, observed_at=observed)
+    result = await app.dispatcher.dispatch(envelope)
     app.repo.set_proposal_status(order_id, "dispatched")
     warnings = [str(w) for w in decision.warnings]
     if result.reached_nobody:

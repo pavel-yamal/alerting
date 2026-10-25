@@ -182,7 +182,8 @@ class ProposalForm(BaseModel):
     #: No audience: the organisation has one, everyone (``EVERYONE``), and real
     #: alerts to it are also on the public RSS feed.
     text: str = Field(default="", max_length=1000)
-    ttl_s: int = Field(default=900, ge=60, le=86400)
+    #: No ``ttl_s``: a proposal waits for its signatures without a deadline. The app
+    #: of the previous build still sends one; it is ignored.
 
 
 class SignForm(BaseModel):
@@ -841,7 +842,6 @@ def create_panel(
                     "launch": rules.launch.m,
                     "distinct_persons": rules.launch.distinct_persons,
                     "min_from_role": dict(rules.launch.min_from_role),
-                    "spread_s": rules.launch.max_signature_spread_s,
                     "cancel": rules.cancel.m,
                 }
                 for level, rules in policy.severities.items()
@@ -870,7 +870,6 @@ def create_panel(
                 "action": "START",
                 "audience": audience,
                 "text": body.text,
-                "ttl_s": body.ttl_s,
             },
         )
         return {"order_id": result["order_id"], "required": result["required_signatures"]}

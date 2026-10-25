@@ -635,7 +635,6 @@ const untilCancelled = (code) => {
   const s = meta && meta.scenarios.find((x) => x.code === code);
   return Boolean(s && s.until_cancelled);
 };
-const chosenTtl = () => Number((document.querySelector("input[name=ttl]:checked") || { value: 900 }).value);
 
 const pickRow = (name, value, title, sub, onchange) => el("label", { class: "cell pick" },
   el("input", { type: "radio", name, value, onchange }),
@@ -684,7 +683,7 @@ $("new-form").addEventListener("submit", async (event) => {
     try {
       const created = await api("/api/proposals", { method: "POST", body: {
         scenario: s.code, drill: mode.value === "true",
-        text: $("text").value.trim(), ttl_s: chosenTtl(),
+        text: $("text").value.trim(),
       }});
       out.replaceChildren();
       $("text").value = "";

@@ -65,7 +65,6 @@ def cmd_propose(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
             "action": args.action,
             "audience": audience,
             "text": args.text,
-            "ttl_s": args.ttl,
         },
     )
     kind = "УЧЕНИЕ" if args.drill else "БОЕВОЕ"
@@ -87,7 +86,7 @@ def cmd_show(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
     if payload.get("text"):
         print(f"  text      : {payload['text']}")
     print(f"  audience  : {json.dumps(payload['audience'], ensure_ascii=False)}")
-    print(f"  valid until {payload['not_valid_after']}")
+    print(f"  delivery window until {payload['not_valid_after']}")
     print(f"  signatures: {len(proposal['signatures'])}")
     for signature in proposal["signatures"]:
         print(f"    - {signature['key_id']}  at {signature['observed_at']}")
@@ -122,7 +121,9 @@ def show_payload(payload: dict[str, Any], derived: str) -> None:
     print(f"  важность   : {payload['severity']}")
     print(f"  действие   : {payload['action']}")
     print(f"  аудитория  : {targets or '(ПУСТО — приказ не дойдёт ни до кого)'}")
-    print(f"  действует  : {window} с (до {payload['not_valid_after']})")
+    # Not how long the event lasts -- that is until its stand-down -- and not how long
+    # the proposal waits: it waits for its signatures without a deadline.
+    print(f"  окно доставки: {window} с (до {payload['not_valid_after']})")
     print(f"  поток/номер: {payload['stream_id']}#{payload['seq']}")
     print(
         f"  подтвержд. : {'требуется' if payload.get('requires_ack') else 'не требуется'}"
@@ -262,7 +263,6 @@ def build_parser() -> argparse.ArgumentParser:
     propose.add_argument("--groups", nargs="*", default=[])
     propose.add_argument("--persons", nargs="*", default=[])
     propose.add_argument("--text", default="")
-    propose.add_argument("--ttl", type=int, default=900)
     propose.set_defaults(func=cmd_propose)
 
     show = sub.add_parser("show", parents=[shared], help="inspect a proposal")
