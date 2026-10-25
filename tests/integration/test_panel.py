@@ -223,7 +223,7 @@ def test_meta_comes_from_the_verified_policy(panel_app):
     codes = {s["code"] for s in meta["scenarios"]}
     assert "EVAC.BUILDING" in codes and "CANARY" not in codes
     assert meta["severities"]["critical"]["launch"] == 2
-    assert "fire-wardens" in meta["groups"]
+    assert meta["recipients"] >= 3  # one audience: everyone
 
 
 def test_a_session_has_no_timeout(panel_app, clock, monotonic):
@@ -331,3 +331,20 @@ def test_active_events_and_their_stand_down_are_linked(panel_app):
     status = officer.get(f"/api/orders/{order_id}").json()
     assert status["cancelled_by"] == cancel_id
     assert officer.get(f"/api/orders/{cancel_id}").json()["cancels"] == order_id
+
+
+def test_there_is_one_audience_everyone(panel_app, server):
+    """No groups or sites to pick: every order from the panel goes to everyone."""
+    lpr = browser(panel_app, "p-001")
+    order_id = propose(lpr, scenario="TEST.PING", severity="info")
+    review = lpr.get(f"/api/proposals/{order_id}").json()
+    audience = review["payload"]["audience"]
+    assert audience["groups"] == ["all"] and not audience["sites"] and not audience["persons"]
+    assert review["fields"]["everyone"] is True
+    assert sign(lpr, order_id)["dispatched"]
+
+    status = lpr.get(f"/api/orders/{order_id}").json()
+    reached = {p["person_id"] for p in status["people"]}
+    roster = server.app.state.alerting.repo.contacts()
+    assert reached == {r["person_id"] for r in roster if r["role"] != "canary"}
+    assert "c-000" not in reached

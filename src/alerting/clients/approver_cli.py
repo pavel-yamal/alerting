@@ -18,6 +18,7 @@ from alerting.clients.keystore import DEFAULT_DIR, StoredKey
 from alerting.clients.session import open_api, unlock
 from alerting.clients.transport import Api
 from alerting.core.canonical import canonicalize
+from alerting.core.envelope import EVERYONE
 from alerting.core.signing import DOMAIN_ORDER, b64u_encode, sign_payload
 
 #: Every field cmd_sign renders. Anything outside this set is surfaced as unshown.
@@ -52,6 +53,8 @@ def cmd_propose(args: argparse.Namespace, api: Api, stored: StoredKey) -> int:
         audience["groups"] = args.groups
     if args.persons:
         audience["persons"] = args.persons
+    # The organisation's one audience, unless narrowed on purpose.
+    audience = audience or {"groups": [EVERYONE]}
 
     result = api.post(
         "/v1/proposals",
@@ -254,6 +257,7 @@ def build_parser() -> argparse.ArgumentParser:
     drill.add_argument("--drill", action="store_true", help="УЧЕНИЕ")
     drill.add_argument("--real", dest="drill", action="store_false", help="БОЕВОЕ")
     propose.add_argument("--action", default="START", choices=["START", "STOP", "HOLD"])
+    # Without any of these the order goes to everyone, as from the panel.
     propose.add_argument("--sites", nargs="*", default=[])
     propose.add_argument("--groups", nargs="*", default=[])
     propose.add_argument("--persons", nargs="*", default=[])

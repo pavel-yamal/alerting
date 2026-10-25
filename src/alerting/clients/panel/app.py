@@ -54,7 +54,7 @@ from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.canonical import canonicalize
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
-from alerting.core.envelope import Severity
+from alerting.core.envelope import EVERYONE, Severity
 from alerting.core.http_auth import MAX_DELEGATION_S, delegation_payload, encode_delegation
 from alerting.core.policy import Policy
 from alerting.core.signing import (
@@ -143,9 +143,8 @@ class ProposalForm(BaseModel):
     #: Required and without a default, as everywhere else in the stack. The form
     #: offers no preselected choice either: the operator has to click one.
     drill: bool
-    groups: list[str] = Field(default_factory=list)
-    sites: list[str] = Field(default_factory=list)
-    persons: list[str] = Field(default_factory=list)
+    #: No audience: the organisation has one, everyone (``EVERYONE``), and real
+    #: alerts to it are also on the public RSS feed.
     text: str = Field(default="", max_length=1000)
     ttl_s: int = Field(default=900, ge=60, le=86400)
 
@@ -238,6 +237,10 @@ def describe_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "groups": list(audience.get("groups") or []),
             "persons": list(audience.get("persons") or []),
         },
+        # The usual audience. Anything else is shown as a warning on the review screen.
+        "everyone": list(audience.get("groups") or []) == [EVERYONE]
+        and not audience.get("sites")
+        and not audience.get("persons"),
         "text": payload.get("text", ""),
         "issued_at": payload["issued_at"],
         "not_valid_after": payload["not_valid_after"],
@@ -770,21 +773,13 @@ def create_panel(
                 }
                 for level, rules in policy.severities.items()
             },
-            "groups": sorted({g for person in roster for g in person["groups"]}),
-            "sites": sorted({person["site"] for person in roster if person["site"]}),
+            # Who "everyone" is right now, for the form to say so.
+            "recipients": sum(1 for person in roster if person.get("role") != "canary"),
         }
 
     @app.post("/api/proposals")
     def propose(body: ProposalForm, session: Session = Depends(issuer)) -> dict[str, Any]:
-        audience = {
-            key: value
-            for key, value in (
-                ("sites", body.sites),
-                ("groups", body.groups),
-                ("persons", body.persons),
-            )
-            if value
-        }
+        audience = {"groups": [EVERYONE]}
         result = _server(
             session.api.post,
             "/v1/proposals",

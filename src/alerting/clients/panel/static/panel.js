@@ -164,62 +164,73 @@ $("logout").addEventListener("click", async () => {
 });
 
 // ---- new proposal form -----------------------------------------------------
+// One audience: everyone. Real alerts also go to the public RSS feed.
+const describe = (code) => {
+  const s = meta && meta.scenarios.find((x) => x.code === code);
+  return s && s.description ? s.description : code;
+};
+const chosenScenario = () => {
+  const picked = document.querySelector("input[name=scenario]:checked");
+  return picked ? meta.scenarios.find((x) => x.code === picked.value) : null;
+};
+
 function fillForm() {
-  const scenario = $("scenario");
-  scenario.replaceChildren(...meta.scenarios.map((s) =>
-    el("option", { value: s.code }, s.description ? `${s.code} — ${s.description}` : s.code)));
-  $("groups").replaceChildren(
-    el("div", { class: "hint" }, "Группы:"),
-    ...meta.groups.map((g) => el("label", { class: "inline" }, el("input", { type: "checkbox", name: "group", value: g }), g)));
-  $("sites").replaceChildren(
-    el("div", { class: "hint" }, "Площадки:"),
-    ...meta.sites.map((s) => el("label", { class: "inline" }, el("input", { type: "checkbox", name: "site", value: s }), s)));
-  scenario.onchange = fillSeverity;
-  $("severity").onchange = quorumHint;
+  $("scenarios").replaceChildren(...meta.scenarios.map((s) =>
+    el("label", { class: "choice" },
+      el("input", { type: "radio", name: "scenario", value: s.code, onchange: fillSeverity }),
+      s.description || s.code, el("small", {}, s.code))));
+  $("severity").onchange = updateSummary;
+  for (const radio of document.querySelectorAll("input[name=drill]")) radio.onchange = updateSummary;
   fillSeverity();
 }
 
 function fillSeverity() {
-  const s = meta.scenarios.find((x) => x.code === $("scenario").value);
+  const s = chosenScenario();
   const lo = s && s.min_severity ? ORDER.indexOf(s.min_severity) : 0;
   const hi = s && s.max_severity ? ORDER.indexOf(s.max_severity) : ORDER.length - 1;
   const allowed = ORDER.filter((level, i) => i >= lo && i <= hi && meta.severities[level]);
   $("severity").replaceChildren(...allowed.map((level) => el("option", { value: level }, SEVERITY[level])));
+  // A choice of one is not a choice: it is shown in the summary instead.
+  $("severity-row").classList.toggle("hidden", !s || allowed.length < 2);
   const parts = [];
-  if (s && (s.min_severity || s.max_severity)) parts.push(`Уровни: ${allowed.map((l) => SEVERITY[l]).join(", ")}.`);
-  if (s && s.until_cancelled) parts.push("Действует до отбоя: эскалация не останавливается по сроку.");
-  if (s && s.card) parts.push(`Исполнитель увидит: «${s.card}»`);
+  if (s && s.until_cancelled) parts.push("Действует до отбоя.");
+  if (s && s.card) parts.push(`Люди увидят: «${s.card}»`);
   $("scenario-hint").textContent = parts.join(" ");
-  quorumHint();
+  updateSummary();
 }
 
-function quorumHint() {
-  const rule = meta.severities[$("severity").value];
-  if (!rule) { $("quorum-hint").textContent = ""; return; }
-  let text = `Нужно подписей: ${rule.launch}`;
-  if (rule.launch > 1 && rule.distinct_persons) text += " от разных людей";
-  const roles = Object.entries(rule.min_from_role || {}).map(([r, n]) => `${r} ×${n}`);
-  if (roles.length) text += `, в том числе ${roles.join(", ")}`;
-  if (rule.spread_s) text += `, все — в пределах ${Math.round(rule.spread_s / 60)} мин`;
-  $("quorum-hint").textContent = text + ".";
+function updateSummary() {
+  const s = chosenScenario();
+  const mode = document.querySelector("input[name=drill]:checked");
+  const level = $("severity").value;
+  const rule = meta.severities[level];
+  if (!s) { fill($("summary"), el("div", { class: "hint" }, "Выберите, что случилось.")); return; }
+  const signers = rule ? rule.launch : "?";
+  fill($("summary"),
+    el("div", {}, el("b", {}, describe(s.code)), level ? ` · ${SEVERITY[level]}` : ""),
+    el("div", {}, `Получат: все (${meta.recipients} чел.)`
+      + (mode && mode.value === "false" ? " и публичная RSS-лента" : mode ? " · учение в RSS-ленту не попадает" : "")),
+    el("div", {}, `Нужно подписей ЛПР: ${signers}` + (rule && rule.launch > 1 ? " — от разных людей" : "")),
+    mode ? null : el("div", { class: "hint" }, "Выберите: учение или боевое."));
 }
 
 $("new-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const out = $("new-msg");
+  const s = chosenScenario();
   const mode = document.querySelector("input[name=drill]:checked");
-  if (!mode) { out.replaceChildren(msg("err", "Выберите режим: УЧЕНИЕ или БОЕВОЕ.")); return; }
-  const groups = [...document.querySelectorAll("input[name=group]:checked")].map((x) => x.value);
-  const sites = [...document.querySelectorAll("input[name=site]:checked")].map((x) => x.value);
-  if (!groups.length && !sites.length) { out.replaceChildren(msg("err", "Выберите, кого оповещать.")); return; }
+  if (!s) { out.replaceChildren(msg("err", "Выберите, что случилось.")); return; }
+  if (!mode) { out.replaceChildren(msg("err", "Выберите: учение или боевое.")); return; }
   try {
     const created = await api("/api/proposals", { method: "POST", body: {
-      scenario: $("scenario").value, severity: $("severity").value, drill: mode.value === "true",
-      groups, sites, text: $("text").value.trim(), ttl_s: Number($("ttl").value),
+      scenario: s.code, severity: $("severity").value, drill: mode.value === "true",
+      text: $("text").value.trim(), ttl_s: Number($("ttl").value),
     }});
-    out.replaceChildren(msg("ok", "Создано. Проверьте и подпишите."));
+    out.replaceChildren();
     $("text").value = "";
     mode.checked = false;
+    document.querySelector("input[name=scenario]:checked").checked = false;
+    fillSeverity();
     await refreshLists();
     openProposal(created.order_id);
   } catch (error) {
@@ -228,28 +239,27 @@ $("new-form").addEventListener("submit", async (event) => {
 });
 
 // ---- lists -----------------------------------------------------------------
+const item = (id, onclick, top, sub) => el("div",
+  { class: "item" + (current && current.id === id ? " active" : ""), onclick }, el("div", { class: "top" }, top), el("div", { class: "sub" }, sub));
+
 async function refreshLists() {
   const [proposals, orders, events] = await Promise.all([
     api("/api/proposals"), api("/api/orders"), api("/api/events/active")]);
   now = proposals.now;
   $("events").replaceChildren(...(events.events.length ? events.events.map((e) =>
-    el("div", { class: "item" + (current && current.id === e.order_id ? " active" : ""), onclick: () => openOrder(e.order_id) },
-      el("div", { class: "top" }, modeTag(e.drill), e.scenario),
-      el("div", { class: "sub" }, `${SEVERITY[e.severity]} · с ${time(e.dispatched_at)} · `
-        + (e.until_cancelled ? "до отбоя" : `до ${time(e.not_valid_after)}`))))
-    : [el("div", { class: "empty" }, "Действующих событий нет.")]));
+    item(e.order_id, () => openOrder(e.order_id), [modeTag(e.drill), describe(e.scenario)],
+      `${SEVERITY[e.severity]} · с ${time(e.dispatched_at)} · ` + (e.until_cancelled ? "до отбоя" : `до ${time(e.not_valid_after)}`)))
+    : [el("div", { class: "empty" }, "Всё спокойно: действующих оповещений нет.")]));
   const open = proposals.proposals.filter((p) => p.status === "open");
   $("proposals").replaceChildren(...(open.length ? open.map((p) =>
-    el("div", { class: "item" + (current && current.id === p.order_id ? " active" : ""), onclick: () => openProposal(p.order_id) },
-      el("div", { class: "top" }, modeTag(p.drill), p.cancels ? "ОТБОЙ " : "", p.scenario),
-      el("div", { class: "sub" }, `${SEVERITY[p.severity]} · подписали: ${p.signed_by.length ? p.signed_by.join(", ") : "никто"} · ${left(p.not_valid_after)}`)))
-    : [el("div", { class: "empty" }, "Нет приказов, ожидающих подписи.")]));
+    item(p.order_id, () => openProposal(p.order_id), [modeTag(p.drill), p.cancels ? "Отбой: " : "", describe(p.scenario)],
+      `подписей: ${p.signed_by.length} · ${left(p.not_valid_after)}`))
+    : [el("div", { class: "empty" }, "Нет.")]));
   $("orders").replaceChildren(...(orders.orders.length ? orders.orders.map((o) =>
-    el("div", { class: "item" + (current && current.id === o.order_id ? " active" : ""), onclick: () => openOrder(o.order_id) },
-      el("div", { class: "top" }, modeTag(o.drill), o.cancels ? "ОТБОЙ " : "", o.scenario,
-        o.cancelled_by ? el("span", { class: "tag ok" }, "отменён") : null),
-      el("div", { class: "sub" }, `${SEVERITY[o.severity]} · разослан ${time(o.dispatched_at)}`)))
-    : [el("div", { class: "empty" }, "Ещё ничего не разослано.")]));
+    item(o.order_id, () => openOrder(o.order_id),
+      [modeTag(o.drill), o.cancels ? "Отбой: " : "", describe(o.scenario), o.cancelled_by ? el("span", { class: "tag ok" }, "отменено") : null],
+      `${SEVERITY[o.severity]} · ${time(o.dispatched_at)}`))
+    : [el("div", { class: "empty" }, "Пока ничего не рассылалось.")]));
 }
 
 $("open-btn").addEventListener("click", () => {
@@ -275,21 +285,31 @@ async function openProposal(id) {
     if (await DeviceKey.digestHex("order", view.payload) !== view.digest) problems.push("панель и страница видят разные приказы");
     if (deviceRecord && deviceRecord.org_id && view.payload.org_id !== deviceRecord.org_id) problems.push("приказ другой организации");
   }
-  const audience = [
+  // The usual audience is everyone; anything else is shown loudly, field by field.
+  const everyone = f.audience.groups.length === 1 && f.audience.groups[0] === "all"
+    && !f.audience.sites.length && !f.audience.persons.length;
+  const unusual = [
     f.audience.groups.length ? `группы: ${f.audience.groups.join(", ")}` : null,
     f.audience.sites.length ? `площадки: ${f.audience.sites.join(", ")}` : null,
     f.audience.persons.length ? `лично: ${f.audience.persons.join(", ")}` : null,
   ].filter(Boolean).join("; ") || "ПУСТО — приказ не дойдёт ни до кого";
 
   const rows = [
-    ["Сценарий", f.scenario], ["Важность", SEVERITY[f.severity] || f.severity],
-    ["Действие", ACTION[f.action] || f.action], ["Кому", audience],
+    ["Что", `${describe(f.scenario)} (${f.scenario})`],
+    ["Режим", f.drill ? "учение" : "БОЕВОЕ"],
+    ["Уровень", SEVERITY[f.severity] || f.severity],
+    ["Действие", ACTION[f.action] || f.action],
+    ["Кому", everyone ? `все${f.drill ? "" : " и публичная RSS-лента"}` : unusual],
     ["Пояснение", f.text || "—"],
     ["Действует", `до ${time(f.not_valid_after)} (${left(f.not_valid_after)})`],
-    ["Подтверждение", f.requires_ack ? `требуется, срок ${f.ack_deadline_s} с` : "не требуется"],
-    f.cancels ? ["ОТМЕНЯЕТ приказ", f.cancels] : null,
-    ["Поток / номер", f.stream], ["Организация / политика", `${f.org_id} / ${f.policy_id}`],
+    f.cancels ? ["Отменяет приказ", f.cancels] : null,
   ].filter(Boolean);
+  // Still every signed field -- just the technical ones folded away.
+  const technical = [
+    ["Подтверждение", f.requires_ack ? `требуется, срок ${f.ack_deadline_s} с` : "не требуется"],
+    ["Поток / номер", f.stream], ["Организация / политика", `${f.org_id} / ${f.policy_id}`],
+  ];
+  const table = (list) => el("table", {}, list.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v))));
 
   const check = el("input", { type: "checkbox", id: "reviewed" });
   const signBtn = el("button", { class: f.drill ? "primary" : "danger", type: "button", disabled: "" }, "Подписать");
@@ -322,17 +342,19 @@ async function openProposal(id) {
   fill(detail,
     el("div", { class: "banner " + (f.drill ? "drill" : "real") },
       (f.cancels ? "ОТБОЙ · " : "") + (f.drill ? "УЧЕНИЕ" : "БОЕВОЕ — реальное оповещение")),
-    el("h2", {}, "Вы подписываете"),
-    el("table", {}, rows.map(([k, v]) => el("tr", {}, el("th", {}, k), el("td", {}, v)))),
+    el("h2", {}, view.can_sign ? "Проверьте и подпишите" : "Ждёт подписи ЛПР"),
+    everyone ? null : msg("err", `Необычные получатели: ${unusual}. Панель так не делает — проверьте, прежде чем подписывать.`),
+    table(rows),
+    el("details", { class: "more" }, el("summary", {}, "Технические поля"), table(technical)),
     f.unexpected_fields.length ? msg("err", `В приказе есть поля, которые панель не показывает: ${f.unexpected_fields.join(", ")}. Не подписывайте.`) : null,
     problems.length ? msg("err", `Подписать нельзя: ${problems.join("; ")}.`) : null,
     local ? el("div", { class: "hint" }, "Подпись ставится ключом этого устройства, здесь, над показанными полями.") : null,
     el("h3", {}, `Подписи: ${view.signed_by.length} из ${view.required ?? "?"}`),
     view.signed_by.length ? el("ul", {}, view.signed_by.map((s) => el("li", {}, s))) : el("div", { class: "empty" }, "Пока никто не подписал."),
     view.signed_by_me ? msg("warn", "Вы уже подписали этот приказ. Нужна подпись другого человека.") : null,
-    !view.can_sign ? msg("warn", "По политике ваша подпись не засчитывается в кворум. Подписать должны ЛПР.") : null,
-    el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")),
-    el("div", { class: "row" }, signBtn, el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить")),
+    view.can_sign && !view.signed_by_me ? el("div", { class: "row" }, el("label", { class: "inline" }, check, "Я проверил все поля приказа")) : null,
+    el("div", { class: "row" }, view.can_sign && !view.signed_by_me ? signBtn : null,
+      el("button", { type: "button", onclick: () => openProposal(id) }, "Обновить")),
     el("div", { class: "hint" }, "ID: ", el("code", {}, id)),
     out,
   );
@@ -383,7 +405,7 @@ function renderOrder(s) {
   }}, "Отбой");
 
   fill($("detail"),
-    el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${s.scenario} · разослан ${time(s.dispatched_at)}`),
+    el("div", { class: "banner " + (s.drill ? "drill" : "real") }, `${s.drill ? "УЧЕНИЕ" : "БОЕВОЕ"} · ${describe(s.scenario)} · ${time(s.dispatched_at)}`),
     el("div", { class: "big" }, `Подтвердили: ${s.acknowledged} из ${total}`),
     el("div", { class: "hint" }, "«Получено устройством» — приложение приняло и проверило приказ. Подтверждение — когда человек нажал «принял»."),
     s.reached_nobody ? msg("err", "Приказ не дошёл ни до кого: в аудитории нет активных контактов.") : null,
@@ -649,14 +671,12 @@ $("add-form").addEventListener("submit", async (event) => {
   const person = $("add-person").value.trim();
   const change = { op: "add_key", person_id: person, name: $("add-name").value.trim(),
                    role: $("add-role").value, public_key: $("add-key").value.trim() };
-  const groups = $("add-groups").value.split(",").map((g) => g.trim()).filter(Boolean);
   try {
-    if ($("add-phone").value.trim() || $("add-site").value.trim() || groups.length) {
-      await api("/api/contacts", { method: "POST", body: { person_id: person, name: change.name,
-        phone: $("add-phone").value.trim(), site: $("add-site").value.trim(), groups, role: change.role } });
-    }
-    queue(change, groups.length ? "Контакт сохранён на сервере." : "");
-    for (const id of ["add-person", "add-name", "add-key", "add-phone", "add-site", "add-groups"]) $(id).value = "";
+    // Every contact is in the one audience, "everyone": no groups or sites to choose.
+    await api("/api/contacts", { method: "POST", body: { person_id: person, name: change.name,
+      phone: $("add-phone").value.trim(), role: change.role } });
+    queue(change, "Получатель сохранён на сервере.");
+    for (const id of ["add-person", "add-name", "add-key", "add-phone"]) $(id).value = "";
     $("add-kid").textContent = "";
   } catch (error) {
     $("dir-msg").replaceChildren(msg("err", error.message));
@@ -721,7 +741,10 @@ async function start() {
   $("org").textContent = `организация ${meta.org_id}`;
   fillForm();
   // Orders are issued by decision-makers only; the duty officer watches.
-  $("new-form").closest("section").classList.toggle("hidden", !me.can_issue);
+  $("compose").classList.toggle("hidden", !me.can_issue);
+  $("alerts-view").classList.toggle("viewer", !me.can_issue);
+  $("viewer-note").classList.toggle("hidden", me.can_issue);
+  $("detail-create").classList.toggle("hidden", !me.can_issue);
   $("login").classList.add("hidden");
   $("app").classList.remove("hidden");
   await refreshLists();

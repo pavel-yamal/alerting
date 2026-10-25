@@ -19,7 +19,6 @@ critical:
   - {at_s: 60,  channels: [sms]}
   - {at_s: 180, channels: [voice]}
   - {at_s: 300, notify_role: duty_officer}
-  - {at_s: 420, reassign_to_group: alternates}
   - {at_s: 600, channels: [siren]}
 
 catastrophic:

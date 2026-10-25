@@ -102,6 +102,12 @@ class CanonicalModel(BaseModel):
         return canonicalize(self.to_payload())
 
 
+#: The one audience the organisation uses: every active recipient. Real alerts to it
+#: also go out on the public RSS feed. Sites, groups and named persons remain in the
+#: format for the CLI and old orders; the panel offers nothing else.
+EVERYONE = "all"
+
+
 class Audience(CanonicalModel):
     """Who the order is addressed to. Empty everywhere means nobody, which is a bug."""
 
