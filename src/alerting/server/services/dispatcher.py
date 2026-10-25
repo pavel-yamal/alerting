@@ -21,7 +21,6 @@ from alerting.core.audit_chain import Event
 from alerting.core.clock import Clock
 from alerting.core.envelope import OrderPayload, SignedEnvelope
 from alerting.core.errors import Reason
-from alerting.core.quorum import evaluate_quorum
 from alerting.core.signing import payload_digest
 from alerting.core.verify import Decision, verify_envelope
 from alerting.server.channels.base import (
@@ -80,10 +79,9 @@ class Dispatcher:
         self.replay = DatabaseReplayWindow(repo)
         self.known_orders = KnownOrders(repo)
 
-    def check(self, envelope: SignedEnvelope, observed_at: dict[str, int]) -> Decision:
-        """Full verification plus the server-only signature-spread rule."""
-        cancel_target = self._cancel_target(envelope)
-        decision = verify_envelope(
+    def check(self, envelope: SignedEnvelope) -> Decision:
+        """Full verification against the current directory and policy."""
+        return verify_envelope(
             envelope,
             directory=self.state.directory(),
             policy=self.state.policy(),
@@ -91,41 +89,7 @@ class Dispatcher:
             replay=self.replay,
             org_id=self.state.org_id,
             seen_order_ids=self.known_orders,
-            cancel_target=cancel_target,
-        )
-        if not decision.accepted or decision.payload is None:
-            return decision
-
-        rule = self.state.policy().rule_for(
-            decision.payload.severity, is_cancel=decision.payload.is_cancel
-        )
-        if rule is None or rule.max_signature_spread_s is None:
-            return decision
-
-        directory = self.state.directory()
-        entries = [
-            entry
-            for entry in (directory.lookup(kid) for kid in decision.valid_signers)
-            if entry is not None
-        ]
-        spread = evaluate_quorum(
-            entries,
-            rule,
-            issued_at=decision.payload.issued_at,
-            approver_roles=self.state.policy().approver_roles,
-            observed_at=observed_at,
-        )
-        if spread.met:
-            return decision
-        return Decision(
-            accepted=False,
-            reasons=spread.reasons,
-            warnings=decision.warnings,
-            valid_signers=decision.valid_signers,
-            signer_persons=decision.signer_persons,
-            is_drill=decision.is_drill,
-            payload=decision.payload,
-            quorum=spread,
+            cancel_target=self._cancel_target(envelope),
         )
 
     def _cancel_target(self, envelope: SignedEnvelope) -> OrderPayload | None:
@@ -146,11 +110,10 @@ class Dispatcher:
         self,
         envelope: SignedEnvelope,
         *,
-        observed_at: dict[str, int] | None = None,
         channels: tuple[str, ...] = DEFAULT_FIRST_CHANNELS,
     ) -> DispatchResult:
         """Verify and, if it holds, send to every matching recipient."""
-        decision = self.check(envelope, observed_at or {})
+        decision = self.check(envelope)
         if not decision.accepted or decision.payload is None:
             self.audit.append(
                 Event.ORDER_DISPATCHED,

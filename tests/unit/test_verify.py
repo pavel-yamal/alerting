@@ -12,9 +12,18 @@ import pytest
 from alerting.core.directory import Directory, DirectoryPayload, Revocation
 from alerting.core.envelope import Action, Audience, Severity, Signature, SignedEnvelope
 from alerting.core.errors import Reason
+from alerting.core.policy import Policy
+from alerting.core.replay import ReplayWindow
 from alerting.core.signing import ALG_ED25519, DOMAIN_DIRECTORY
 from alerting.core.verify import verify_envelope
-from alerting.orgkit import Org, make_order, sign_bundle, sign_order
+from alerting.orgkit import (
+    DEFAULT_SCENARIOS,
+    Org,
+    build_org,
+    make_order,
+    sign_bundle,
+    sign_order,
+)
 from tests.conftest import ISSUED_AT
 
 
@@ -159,13 +168,45 @@ def test_duplicate_order_id_is_rejected(org, verify_kwargs):
     assert Reason.DUPLICATE_ORDER_ID in decision.reasons
 
 
-def test_expired_order_is_shown_with_a_warning_not_dropped(org, verify_kwargs):
-    """Silence is indistinguishable from 'no emergency'. Expiry degrades OPEN."""
+def test_expired_order_is_shown_with_a_warning_not_dropped(clock):
+    """Silence is indistinguishable from 'no emergency'. Expiry degrades OPEN.
+
+    Only a scenario that ends with its window can expire, so this one is made timed.
+    """
+    evac = DEFAULT_SCENARIOS["EVAC.BUILDING"].model_copy(update={"until_cancelled": None})
+    org = build_org(issued_at=ISSUED_AT, scenarios={**DEFAULT_SCENARIOS, "EVAC.BUILDING": evac})
     envelope = sign_order(make_order(org, ttl_s=60), two_approvers(org))
-    verify_kwargs["clock"].advance(600)
-    decision = verify_envelope(envelope, **verify_kwargs)
+    clock.advance(600)
+    decision = verify_envelope(
+        envelope,
+        directory=Directory.load(
+            org.directory_bundle, root_public_key=org.root_public_key, org_id=org.org_id
+        ),
+        policy=Policy.load(
+            org.policy_bundle, root_public_key=org.root_public_key, org_id=org.org_id
+        ),
+        clock=clock,
+        replay=ReplayWindow(),
+        org_id=org.org_id,
+    )
     assert decision.accepted
     assert Reason.W_EXPIRED in decision.warnings
+
+
+def test_an_event_until_stand_down_and_its_stand_down_never_expire(org, verify_kwargs):
+    """Both wait for their signatures without a deadline: a window that closed while
+    the second decision-maker was on the way must not read "expired" to anyone."""
+    launch = make_order(org, ttl_s=60)
+    cancel = make_order(
+        org, seq=2, ttl_s=60, order_type="cancel", cancels=launch.order_id, action="STOP"
+    )
+    verify_kwargs["clock"].advance(7 * 24 * 3600)
+    for envelope, target in ((launch, None), (cancel, launch)):
+        decision = verify_envelope(
+            sign_order(envelope, two_approvers(org)), cancel_target=target, **verify_kwargs
+        )
+        assert decision.accepted, decision.reasons
+        assert Reason.W_EXPIRED not in decision.warnings
 
 
 def test_order_from_the_far_future_is_rejected(org, verify_kwargs):

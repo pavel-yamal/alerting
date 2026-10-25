@@ -261,14 +261,14 @@ def test_a_stand_down_marks_the_original_order(mobile_app, server, org, clock):
             "cancels": order_id,
         },
     ).json()
-    person = org.person("p-003")
-    server.post(
-        f"/v1/proposals/{cancel['order_id']}/signatures",
-        json={
-            "key_id": person.key_id,
-            "sig": sign_payload(DOMAIN_ORDER, cancel["payload"], person.private_key),
-        },
-    ).raise_for_status()
+    for person in (org.person("p-003"), org.person("p-002")):  # two, as for the launch
+        server.post(
+            f"/v1/proposals/{cancel['order_id']}/signatures",
+            json={
+                "key_id": person.key_id,
+                "sig": sign_payload(DOMAIN_ORDER, cancel["payload"], person.private_key),
+            },
+        ).raise_for_status()
 
     orders = wait_for(
         lambda: (o := executor.get("/api/inbox").json()["orders"]) and len(o) == 2 and o
@@ -451,12 +451,13 @@ def test_a_stand_down_missed_while_offline_closes_the_event_on_reconnect(
         "payload": cancel["payload"],
         "signatures": [
             {
-                "key_id": org.person("p-003").key_id,
+                "key_id": org.person(person_id).key_id,
                 "alg": "Ed25519",
                 "sig": sign_payload(
-                    DOMAIN_ORDER, cancel["payload"], org.person("p-003").private_key
+                    DOMAIN_ORDER, cancel["payload"], org.person(person_id).private_key
                 ),
             }
+            for person_id in ("p-003", "p-002")
         ],
     }
 

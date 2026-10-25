@@ -107,7 +107,9 @@ async def test_report_flags_a_rapid_relaunch_after_a_stand_down(
         action="STOP",
         audience=Audience(groups=("fire-wardens",)),
     )
-    await services.dispatcher.dispatch(sign_order(cancel, [org.person("p-003")]))
+    await services.dispatcher.dispatch(
+        sign_order(cancel, [org.person("p-002"), org.person("p-003")])
+    )
 
     clock.advance(60)
     await incident(services, org, clock)

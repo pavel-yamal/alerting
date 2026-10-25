@@ -83,7 +83,7 @@ def test_an_extra_executor_signature_does_not_invalidate_a_real_quorum(org, veri
 
 def test_quorum_counts_only_permitted_roles():
     signers = [entry("k1", "p1", "lpr"), entry("k2", "x1", "executor")]
-    result = evaluate_quorum(signers, QuorumRule(m=2), issued_at=100, approver_roles=APPROVER_ROLES)
+    result = evaluate_quorum(signers, QuorumRule(m=2), approver_roles=APPROVER_ROLES)
     assert not result.met
     assert result.detail["effective"] == 1
     assert result.detail["dropped_unauthorized"] is True

@@ -45,11 +45,7 @@ async def dispatch(client: TestClient, org: Org, clock: FixedClock, **kwargs: An
     order = make_order(
         org, issued_at=clock.now(), audience=Audience(groups=("fire-wardens",)), **kwargs
     )
-    signers = (
-        [org.person("p-001")]
-        if kwargs.get("order_type") == "cancel"
-        else [org.person("p-001"), org.person("p-002")]
-    )
+    signers = [org.person("p-001"), org.person("p-002")]  # a stand-down too (ADR 0003)
     result = await client.app.state.alerting.dispatcher.dispatch(sign_order(order, signers))
     assert result.accepted, result.decision.reasons
     return order

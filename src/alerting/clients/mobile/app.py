@@ -45,7 +45,6 @@ from alerting.clients.transport import Api, ServerError, SignedRequests
 from alerting.core.clock import Clock, SystemClock
 from alerting.core.directory import Directory
 from alerting.core.envelope import AckStatus, OrderPayload
-from alerting.core.errors import Reason
 from alerting.core.policy import Policy
 from alerting.core.receipts import build_ack
 from alerting.core.signing import DOMAIN_DEVICE_AUTH, sign_payload
@@ -410,13 +409,9 @@ class Mobile:
             )
             directory = session.directory
             names = {e.person_id: e.name for e in directory.payload.keys}
+            # An event lasting until its stand-down never carries "expired": verify
+            # leaves that warning out itself.
             warnings = list(decision.warnings)
-            if decision.payload is not None and session.policy.lasts_until_cancelled(
-                decision.payload.scenario
-            ):
-                # Its delivery window closing does not end it -- a stand-down does --
-                # so "expired, confirm by voice" would tell the person the wrong thing.
-                warnings = [w for w in warnings if w != Reason.W_EXPIRED]
             item = InboxItem(
                 arrival=len(session.inbox) + 1,
                 envelope=envelope,

@@ -27,17 +27,20 @@ def server(settings: Settings, clock: FixedClock, org: Org) -> Iterator[TestClie
 
 
 def stand_down(server: TestClient, org: Org, clock: FixedClock, target: str, text: str) -> str:
-    """One decision-maker stands a critical event down (cancel quorum is 1)."""
-    lpr = org.person("p-001")
+    """Two decision-makers stand a critical event down, as they launched it."""
     server.auth = signer_for(org, "p-001", clock)
     body = {"scenario": "EVAC.BUILDING", "severity": "critical", "drill": False,
             "action": "STOP", "cancels": target, "text": text,
             "audience": {"groups": ["fire-wardens"]}}  # fmt: skip
     proposal = server.post("/v1/proposals", json=body).json()
-    sig = sign_payload(DOMAIN_ORDER, proposal["payload"], lpr.private_key)
-    signed = server.post(
-        f"/v1/proposals/{proposal['order_id']}/signatures", json={"key_id": lpr.key_id, "sig": sig}
-    )
+    for person_id in ("p-001", "p-002"):
+        lpr = org.person(person_id)
+        server.auth = signer_for(org, person_id, clock)
+        sig = sign_payload(DOMAIN_ORDER, proposal["payload"], lpr.private_key)
+        signed = server.post(
+            f"/v1/proposals/{proposal['order_id']}/signatures",
+            json={"key_id": lpr.key_id, "sig": sig},
+        )
     assert signed.json()["dispatched"], signed.text
     order_id: str = proposal["order_id"]
     return order_id
@@ -75,3 +78,30 @@ def test_drills_and_the_audience_stay_out(server, org, clock):
     raw = TestClient(server.app).get("/v1/feed.rss").text
     for private in ("fire-wardens", "x-101", "p-001", org.person("p-001").name):
         assert private not in raw
+
+
+def test_a_proposal_waits_for_its_second_signature_without_a_deadline(server, org, clock):
+    """No timer anywhere: the second decision-maker may sign a week later, and the
+    order goes out like any other -- no "expired", no "signatures too far apart"."""
+    server.auth = signer_for(org, "p-001", clock)
+    body = {"scenario": "EVAC.BUILDING", "severity": "critical", "drill": False,
+            "audience": {"groups": ["fire-wardens"]},
+            "ttl_s": 600}  # sent by a client of the previous build: ignored  # fmt: skip
+    proposal = server.post("/v1/proposals", json=body).json()
+
+    def sign(person_id: str) -> dict:
+        person = org.person(person_id)
+        server.auth = signer_for(org, person_id, clock)
+        sig = sign_payload(DOMAIN_ORDER, proposal["payload"], person.private_key)
+        return server.post(
+            f"/v1/proposals/{proposal['order_id']}/signatures",
+            json={"key_id": person.key_id, "sig": sig},
+        ).json()
+
+    assert sign("p-001")["dispatched"] is False
+    clock.advance(7 * 24 * 3600)
+    second = sign("p-002")
+    assert second["dispatched"] is True, second
+    # A week also makes the key directory stale; that warning is about the directory.
+    assert "warn_expired" not in second["warnings"]
+    assert [i["guid"] for i in items(server)] == [proposal["order_id"]]

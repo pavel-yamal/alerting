@@ -122,23 +122,13 @@ DEFAULT_SCENARIOS: dict[str, ScenarioRule] = {
     ),
 }
 
-#: Two different decision-makers launch every order, drill or real, whatever its
-#: level: people choose only drill or real, and the level comes from the scenario, so
-#: a quorum that differed by level would be a difference nobody chose. Cancel quorum
-#: is deliberately at most launch: the safe direction is stopping.
-#: See docs/adr/0003-cancel-quorum.md.
-_TWO = QuorumRule(m=2, max_signature_spread_s=300, distinct_persons=True)
+#: Two different decision-makers sign every order and every stand-down, drill or
+#: real, whatever its level: people choose only drill or real, and the level comes
+#: from the scenario, so a quorum that differed by level would be a difference nobody
+#: chose. See docs/adr/0003-cancel-quorum.md.
+_TWO = QuorumRule(m=2, distinct_persons=True)
 DEFAULT_SEVERITIES: dict[Severity, SeverityRules] = {
-    Severity.INFO: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
-    Severity.WARNING: SeverityRules(launch=_TWO, cancel=QuorumRule(m=1)),
-    Severity.CRITICAL: SeverityRules(
-        launch=_TWO,
-        cancel=QuorumRule(m=1),
-    ),
-    Severity.CATASTROPHIC: SeverityRules(
-        launch=QuorumRule(m=2, max_signature_spread_s=600, distinct_persons=True),
-        cancel=QuorumRule(m=2),
-    ),
+    level: SeverityRules(launch=_TWO, cancel=_TWO) for level in Severity
 }
 
 DEFAULT_ROSTER: list[tuple[str, str, str]] = [

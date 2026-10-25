@@ -126,7 +126,9 @@ async def test_a_cancelled_order_stops_escalating(services, org, clock):
         action="STOP",
         audience=Audience(groups=("fire-wardens",)),
     )
-    result = await services.dispatcher.dispatch(sign_order(cancel, [org.person("p-001")]))
+    result = await services.dispatcher.dispatch(
+        sign_order(cancel, [org.person("p-001"), org.person("p-002")])
+    )
     assert result.accepted, result.decision.reasons
 
     clock.advance(300)

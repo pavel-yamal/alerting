@@ -17,13 +17,10 @@ from alerting.core.signing import DOMAIN_POLICY, verify_signature
 
 
 class QuorumRule(CanonicalModel):
-    """How many signatures, from whom, collected how fast."""
+    """How many signatures, and from whom. Not how fast: a proposal waits for its
+    signatures without a deadline, and every decision-maker sees it waiting."""
 
     m: StrictInt = Field(ge=1, le=16)
-
-    #: Bounds how long a half-approved proposal may sit collecting its last signature.
-    #: Without it, an approver could sign now and the order could fire next month.
-    max_signature_spread_s: StrictInt | None = Field(default=None, ge=0, le=86400)
 
     #: Stops one human with two enrolled devices from satisfying a 2-of-N alone.
     distinct_persons: StrictBool = True

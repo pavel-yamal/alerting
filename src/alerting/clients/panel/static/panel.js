@@ -218,7 +218,7 @@ $("new-form").addEventListener("submit", async (event) => {
   try {
     const created = await api("/api/proposals", { method: "POST", body: {
       scenario: s.code, drill: mode.value === "true",
-      text: $("text").value.trim(), ttl_s: Number($("ttl").value),
+      text: $("text").value.trim(),
     }});
     out.replaceChildren();
     $("text").value = "";

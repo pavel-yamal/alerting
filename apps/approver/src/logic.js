@@ -92,7 +92,6 @@ const VAULT_ERRORS = {
     role_requirement_unmet: "не хватает подписи с нужной ролью",
     unauthorized_signer_role: "подпись человека без права издавать приказы",
     duplicate_signer: "этот ключ уже подписал",
-    signature_spread_exceeded: "подписи собраны слишком далеко друг от друга по времени — нужна новая",
   };
   const blockingText = (code) => BLOCKING[code] || code;
 

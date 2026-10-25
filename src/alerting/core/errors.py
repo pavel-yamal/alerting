@@ -39,7 +39,6 @@ class Reason(StrEnum):
     NOT_DISTINCT_PERSONS = "not_distinct_persons"
     ROLE_REQUIREMENT_UNMET = "role_requirement_unmet"
     UNAUTHORIZED_SIGNER_ROLE = "unauthorized_signer_role"
-    SIGNATURE_SPREAD_EXCEEDED = "signature_spread_exceeded"
 
     # --- freshness ----------------------------------------------------------
     REPLAYED = "replayed"
