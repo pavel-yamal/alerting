@@ -139,7 +139,7 @@ async function showLogin(reason) {
   show("login");
   renderChrome();
   $("login-msg").replaceChildren(reason ? msg("warn", reason) : "");
-  $("login-panel").textContent = `Панель: ${panelUrl}` + (config ? ` · организация ${config.org_id}` : "");
+  $("login-panel").textContent = `Панель: ${panelUrl}` + (config ? ` · ${config.org_label || `организация ${config.org_id}`}` : "");
   let keys = [];
   try {
     keys = (await Vault.list()).filter((k) => k.panel === panelUrl && (!config || k.org_id === config.org_id));

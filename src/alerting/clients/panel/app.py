@@ -94,6 +94,9 @@ APP_CLIENT = "app"
 #: ``Authorization``, which no other page can make a browser attach.
 APP_ORIGINS = ("capacitor://localhost", "https://localhost")
 
+#: The privacy page's operator line when the installation names no organisation.
+PRIVACY_OPERATOR = "организация, эксплуатирующая систему оповещения"
+
 #: How often every session is checked even if nobody calls the panel at all: a
 #: revoked key or a lapsed delegation must end the session without waiting for a
 #: request from a tab that may be closed.
@@ -617,7 +620,7 @@ def create_panel(
     server_keys: bool = True,
     app_origins: tuple[str, ...] = APP_ORIGINS,
     demo_enroll: DemoEnroll | None = None,
-    org_label: str = "организация, эксплуатирующая систему оповещения",
+    org_label: str | None = None,
     privacy_contact: str = "служба, ответственная за систему оповещения в вашей организации",
 ) -> FastAPI:
     panel = Panel(
@@ -711,7 +714,7 @@ def create_panel(
     def privacy() -> Response:
         """The app's privacy policy, public and without login (App Store rule 5.1.1)."""
         page = (STATIC_DIR / "privacy.html").read_text(encoding="utf-8")
-        page = page.replace("{org_label}", html.escape(org_label)).replace(
+        page = page.replace("{org_label}", html.escape(org_label or PRIVACY_OPERATOR)).replace(
             "{contact}", html.escape(privacy_contact)
         )
         return Response(page, media_type="text/html; charset=utf-8")
@@ -748,6 +751,9 @@ def create_panel(
             "server_keys": panel.server_keys,
             # A demonstration stand that enrols app keys by itself (demo_enroll.py).
             "demo": demo_enroll is not None,
+            # What people call the organisation (ALERTING_ORG_LABEL); the id stays
+            # the technical key in signatures. None when unset: screens show the id.
+            "org_label": org_label,
         }
 
     if demo_enroll is not None:

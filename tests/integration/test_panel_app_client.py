@@ -232,3 +232,24 @@ def test_the_privacy_policy_is_public_and_names_the_operator(server, clock, org,
     assert "АНО «Ямал-Медиа»" in page.text
     assert "&lt;b&gt;dpo@example.ru&lt;/b&gt;" in page.text, "settings are text, not markup"
     assert "{contact}" not in page.text and "{org_label}" not in page.text
+
+
+def test_screens_get_the_organisation_name_not_only_its_id(server, clock, org, tmp_path):
+    """ALERTING_ORG_LABEL reaches the panel and the app: they show it instead of the id."""
+    named = make_panel(server, clock, org, tmp_path / "n", org_label="YamalMedia")
+    assert TestClient(named).get("/api/config").json()["org_label"] == "YamalMedia"
+    unnamed = make_panel(server, clock, org, tmp_path / "u")
+    assert TestClient(unnamed).get("/api/config").json()["org_label"] is None
+    assert "организация, эксплуатирующая" in TestClient(unnamed).get("/privacy").text
+
+
+def test_compose_hands_the_label_to_the_panel():
+    """The panel's own environment replaces the shared one, so the label is passed by name."""
+    import pathlib
+
+    import yaml
+
+    compose = yaml.safe_load(
+        (pathlib.Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
+    )
+    assert "ALERTING_ORG_LABEL" in compose["services"]["panel"]["environment"]

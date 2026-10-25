@@ -166,6 +166,7 @@ def test_the_demo_login_is_off(panel_app, org):
         "device_login": True,
         "server_keys": False,
         "demo": False,
+        "org_label": None,
     }
 
 

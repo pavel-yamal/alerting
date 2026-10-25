@@ -113,6 +113,8 @@ services:
       ALERTING_PANEL_SERVER: http://server:8080
       ALERTING_PANEL_HOMES: /var/lib/alerting/clients
       ALERTING_PANEL_ORG: ${ALERTING_ORG:-acme}
+      # Своё окружение панели заменяет общее целиком: подпись передаётся явно.
+      ALERTING_ORG_LABEL: ${ALERTING_ORG_LABEL:-ACME}
       ALERTING_PANEL_ROOT_PUBKEY: ${ALERTING_ROOT_PUBKEY:-}
       # Наибольшие виденные версии справочника, отзывов и политики. На томе, а не в
       # контейнере: пересоздание контейнера не должно сбрасывать защиту от отката.

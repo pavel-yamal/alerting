@@ -65,7 +65,7 @@ async function api(path, options = {}) {
 }
 
 // ---- login -----------------------------------------------------------------
-let config = { device_login: false, server_keys: false, org_id: null };
+let config = { device_login: false, server_keys: false, org_id: null, org_label: null };
 
 function showLogin(reason) {
   deviceKey = null;
@@ -725,7 +725,7 @@ async function start() {
   }
   meta = await api("/api/meta");
   $("who").textContent = `${me.name} · ${ROLE[me.role] || me.role} · ${me.person_id}` + (me.device_key ? " · ключ устройства" : " · демо-ключ на сервере");
-  $("org").textContent = `организация ${meta.org_id}`;
+  $("org").textContent = config.org_label || `организация ${meta.org_id}`;
   fillForm();
   // Orders are issued by decision-makers only; the duty officer watches.
   $("compose").classList.toggle("hidden", !me.can_issue);
