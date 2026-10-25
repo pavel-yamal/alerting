@@ -241,7 +241,24 @@ $("new-form").addEventListener("submit", async (event) => {
 const item = (id, onclick, top, sub) => el("div",
   { class: "item" + (current && current.id === id ? " active" : ""), onclick }, el("div", { class: "top" }, top), el("div", { class: "sub" }, sub));
 
+// The codebook can change while this is open: a newly published policy adds or
+// renames events. /api/meta re-verifies the signed bundles on the panel, so it is asked
+// at most once a minute, and at once when the form is about to be used; the form is
+// rebuilt only if the events changed, so a half-filled one is not wiped.
+const META_EVERY_MS = 60000;
+let metaAt = 0;
+async function syncMeta(force = false) {
+  if (!force && Date.now() - metaAt < META_EVERY_MS) return;
+  const fresh = await api("/api/meta");
+  metaAt = Date.now();
+  const changed = JSON.stringify([fresh.scenarios, fresh.severities])
+    !== JSON.stringify([meta.scenarios, meta.severities]);
+  meta = fresh;
+  if (changed) fillForm();
+}
+
 async function refreshLists() {
+  syncMeta().catch(() => { /* the list it has stays */ });
   const [proposals, orders, events] = await Promise.all([
     api("/api/proposals"), api("/api/orders"), api("/api/events/active")]);
   now = proposals.now;
@@ -743,6 +760,7 @@ async function start() {
     return;
   }
   meta = await api("/api/meta");
+  metaAt = Date.now();
   $("who").textContent = `${me.name} · ${ROLE[me.role] || me.role} · ${me.person_id}` + (me.device_key ? " · ключ устройства" : " · демо-ключ на сервере");
   $("org").textContent = config.org_label || `организация ${meta.org_id}`;
   fillForm();
