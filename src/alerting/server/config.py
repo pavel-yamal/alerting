@@ -57,6 +57,12 @@ class Settings:
     root_public_key: str = ""
     org_label: str = "ACME"
 
+    #: Where people reach this node from outside, e.g. ``https://alert.example.org``:
+    #: the RSS channel links to its feed there. Behind nginx in a container the node
+    #: sees neither the public name nor https, so it is set rather than guessed; left
+    #: empty, the link is built from the request's own host.
+    public_url: str = ""
+
     #: Path to the Ed25519 private key that signs published audit heads. Never the key
     #: itself — see the module docstring. Empty means heads are published unsigned,
     #: which the server warns loudly about but does not refuse: alerting outranks a
@@ -124,6 +130,7 @@ class Settings:
             root_public_key=os.environ.get("ALERTING_ROOT_PUBKEY", ""),
             server_key_file=os.environ.get("ALERTING_SERVER_KEY_FILE", ""),
             org_label=os.environ.get("ALERTING_ORG_LABEL", "ACME"),
+            public_url=os.environ.get("ALERTING_PUBLIC_URL", "").rstrip("/"),
             escalation_config=os.environ.get(
                 "ALERTING_ESCALATION_CONFIG", "config/escalation.example.yaml"
             ),
