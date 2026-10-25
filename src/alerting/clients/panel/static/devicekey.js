@@ -195,8 +195,51 @@
     return Object.keys(payload).filter((k) => !KNOWN_ORDER_FIELDS.has(k)).sort();
   }
 
+  // ---- the review screen ----------------------------------------------------------
+  // Every field the signature covers, from the payload itself -- the same object that
+  // will be signed, not the panel's description of it. Mirrors describe_payload in
+  // app.py. The panel page and the decision-makers' app (docs/adr/0016) both render
+  // the review from this.
+  function describe(p) {
+    const a = p.audience || {};
+    return {
+      drill: p.drill, scenario: p.scenario, severity: p.severity, action: p.action,
+      audience: { sites: a.sites || [], groups: a.groups || [], persons: a.persons || [] },
+      text: p.text || "", issued_at: p.issued_at, not_valid_after: p.not_valid_after,
+      stream: `${p.stream_id}#${p.seq}`, requires_ack: Boolean(p.requires_ack),
+      ack_deadline_s: p.ack_deadline_s, cancels: p.cancels, org_id: p.org_id, policy_id: p.policy_id,
+      unexpected_fields: unexpectedFields(p),
+    };
+  }
+
+  // Why this payload must not be signed here, in words; empty when it may be.
+  // ``digest`` is what the panel says it is asking to sign; ``orgId`` the
+  // organisation this key was made for. Fields the screen does not show are refused
+  // separately, through describe(p).unexpected_fields, with their own warning.
+  async function reviewProblems(payload, digest, orgId) {
+    const problems = [];
+    if (await digestHex("order", payload) !== digest) problems.push("панель и страница видят разные приказы");
+    if (orgId && payload.org_id !== orgId) problems.push("приказ другой организации");
+    return problems;
+  }
+
+  // A fresh key for a device that keeps it outside this page (the native app's
+  // biometric vault, docs/adr/0016). The PKCS#8 bytes leave here once, to the vault.
+  async function generate() {
+    const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+    const rawPublic = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+    const pkcs8 = new Uint8Array(await crypto.subtle.exportKey("pkcs8", pair.privateKey));
+    return { pkcs8: b64u(pkcs8), public_key: b64u(rawPublic), key_id: await keyId(rawPublic) };
+  }
+
+  // PKCS#8 from the vault into a key that can sign and can never be exported again.
+  async function importPrivate(pkcs8) {
+    return crypto.subtle.importKey("pkcs8", fromB64u(pkcs8), { name: "Ed25519" }, false, ["sign"]);
+  }
+
   root.DeviceKey = {
     canonicalize, b64u, fromB64u, keyId, digestHex, sign, verify, supported,
     list, forget, create, unlock, checkDelegation, unexpectedFields, signingInput,
+    describe, reviewProblems, generate, importPrivate,
   };
 })(typeof window !== "undefined" ? window : globalThis);

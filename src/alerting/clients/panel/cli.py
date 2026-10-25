@@ -58,6 +58,13 @@ def main(argv: list[str] | None = None) -> int:
         help="also allow the demo login with keys held under --homes (stand only)",
     )
     parser.add_argument(
+        "--app-origins",
+        default=os.environ.get("ALERTING_PANEL_APP_ORIGINS"),
+        help="comma-separated origins of the decision-makers' app that get a CORS answer "
+        "(or ALERTING_PANEL_APP_ORIGINS); default: the Capacitor WebView origins; "
+        "an empty value turns the app off",
+    )
+    parser.add_argument(
         "--host",
         default="127.0.0.1",
         help="bind address. With --server-keys it holds unlocked keys: keep it on localhost",
@@ -72,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
 
     import uvicorn
 
-    from alerting.clients.panel.app import create_panel
+    from alerting.clients.panel.app import APP_ORIGINS, create_panel
 
     if bool(args.org) != bool(args.root_key):
         parser.error("device-key login needs both --org and --root-key")
@@ -85,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         root_public_key=args.root_key,
         state_dir=args.state,
         server_keys=args.server_keys,
+        app_origins=APP_ORIGINS
+        if args.app_origins is None
+        else tuple(o.strip() for o in args.app_origins.split(",") if o.strip()),
     )
     uvicorn.run(app, host=args.host, port=args.port, log_config=None, access_log=False)
     return 0

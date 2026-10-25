@@ -42,6 +42,7 @@ import yaml
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -73,9 +74,23 @@ log = logging.getLogger("alerting.panel")
 COOKIE = "alerting_panel"
 
 #: Mutating requests must carry this header. A cross-site form or image cannot set a
-#: custom header without a CORS preflight, and this app answers no preflight -- so a
-#: page on another origin cannot make the panel sign on the operator's behalf.
+#: custom header without a CORS preflight, and this app answers a preflight only for
+#: the native app's own origins (``APP_ORIGINS``) -- so a page on another origin
+#: cannot make the panel sign on the operator's behalf.
 CSRF_HEADER = "X-Alerting-Panel"
+
+#: The decision-makers' native app (docs/adr/0016) says so with this header on
+#: ``/api/device/finish`` and gets its session token in the body instead of a cookie:
+#: its page is served from the app bundle, not from this origin, and a WebView does
+#: not send this origin's cookies from there.
+APP_HEADER = "X-Alerting-Client"
+APP_CLIENT = "app"
+
+#: Where a Capacitor WebView serves the bundled page from: Android at
+#: ``https://localhost``, iOS at ``capacitor://localhost``. Only these get a CORS
+#: answer. Credentials are not allowed cross-origin: the app sends its token in
+#: ``Authorization``, which no other page can make a browser attach.
+APP_ORIGINS = ("capacitor://localhost", "https://localhost")
 
 #: How often every session is checked even if nobody calls the panel at all: a
 #: revoked key or a lapsed delegation must end the session without waiting for a
@@ -579,6 +594,14 @@ def _server(call: Any, *args: Any, **kwargs: Any) -> Any:
         raise HTTPException(status, text) from None
 
 
+def session_token(request: Request) -> str | None:
+    """The session token: ``Authorization: Bearer`` from the app, the cookie otherwise."""
+    header = request.headers.get("Authorization", "")
+    if header.startswith("Bearer "):
+        return header[len("Bearer ") :].strip() or None
+    return request.cookies.get(COOKIE)
+
+
 def create_panel(
     *,
     homes: pathlib.Path | None,
@@ -590,6 +613,7 @@ def create_panel(
     root_public_key: str | None = None,
     state_dir: pathlib.Path | None = None,
     server_keys: bool = True,
+    app_origins: tuple[str, ...] = APP_ORIGINS,
 ) -> FastAPI:
     panel = Panel(
         homes=homes,
@@ -613,8 +637,18 @@ def create_panel(
             end_sessions=panel.end_sessions,
         )
 
+    if app_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(app_origins),
+            allow_credentials=False,
+            allow_methods=["GET", "POST"],
+            allow_headers=["Authorization", "Content-Type", CSRF_HEADER, APP_HEADER],
+            max_age=600,
+        )
+
     def current(request: Request) -> Session:
-        return panel.session(request.cookies.get(COOKIE))
+        return panel.session(session_token(request))
 
     def guarded(request: Request) -> Session:
         if request.headers.get(CSRF_HEADER) != "1":
@@ -717,6 +751,13 @@ def create_panel(
     def device_finish(body: DeviceFinish, request: Request, response: Response) -> dict[str, Any]:
         require_csrf(request)
         token, session = panel.finish_device_login(body.challenge, body.signature)
+        if request.headers.get(APP_HEADER) == APP_CLIENT:
+            # The app is the decision-makers' signing device and nothing else: the
+            # duty officer keeps the panel, where the directory and contacts live.
+            if session.role not in LPR:
+                panel.logout(token)
+                raise HTTPException(403, "приложение — только для ЛПР; дежурный работает в панели")
+            return {**who(session), "token": token}
         response.set_cookie(COOKIE, token, httponly=True, samesite="strict", path="/")
         return who(session)
 
@@ -731,7 +772,7 @@ def create_panel(
 
     @app.post("/api/logout")
     def logout(request: Request, response: Response) -> dict[str, bool]:
-        panel.logout(request.cookies.get(COOKIE))
+        panel.logout(session_token(request))
         response.delete_cookie(COOKIE, path="/")
         return {"ok": True}
 
@@ -745,7 +786,7 @@ def create_panel(
         # a new event in the codebook, a changed quorum -- shows up without anyone
         # logging out. Verified and version-checked like at login.
         if not panel.refresh_trust(session):
-            panel.logout(request.cookies.get(COOKIE))
+            panel.logout(session_token(request))
             raise HTTPException(401, "ключ отозван — сессия завершена")
         policy = session.policy.payload
         roster = _server(session.api.get, "/v1/roster")["people"]

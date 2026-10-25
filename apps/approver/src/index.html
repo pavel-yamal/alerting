@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- The page is the app's own bundle and nothing else runs here: no inline script,
+     no script from the network, no eval (docs/adr/0016). It talks only to the panel
+     the person entered, over https. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Оповещение ЛПР</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- 1. Which panel. Asked once; changing it means a new key (the key is made for an organisation). -->
+<section id="setup" class="screen hidden">
+  <h1>Оповещение ЛПР</h1>
+  <p class="hint">Приложение для лиц, принимающих решение: проверка и подпись приказов ключом этого телефона под Face ID или отпечатком.</p>
+  <form id="setup-form">
+    <label for="panel-url">Адрес панели</label>
+    <input id="panel-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" placeholder="https://panel.example.ru" required>
+    <button class="primary" type="submit">Подключиться</button>
+  </form>
+  <div id="setup-msg"></div>
+</section>
+
+<!-- 2. Login: unlock the key with biometrics, sign the session delegation. -->
+<section id="login" class="screen hidden">
+  <h1>Вход</h1>
+  <div class="hint" id="login-panel"></div>
+  <div id="login-keys"></div>
+  <div id="login-msg"></div>
+
+  <details id="enroll" class="more">
+    <summary>Зарегистрировать этот телефон</summary>
+    <p class="hint">Ключ создаётся на телефоне и не покидает его. Публичную часть передайте регистрирующему лично; войти получится, когда хранители внесут ключ в справочник.</p>
+    <form id="enroll-form">
+      <label for="enroll-person">Ваш идентификатор в справочнике</label>
+      <input id="enroll-person" autocomplete="off" autocapitalize="off" placeholder="p-010" required>
+      <button class="primary" type="submit">Создать ключ</button>
+    </form>
+    <div id="enroll-msg"></div>
+  </details>
+  <button id="change-panel" type="button" class="link">Сменить панель</button>
+</section>
+
+<!-- 3. The work: what waits for my signature, what is in force, what was sent. -->
+<section id="main" class="screen hidden">
+  <header>
+    <div>
+      <div id="who" class="who"></div>
+      <div id="renew-note"></div>
+    </div>
+    <button id="logout" type="button">Выйти</button>
+  </header>
+  <nav class="tabs">
+    <button type="button" data-tab="sign" class="active">На подпись <span id="sign-count" class="count hidden"></span></button>
+    <button type="button" data-tab="events">Действуют</button>
+    <button type="button" data-tab="orders">Разосланные</button>
+    <button type="button" data-tab="new">Новый</button>
+  </nav>
+  <div id="tab-sign" class="tab"><div id="proposals" class="list"></div></div>
+  <div id="tab-events" class="tab hidden"><div id="events" class="list"></div></div>
+  <div id="tab-orders" class="tab hidden"><div id="orders" class="list"></div></div>
+  <div id="tab-new" class="tab hidden">
+    <form id="new-form">
+      <h2>Что случилось</h2>
+      <div id="scenarios" class="choices"></div>
+      <div id="scenario-hint" class="hint"></div>
+      <h2>Режим</h2>
+      <div class="choices two">
+        <label class="choice"><input type="radio" name="drill" value="true">Учение</label>
+        <label class="choice real"><input type="radio" name="drill" value="false">Боевое</label>
+      </div>
+      <div id="severity-row">
+        <label for="severity">Уровень</label>
+        <select id="severity"></select>
+      </div>
+      <label for="text">Пояснение для людей</label>
+      <textarea id="text" maxlength="1000" rows="3" placeholder="Без персональных данных: боевые оповещения попадают в публичную RSS-ленту"></textarea>
+      <label for="ttl">Предложение ждёт подписей</label>
+      <select id="ttl">
+        <option value="600">10 минут</option>
+        <option value="900" selected>15 минут</option>
+        <option value="1800">30 минут</option>
+        <option value="3600">1 час</option>
+      </select>
+      <div id="summary" class="summary"></div>
+      <button class="primary" type="submit">Создать предложение</button>
+      <div id="new-msg"></div>
+    </form>
+  </div>
+</section>
+
+<!-- 4. One proposal or order, full screen over the tabs. -->
+<section id="detail" class="screen hidden">
+  <button id="back" type="button" class="link">‹ Назад</button>
+  <div id="detail-body"></div>
+</section>
+
+<div id="fatal" class="hidden"></div>
+
+<script src="devicekey.js"></script>
+<script src="logic.js"></script>
+<script src="vault.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

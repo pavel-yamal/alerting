@@ -280,11 +280,9 @@ async function openProposal(id) {
   // the same object that will be signed -- not from the panel's description of it.
   const local = me.device_key;
   const f = local ? describeLocal(view.payload) : view.fields;
-  const problems = [];
-  if (local) {
-    if (await DeviceKey.digestHex("order", view.payload) !== view.digest) problems.push("панель и страница видят разные приказы");
-    if (deviceRecord && deviceRecord.org_id && view.payload.org_id !== deviceRecord.org_id) problems.push("приказ другой организации");
-  }
+  const problems = local
+    ? await DeviceKey.reviewProblems(view.payload, view.digest, deviceRecord && deviceRecord.org_id)
+    : [];
   // The usual audience is everyone; anything else is shown loudly, field by field.
   const everyone = f.audience.groups.length === 1 && f.audience.groups[0] === "all"
     && !f.audience.sites.length && !f.audience.persons.length;
@@ -361,19 +359,8 @@ async function openProposal(id) {
   highlight();
 }
 
-// Every field the signature covers, from the payload itself. Mirrors
-// describe_payload in app.py, which the demo login still uses.
-function describeLocal(p) {
-  const a = p.audience || {};
-  return {
-    drill: p.drill, scenario: p.scenario, severity: p.severity, action: p.action,
-    audience: { sites: a.sites || [], groups: a.groups || [], persons: a.persons || [] },
-    text: p.text || "", issued_at: p.issued_at, not_valid_after: p.not_valid_after,
-    stream: `${p.stream_id}#${p.seq}`, requires_ack: Boolean(p.requires_ack),
-    ack_deadline_s: p.ack_deadline_s, cancels: p.cancels, org_id: p.org_id, policy_id: p.policy_id,
-    unexpected_fields: DeviceKey.unexpectedFields(p),
-  };
-}
+// Every field the signature covers, from the payload itself (devicekey.js).
+const describeLocal = (p) => DeviceKey.describe(p);
 
 // ---- order status ----------------------------------------------------------
 async function openOrder(id) {

@@ -1,0 +1,15 @@
+{
+  "name": "alerting-device-vault",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ключ подписи ЛПР в Keychain/Keystore, выдаётся только после биометрии (docs/adr/0016)",
+  "main": "index.js",
+  "files": ["index.js", "android/src", "android/build.gradle", "ios/Sources", "Package.swift", "AlertingDeviceVault.podspec"],
+  "capacitor": {
+    "ios": { "src": "ios" },
+    "android": { "src": "android" }
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=8.0.0"
+  }
+}
