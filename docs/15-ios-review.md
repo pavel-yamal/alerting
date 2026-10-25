@@ -63,7 +63,7 @@ TLS снимает обратный прокси) и открыть `/privacy` �
 - **Распространение:** рекомендуется *Unlisted* (по ссылке) — приложение не для
   частных лиц; либо обычная публикация с пометкой в описании, что нужна учётная
   запись организации.
-- **URL политики конфиденциальности:** `https://alert.yamal-media.ru/privacy`.
+- **URL политики конфиденциальности:** `https://alert-review.<ваш домен>/privacy` — страница демо-стенда; в самом приложении ссылка ведёт на `/privacy` той панели, к которой оно подключено.
 - **URL поддержки:** страница организации или та же `/privacy` (там есть контакт).
 - **Приватность приложения (App Privacy):** отслеживания нет. Собирается и связано с
   пользователем, только «Функциональность приложения»: *Идентификаторы → User ID*,
@@ -96,7 +96,7 @@ that enrols any device automatically.
 
 Face ID is required: the signing key is stored in the Keychain with
 biometryCurrentSet access control. There is no account, password or payment.
-Privacy policy: https://alert.yamal-media.ru/privacy
+Privacy policy: https://alert-review.<domain>/privacy
 The banner "Демо-стенд" at the top marks the demonstration stand.
 ```
 

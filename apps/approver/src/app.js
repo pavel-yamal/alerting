@@ -19,7 +19,6 @@ const L = window.ApproverLogic;
 const PANEL_KEY = "alerting.approver.panel";
 // Where the organisation's panel lives. Only a suggestion in the first screen: the
 // person can type another address, and what is used is always what they confirmed.
-const DEFAULT_PANEL = "https://alert.yamal-media.ru";
 
 let panelUrl = null;
 let config = null;          // the panel's /api/config
@@ -95,17 +94,22 @@ async function withKey(keyRecord, reason, operation) {
 function showSetup(reason) {
   show("setup");
   renderChrome();
-  $("panel-url").value = panelUrl || DEFAULT_PANEL;
+  $("panel-url").value = panelUrl || "";
   $("setup-msg").replaceChildren(reason ? msg("warn", reason) : "");
 }
 
 // The privacy policy is the panel's own page, public and without login (App Store
-// rule 5.1.1). Before a panel is chosen, the organisation's default panel's.
+// rule 5.1.1). It is the operator's and lives on its panel: before a panel is
+// known there is nothing to link to, and the link stays hidden.
 function privacyUrl() {
-  return (panelUrl || DEFAULT_PANEL) + "/privacy";
+  return panelUrl ? panelUrl + "/privacy" : null;
 }
 function renderChrome() {
-  for (const link of document.querySelectorAll(".privacy-link")) link.href = privacyUrl();
+  for (const link of document.querySelectorAll(".privacy-link")) {
+    const url = privacyUrl();
+    if (url) link.href = url;
+    link.parentElement.classList.toggle("hidden", !url);
+  }
   // A demonstration stand says so on every screen: its orders reach nobody real.
   $("demo-banner").classList.toggle("hidden", !(config && config.demo));
   $("enroll-person-row").classList.toggle("hidden", Boolean(config && config.demo));

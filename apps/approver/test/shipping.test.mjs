@@ -104,3 +104,11 @@ test("ios: the store icon is 1024x1024 without an alpha channel", () => {
   assert.equal(png.readUInt32BE(20), 1024);
   assert.equal(png[25], 2, "PNG colour type 2 = RGB, no alpha (Apple rejects transparency)");
 });
+
+test("no panel address is built in: the person types the one their organisation gave", () => {
+  // One app serves every installation, production and the review stand alike; a
+  // prefilled address would quietly pick a contour for the person.
+  for (const file of ["app.js", "index.html", "logic.js"]) {
+    assert.doesNotMatch(read("src", file), /https:\/\/[a-z0-9-]+\.[a-z0-9.-]+/i, file);
+  }
+});
