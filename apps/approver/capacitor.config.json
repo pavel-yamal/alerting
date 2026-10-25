@@ -1,5 +1,5 @@
 {
-  "appId": "me.yamal.alerting",
+  "appId": "me.yamal.alert",
   "appName": "Оповещение ЛПР",
   "webDir": "www",
   "server": {

@@ -31,7 +31,7 @@ ALERTING_PANEL_APP_ORIGINS= alerting-panel ...
 
 ## Сборка
 
-Нужны Node 20+, для iOS — Xcode на macOS, для Android — Android Studio / SDK.
+Идентификатор приложения — `me.yamal.alert` (по домену alert.yamal.me, как `me.yamal.portal` у портала); в первом экране приложение предлагает адрес панели `https://alert.yamal.me`. Нужны Node 20+, для iOS — Xcode на macOS, для Android — Android Studio / SDK.
 
 ```bash
 cd apps/approver

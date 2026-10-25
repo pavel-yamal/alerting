@@ -17,6 +17,9 @@
 
 const L = window.ApproverLogic;
 const PANEL_KEY = "alerting.approver.panel";
+// Where the organisation's panel lives. Only a suggestion in the first screen: the
+// person can type another address, and what is used is always what they confirmed.
+const DEFAULT_PANEL = "https://alert.yamal.me";
 
 let panelUrl = null;
 let config = null;          // the panel's /api/config
@@ -91,7 +94,7 @@ async function withKey(keyRecord, reason, operation) {
 // ---- 1. which panel ----------------------------------------------------------------
 function showSetup(reason) {
   show("setup");
-  $("panel-url").value = panelUrl || "";
+  $("panel-url").value = panelUrl || DEFAULT_PANEL;
   $("setup-msg").replaceChildren(reason ? msg("warn", reason) : "");
 }
 

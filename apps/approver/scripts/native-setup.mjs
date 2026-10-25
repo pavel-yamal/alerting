@@ -24,7 +24,7 @@ if (existsSync(plist)) {
 }
 
 // Screenshots and the app switcher thumbnail would show the order being signed.
-const activity = join(app, "android", "app", "src", "main", "java", "me", "yamal", "alerting", "MainActivity.java");
+const activity = join(app, "android", "app", "src", "main", "java", "me", "yamal", "alert", "MainActivity.java");
 if (existsSync(activity)) {
   let text = readFileSync(activity, "utf8");
   if (!text.includes("FLAG_SECURE")) {

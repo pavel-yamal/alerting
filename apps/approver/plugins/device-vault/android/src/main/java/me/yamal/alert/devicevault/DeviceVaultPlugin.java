@@ -1,4 +1,4 @@
-package me.yamal.alerting.devicevault;
+package me.yamal.alert.devicevault;
 
 import android.content.Context;
 import android.content.SharedPreferences;

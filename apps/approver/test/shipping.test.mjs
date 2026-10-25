@@ -10,6 +10,12 @@ const read = (...parts) => readFileSync(join(app, ...parts), "utf8");
 const config = JSON.parse(read("capacitor.config.json"));
 const pkg = JSON.parse(read("package.json"));
 
+test("the app id is frozen: me.yamal.alert, after alert.yamal.me", () => {
+  // Changing it after the store release makes a different app: no update over the
+  // installed one, and APNs topics of the old installs stop matching.
+  assert.equal(config.appId, "me.yamal.alert");
+});
+
 test("the page comes from the bundle, never from a server", () => {
   // server.url would load the page from the network: whoever controls that server
   // would decide what the key is asked to sign -- the hole the app exists to close.
