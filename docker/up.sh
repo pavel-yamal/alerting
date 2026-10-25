@@ -30,9 +30,16 @@ fi
 [[ -f "$env_file" ]] || { cp docker/.env.example "$env_file"; log "создан $env_file"; }
 
 log "собираю образ"
+echo "    первая сборка качает зависимости с pypi.org — при медленной сети это минуты;"
+echo "    дальше они берутся из кэша сборки (его не стирает и --reset)"
 build_log=$(mktemp)
+# Полный вывод — в лог, на экран — только скачиваемые пакеты: иначе на медленной сети
+# скрипт минутами молчит и выглядит зависшим. awk, а не grep: grep без совпадений
+# (всё из кэша) вернул бы 1, и pipefail принял бы это за провал сборки.
 # shellcheck disable=SC2086  # флаги сборки намеренно разбиваются на слова
-if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . >"$build_log" 2>&1; then
+if ! docker build --progress=plain ${ALERTING_BUILD_FLAGS:-} -t alerting:local . 2>&1 \
+    | tee "$build_log" \
+    | awk '/ Downloading / && !/\.metadata / { sub(/^#[0-9]+ [0-9.]+ +/, ""); print "    " $0; fflush() }'; then
     # Без этого видно только «exit code: 1», а причина — в выводе pip выше.
     # Сводка docker в конце одинакова при любой причине; причина — в строках pip.
     # `|| true`: под set -e и pipefail пустой grep иначе молча завершил бы скрипт.

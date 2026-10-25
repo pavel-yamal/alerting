@@ -6,19 +6,29 @@
 
 FROM python:3.11-slim-bookworm AS build
 WORKDIR /src
-COPY pyproject.toml README.md ./
-COPY src ./src
 # Если pypi.org недоступен (обрыв соединения, фильтр) — зеркало или внутренний
 # Nexus/Artifactory. pip читает эти переменные сам; без --build-arg они не заданы.
 #   docker build --build-arg PIP_INDEX_URL=https://mirror/simple .
 ARG PIP_INDEX_URL
 ARG PIP_TRUSTED_HOST
+# Сначала только зависимости: слой зависит от pyproject.toml, а не от кода, и правка
+# в src/ не качает их заново. Кэш pip — в кэше сборки, а не в образе: даже при
+# смене зависимостей скачивается только новое, и его не стирает `up.sh --reset`.
+# hatchling — в систему сборочной стадии, чтобы код ниже ставился без сети.
 # За корпоративным TLS-прокси pip не доверяет его сертификату. CA передаётся
 # секретом сборки и в образ не попадает:
 #   docker build --secret id=ca,src=/path/corp-ca.crt .
-RUN --mount=type=secret,id=ca,required=false \
+COPY pyproject.toml ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=secret,id=ca,required=false \
     if [ -s /run/secrets/ca ]; then export PIP_CERT=/run/secrets/ca; fi; \
-    pip install --no-cache-dir --prefix=/install .
+    python -c "import tomllib; print(*tomllib.load(open('pyproject.toml', 'rb'))['project']['dependencies'], sep='\n')" \
+        > /tmp/requirements.txt \
+    && pip install --prefix=/install -r /tmp/requirements.txt \
+    && pip install hatchling
+COPY README.md ./
+COPY src ./src
+RUN pip install --no-cache-dir --no-deps --no-build-isolation --prefix=/install .
 
 FROM python:3.11-slim-bookworm
 COPY --from=build /install /usr/local
