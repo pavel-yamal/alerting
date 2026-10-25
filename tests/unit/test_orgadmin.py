@@ -91,6 +91,17 @@ def test_a_policy_without_events_is_refused():
         build_policy(document, scenarios=None, version=2, issued_at=0, ttl_days=1)
 
 
+def test_the_policy_is_signed_for_the_organisation_named_not_the_example():
+    """The example file says "acme". A stand created for another organisation refuses
+    a policy signed for acme (org_mismatch), so docker/policy.sh names its own."""
+    document = yaml.safe_load((CONFIG / "policy.example.yaml").read_text(encoding="utf-8"))
+    kept = build_policy(document, scenarios={"X": {}}, version=2, issued_at=0, ttl_days=1)
+    named = build_policy(
+        document, scenarios={"X": {}}, version=2, issued_at=0, ttl_days=1, org_id="yamal"
+    )
+    assert kept.org_id == "acme" and named.org_id == "yamal"
+
+
 def test_sign_policy_command_writes_a_verifiable_bundle(tmp_path, org, capsys):
     key = tmp_path / "root-key.SECRET"
     key.write_text(private_key_to_b64u(org.root_private_key), encoding="utf-8")
