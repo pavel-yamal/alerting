@@ -403,3 +403,16 @@ docker compose exec mobile alerting-mobile end-session x-101
 `docker/.env` (например `https://alert.example.org`). Откуда берутся тексты,
 структура записей, связь отбоя с событием (`alerting:cancels`), пример и как
 читать — [17-rss-feed.md](17-rss-feed.md).
+
+## 11. Push в приложение ЛПР
+
+```bash
+./docker/push-keys.sh apns AuthKey_ABC123.p8 <TEAM_ID> <KEY_ID>   # iPhone
+./docker/push-keys.sh fcm  firebase-service-account.json          # Android
+./docker/up.sh
+./docker/push-keys.sh show                                        # что настроено
+```
+
+Ключи лежат во внешнем томе `alerting-push-keys`: `up.sh --reset` стирает стенд, но
+не их. Что приходит, кому и как получить ключи — [14-approver-app.md](14-approver-app.md),
+§«Push».

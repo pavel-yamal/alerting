@@ -25,6 +25,7 @@ from alerting.core.envelope import (
     SignedEnvelope,
 )
 from alerting.core.signing import ALG_ED25519, DOMAIN_ORDER, b64u_encode
+from alerting.server.services.lpr_notify import DISPATCHED, PROPOSAL, REJECTED
 
 router = APIRouter(prefix="/v1/proposals", tags=["proposals"])
 
@@ -103,6 +104,8 @@ async def create_proposal(body: ProposalRequest, request: Request) -> dict[str, 
     raw = payload.to_payload()
     created_by = request.state.principal.person_id
     app.repo.create_proposal(payload.order_id, body.stream_id, seq, raw, now, created_by)
+    # The other decision-makers: this one is looking at it already.
+    app.notifier.notify(PROPOSAL, payload.order_id, exclude={created_by})
     app.audit.append(
         Event.PROPOSAL_CREATED,
         {
@@ -242,6 +245,9 @@ async def add_signature(order_id: str, body: SignatureRequest, request: Request)
         # Nothing went out: it is open again, for the next signature to retry.
         app.repo.set_proposal_status(order_id, "open")
         raise
+    if result.accepted:
+        # Everyone who may sign, except whoever just did: they see it on screen.
+        app.notifier.notify(DISPATCHED, order_id, exclude={request.state.principal.person_id})
     warnings = [str(w) for w in decision.warnings]
     if result.reached_nobody:
         warnings.append("reached_nobody")
@@ -263,7 +269,8 @@ async def reject_proposal(order_id: str, request: Request) -> dict[str, Any]:
     signatures without a deadline, so one nobody wants must be closable rather than
     left one careless signature away from going out."""
     app = request.app.state.alerting
-    if app.repo.proposal(order_id) is None:
+    proposal = app.repo.proposal(order_id)
+    if proposal is None:
         raise HTTPException(404, "no such proposal")
     person_id = request.state.principal.person_id
     now = app.clock.now()
@@ -271,4 +278,12 @@ async def reject_proposal(order_id: str, request: Request) -> dict[str, Any]:
         row = app.repo.proposal(order_id)
         raise HTTPException(409, f"proposal is {row['status'] if row else 'gone'}")
     app.audit.append(Event.PROPOSAL_REJECTED, {"order_id": order_id, "rejected_by": person_id})
+    # Whoever proposed it and whoever signed it: their work just ended.
+    directory = app.state.directory()
+    involved = {proposal["created_by"]} | {
+        entry.person_id
+        for s in app.repo.signatures(order_id)
+        if (entry := directory.lookup(s["key_id"])) is not None
+    }
+    app.notifier.notify(REJECTED, order_id, exclude={person_id}, only=involved)
     return {"order_id": order_id, "status": "rejected", "rejected_by": person_id}

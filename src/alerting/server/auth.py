@@ -86,6 +86,10 @@ ROUTE_ROLES: dict[tuple[str, str], frozenset[str]] = {
     # Closing a proposal unsigned. One decision-maker is enough: it stops something,
     # and whoever wanted it can propose again.
     ("POST", "/v1/proposals/{order_id}/reject"): LPR,
+    # Devices of the decision-makers' app that receive push: each person's own.
+    ("POST", "/v1/push/tokens"): LPR,
+    ("POST", "/v1/push/tokens/remove"): LPR,
+    ("POST", "/v1/push/test"): LPR,
     ("POST", "/v1/audit/head"): OPERATORS,
     # Root-signed and version-checked on the way in, so the role is a second gate,
     # not the first: whoever uploads cannot change a byte of what the root signed.

@@ -186,6 +186,19 @@ class ProposalForm(BaseModel):
     #: of the previous build still sends one; it is ignored.
 
 
+class PushDevice(BaseModel):
+    """A phone of the decision-makers' app that wants push (alerting.server.api.push)."""
+
+    token: str = Field(min_length=8, max_length=4096)
+    platform: str = Field(pattern="^(ios|android)$")
+    device_label: str = Field(default="", max_length=120)
+    app_version: str = Field(default="", max_length=40)
+
+
+class PushToken(BaseModel):
+    token: str = Field(min_length=8, max_length=4096)
+
+
 class SignForm(BaseModel):
     #: The digest of the payload the person was shown. Signing proceeds only if the
     #: payload the server holds *now* has the same digest.
@@ -985,6 +998,23 @@ def create_panel(
         _server(session.api.post, f"/v1/proposals/{order_id}/reject", {})
         log.info("panel: %s rejected %s", session.person_id, order_id)
         return {"status": "rejected"}
+
+    # --- push to the app: the device registers for the person signed in ----------
+
+    @app.post("/api/push/register")
+    def push_register(body: PushDevice, session: Session = Depends(issuer)) -> dict[str, Any]:
+        result: dict[str, Any] = _server(session.api.post, "/v1/push/tokens", body.model_dump())
+        return result
+
+    @app.post("/api/push/unregister")
+    def push_unregister(body: PushToken, session: Session = Depends(guarded)) -> dict[str, Any]:
+        _server(session.api.post, "/v1/push/tokens/remove", body.model_dump())
+        return {"ok": True}
+
+    @app.post("/api/push/test")
+    def push_test(session: Session = Depends(issuer)) -> dict[str, Any]:
+        result: dict[str, Any] = _server(session.api.post, "/v1/push/test", {})
+        return result
 
     @app.get("/api/orders")
     def orders(session: Session = Depends(current)) -> dict[str, Any]:

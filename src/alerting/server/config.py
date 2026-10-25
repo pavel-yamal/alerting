@@ -19,6 +19,14 @@ import pathlib
 import socket
 from dataclasses import dataclass, field
 
+from alerting.server.mobilepush import (
+    ApnsConfig,
+    FcmConfig,
+    build_apns_jwt,
+    build_fcm_assertion,
+    parse_service_account,
+)
+
 
 def _env_path(name: str, default: str) -> pathlib.Path:
     return pathlib.Path(os.environ.get(name, default))
@@ -107,6 +115,19 @@ class Settings:
     #: the full delivery path with acknowledgements and the escalation ladder.
     delivery: str = "channels"
 
+    #: Push to the decision-makers' app (alerting.server.mobilepush). iOS goes
+    #: straight to APNs with the .p8 key from Apple Developer, Android through FCM
+    #: with a Firebase service account. Either left empty switches that side off.
+    apns_team_id: str = ""
+    apns_key_id: str = ""
+    apns_key_file: str = ""
+    #: The app's bundle id.
+    apns_topic: str = "me.yamal.alert"
+    fcm_service_account_file: str = ""
+    #: Overrides the project in the service-account file, when one account serves
+    #: several Firebase projects.
+    fcm_project_id: str = ""
+
     log_level: str = "INFO"
     log_json: bool = False
 
@@ -144,6 +165,14 @@ class Settings:
             canary_interval_s=_env_float("ALERTING_CANARY_INTERVAL_S", 3600.0),
             allow_stub_channels=_env_flag("ALERTING_ALLOW_STUB_CHANNELS"),
             delivery=os.environ.get("ALERTING_DELIVERY", "channels") or "channels",
+            apns_team_id=os.environ.get("ALERTING_APNS_TEAM_ID", "").strip(),
+            apns_key_id=os.environ.get("ALERTING_APNS_KEY_ID", "").strip(),
+            apns_key_file=os.environ.get("ALERTING_APNS_KEY_FILE", "").strip(),
+            apns_topic=os.environ.get("ALERTING_APNS_TOPIC", "").strip() or "me.yamal.alert",
+            fcm_service_account_file=os.environ.get(
+                "ALERTING_FCM_SERVICE_ACCOUNT_FILE", ""
+            ).strip(),
+            fcm_project_id=os.environ.get("ALERTING_FCM_PROJECT_ID", "").strip(),
             log_level=os.environ.get("ALERTING_LOG_LEVEL", "INFO"),
             log_json=_env_flag("ALERTING_LOG_JSON"),
         )
@@ -157,6 +186,36 @@ class Settings:
         if not self.server_key_file:
             return ""
         return read_secret_file(pathlib.Path(self.server_key_file), "server key")
+
+    def load_push(self) -> tuple[ApnsConfig | None, FcmConfig | None]:
+        """The push keys, each side ``None`` when not configured.
+
+        A configured key that cannot be read or parsed stops the node from starting,
+        like the server key: a deployment that believes it pushes and silently does
+        not is the failure this project is built against.
+        """
+        apns = None
+        if self.apns_key_file:
+            if not (self.apns_team_id and self.apns_key_id):
+                raise RuntimeError(
+                    "ALERTING_APNS_KEY_FILE is set without ALERTING_APNS_TEAM_ID and "
+                    "ALERTING_APNS_KEY_ID"
+                )
+            apns = ApnsConfig(
+                team_id=self.apns_team_id,
+                key_id=self.apns_key_id,
+                private_key_pem=read_secret_file(pathlib.Path(self.apns_key_file), "APNs key"),
+                topic=self.apns_topic,
+            )
+            build_apns_jwt(apns, 0)  # refuses a key that is not the .p8 one, now
+        fcm = None
+        if self.fcm_service_account_file:
+            fcm = parse_service_account(
+                read_secret_file(pathlib.Path(self.fcm_service_account_file), "FCM account"),
+                self.fcm_project_id,
+            )
+            build_fcm_assertion(fcm, 0)
+        return apns, fcm
 
     def load_dsn(self) -> str:
         """The connection string, from a file when one is configured.

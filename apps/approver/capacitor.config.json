@@ -16,6 +16,9 @@
   "plugins": {
     "CapacitorHttp": {
       "enabled": false
+    },
+    "PushNotifications": {
+      "presentationOptions": ["badge", "sound", "alert"]
     }
   }
 }

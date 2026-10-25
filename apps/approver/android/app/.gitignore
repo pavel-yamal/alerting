@@ -1,2 +1,6 @@
 /build/*
 !/build/.npmkeep
+
+# Firebase config of the push project: not in git, like the signing key.
+# Without it the build passes and Android push does not work (docs/14).
+google-services.json

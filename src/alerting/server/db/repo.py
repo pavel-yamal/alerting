@@ -791,6 +791,79 @@ class Repo:
             (keep,),
         )
 
+    # --- push to the decision-makers' app --------------------------------------
+    def save_push_token(
+        self,
+        token: str,
+        person_id: str,
+        platform: str,
+        *,
+        device_label: str,
+        app_version: str,
+        at: int,
+    ) -> None:
+        """Register a device, or move it to whoever registers it now.
+
+        Keyed by the token: on a shared phone the row follows the new owner, rather
+        than the previous one receiving someone else's notifications. A new iOS
+        token starts as production -- TestFlight and the App Store; a build from
+        Xcode is corrected on the first send.
+        """
+        self._execute(
+            "INSERT INTO push_tokens (token, person_id, platform, apns_env, device_label,"
+            " app_version, created_at, last_seen_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT (token) DO UPDATE SET person_id = EXCLUDED.person_id,"
+            " platform = EXCLUDED.platform, device_label = EXCLUDED.device_label,"
+            " app_version = EXCLUDED.app_version, last_seen_at = EXCLUDED.last_seen_at,"
+            " last_error = NULL, failure_count = 0",
+            (
+                token,
+                person_id,
+                platform,
+                "production" if platform == "ios" else None,
+                device_label,
+                app_version,
+                at,
+                at,
+            ),
+        )
+
+    def delete_push_token(self, token: str, person_id: str | None = None) -> bool:
+        """Forget a device; with ``person_id``, only if it is that person's."""
+        if person_id is None:
+            return self._execute("DELETE FROM push_tokens WHERE token = %s", (token,)) == 1
+        return (
+            self._execute(
+                "DELETE FROM push_tokens WHERE token = %s AND person_id = %s", (token, person_id)
+            )
+            == 1
+        )
+
+    def push_tokens_for(self, person_ids: Sequence[str]) -> list[Row]:
+        if not person_ids:
+            return []
+        return self._all(
+            "SELECT * FROM push_tokens WHERE person_id = ANY(%s) ORDER BY person_id, created_at",
+            (list(person_ids),),
+        )
+
+    def push_delivered(self, token: str, at: int, apns_env: str | None) -> None:
+        self._execute(
+            "UPDATE push_tokens SET last_success_at = %s, last_error = NULL, failure_count = 0,"
+            " apns_env = COALESCE(%s, apns_env) WHERE token = %s",
+            (at, apns_env, token),
+        )
+
+    def push_failed(self, token: str, error: str) -> int:
+        """Count a failure; returns how many in a row this token has now had."""
+        row = self._one(
+            "UPDATE push_tokens SET last_error = %s, failure_count = failure_count + 1"
+            " WHERE token = %s RETURNING failure_count",
+            (error[:1000], token),
+        )
+        return int(row["failure_count"]) if row else 0
+
     # --- WebSocket delivery across processes ----------------------------------
     def set_presence(self, process_id: str, person_id: str, devices: int, at: int) -> None:
         """Record how many devices of ``person_id`` this process holds; 0 removes it."""

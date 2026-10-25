@@ -35,9 +35,25 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+
+        <!--
+            Push (docs/14-approver-app.md). FCM delivers into the channel the app
+            creates (src/push.js: CHANNEL_ID, importance HIGH); without this default,
+            a message lands in Firebase's fallback channel and does not pop up.
+            The small icon must be a white silhouette: Android paints it, and a
+            full-colour launcher icon becomes a white square.
+        -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="@string/default_notification_channel_id" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_alert" />
     </application>
 
     <!-- Permissions -->
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Push. Since Android 13 the permission is asked for explicitly. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 </manifest>

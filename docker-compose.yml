@@ -88,8 +88,16 @@ services:
       <<: *app-env
       ALERTING_DSN_FILE: /run/alerting-app/dsn
       ALERTING_SERVER_KEY_FILE: /run/alerting-app/server-key
+      # Push в приложение ЛПР: ./docker/push-keys.sh. Пусто — выключено.
+      ALERTING_APNS_TEAM_ID: ${ALERTING_APNS_TEAM_ID:-}
+      ALERTING_APNS_KEY_ID: ${ALERTING_APNS_KEY_ID:-}
+      ALERTING_APNS_KEY_FILE: ${ALERTING_APNS_KEY_FILE:-}
+      ALERTING_APNS_TOPIC: ${ALERTING_APNS_TOPIC:-me.yamal.alert}
+      ALERTING_FCM_SERVICE_ACCOUNT_FILE: ${ALERTING_FCM_SERVICE_ACCOUNT_FILE:-}
+      ALERTING_FCM_PROJECT_ID: ${ALERTING_FCM_PROJECT_ID:-}
     volumes:
       - app-secrets:/run/alerting-app:ro
+      - push-keys:/run/alerting-push:ro
       - heads:/var/lib/alerting/heads
       - spool:/var/lib/alerting/spool
     ports:
@@ -211,3 +219,7 @@ volumes:
   clients:
   demo-keys:
   panel-state:
+  # Ключи push (docker/push-keys.sh). Внешний: `up.sh --reset` стирает стенд, но не их.
+  push-keys:
+    name: alerting-push-keys
+    external: true
