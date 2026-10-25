@@ -68,11 +68,15 @@ def build_policy(
     version: int | None,
     issued_at: int,
     ttl_days: int,
+    org_id: str | None = None,
 ) -> PolicyPayload:
     """Turn the YAML into a validated policy payload. Raises on anything wrong."""
     body = dict(document)
     if scenarios is not None:
         body["scenarios"] = scenarios
+    if org_id is not None:
+        # The example file says "acme"; the organisation it is signed for may not.
+        body["org_id"] = org_id
     if "scenarios" not in body or not body["scenarios"]:
         raise ValueError("the policy has no scenarios: pass --scenarios or add a scenarios: key")
     if version is not None:
@@ -101,6 +105,7 @@ def cmd_sign_policy(args: argparse.Namespace) -> int:
             version=args.version,
             issued_at=int(time.time()),
             ttl_days=args.ttl_days,
+            org_id=args.org,
         )
     except Exception as exc:
         print(f"error: the policy is not valid: {exc}", file=sys.stderr)
@@ -686,6 +691,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--version", type=int, help="policy version (default: the one in --policy); must grow"
     )
     sign.add_argument("--ttl-days", type=int, default=DEFAULT_TTL_DAYS)
+    sign.add_argument("--org", help="organisation id (default: org_id in --policy)")
     sign.add_argument("--out", type=pathlib.Path, required=True)
     sign.set_defaults(func=cmd_sign_policy)
 

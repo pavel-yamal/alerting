@@ -18,10 +18,14 @@ policy=${POLICY_FILE:-config/policy.example.yaml}
 [[ -f "$policy" ]] || { echo "нет файла $policy" >&2; exit 2; }
 
 compose=(docker compose --env-file docker/.env)
+# Организация стенда — та, с которой его создал org-init. В примере политики
+# записано "acme"; подписанная для другой организации политика сервер отвергает
+# (org_mismatch).
+org=$(sed -n 's/^ALERTING_ORG=//p' docker/.env | tr -d "\"'"); org=${org:-acme}
 current=$("${compose[@]}" exec -T db psql -U postgres -d alerting -tAc \
     "SELECT COALESCE(MAX(version), 0) FROM bundles WHERE kind = 'policy'")
 next=$((current + 1))
-echo "==> текущая версия политики: ${current}, публикую ${next}"
+echo "==> организация ${org}; текущая версия политики: ${current}, публикую ${next}"
 
 "${compose[@]}" --profile cli run --rm -T \
     -v "$PWD/$scenarios:/in/scenarios.yaml:ro" \
@@ -30,7 +34,7 @@ echo "==> текущая версия политики: ${current}, публик
     --entrypoint sh cli -c "
       set -e
       alerting-org sign-policy --policy /in/policy.yaml --scenarios /in/scenarios.yaml \
-          --root-key /var/lib/alerting/demo-keys/root-key.SECRET --version ${next} \
+          --root-key /var/lib/alerting/demo-keys/root-key.SECRET --version ${next} --org ${org} \
           --out /tmp/policy.json
       alerting-org publish --file /tmp/policy.json --server http://server:8080 \
           --person p-001 --home /var/lib/alerting/clients/p-001 --passphrase demo
